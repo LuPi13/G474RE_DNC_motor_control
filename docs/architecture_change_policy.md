@@ -70,13 +70,15 @@ A <----> B
 
 먼저 다음을 검토한다.
 
-- 공통 data type을 하위 module로 추출
+- 계층 독립적인 공통 value type이면 `Common`으로 추출
 - 상위 coordinator가 값을 전달
 - read-only snapshot/input struct 사용
 - 하나의 owner를 정하고 다른 쪽은 복사본이 아닌 입력으로 받기
 - 두 module이 실제로 하나의 subsystem인지 재평가
 
 circular include/dependency는 architecture warning으로 취급한다.
+
+`Common`은 이런 dependency 문제를 해결하기 위한 최하위 공용 계층으로 사용할 수 있다. 단, 순환 의존성을 피한다는 이유로 controller, driver, runtime state, helper logic까지 `Common`으로 옮기지 않는다. `Common`에는 여러 계층에서 공유할 필요가 있고 계층 독립적인 최소 타입/정의만 둔다.
 
 ---
 

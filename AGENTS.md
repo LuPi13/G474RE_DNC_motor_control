@@ -131,6 +131,10 @@ Follow `docs/doxygen_comment_convention.md`.
 
 For user-written public modules/APIs:
 
+- Write human-readable Doxygen/source documentation in Korean by default.
+- Keep Doxygen commands such as `@brief`, `@param`, `@return`, `@note`, and `@warning` in their original English form.
+- Keep code identifiers, units, and widely used technical acronyms/terms in their original notation where clearer.
+- Store user-written source/header/Markdown files as UTF-8.
 - Use Doxygen `/** ... */`.
 - Document file purpose, public types, public functions, units/ranges, preconditions, important side effects, and timing/ISR constraints where relevant.
 - Prefer comments that explain contract or reasoning rather than narrating obvious code.

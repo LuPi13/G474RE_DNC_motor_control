@@ -32,7 +32,134 @@ Doxygen에는 현재 코드의 의미만 남긴다.
 
 ---
 
-## 2. Comment style
+## 2. 문서화 언어와 문자 인코딩
+
+Doxygen을 포함한 **사람이 읽는 source documentation은 기본적으로 한국어로 작성한다.**
+
+코드 자체의 identifier와 Doxygen command는 번역하지 않는다.
+
+### 기본 규칙
+
+- 설명 문장: 한국어
+- Doxygen command: 원래 영문 표기
+- 함수명/변수명/타입명 등 code identifier: 원래 코드 표기
+- 단위: SI 표기
+- 널리 쓰이는 기술 약어 및 고유 명칭: 필요에 따라 영문 표기 유지
+- 사용자 작성 source/header/Markdown 파일: UTF-8
+
+예:
+
+```c
+/**
+ * @brief 3상 PWM duty를 갱신한다.
+ *
+ * @param duty a, b, c상의 정규화된 duty command.
+ *
+ * @pre PWM driver가 초기화되어 있어야 한다.
+ * @note 각 duty 값의 정상 입력 범위는 [0.0, 1.0]이다.
+ * @note 세 상의 compare 값은 동일한 HRTIM update event에서 반영된다.
+ */
+void pwm_driver_set_duty(const abc_t *duty);
+```
+
+다음 Doxygen command는 그대로 사용한다.
+
+```text
+@file
+@brief
+@param
+@return
+@retval
+@pre
+@post
+@note
+@warning
+@see
+```
+
+### 기술 용어
+
+기술 용어를 억지로 모두 번역하지 않는다.
+
+권장 예:
+
+```text
+FOC
+SVPWM
+PWM
+ADC
+HRTIM
+CORDIC
+Clarke 변환
+Park 변환
+PI 제어기
+anti-windup
+decoupling
+feedforward
+```
+
+문장 전체는 한국어로 작성하되, 널리 통용되는 용어는 가독성이 더 좋은 표현을 선택한다.
+
+예:
+
+```c
+/**
+ * @brief FOC 전류 제어의 한 주기를 수행한다.
+ *
+ * Clarke/Park 변환 후 d/q축 PI 제어를 수행하고,
+ * decoupling과 voltage limitation을 적용한다.
+ */
+```
+
+### Identifier
+
+Doxygen 안에서도 실제 identifier는 번역하거나 다른 이름으로 바꾸지 않는다.
+
+```c
+/**
+ * @pre @p self는 speed_controller_init()으로 초기화되어 있어야 한다.
+ */
+```
+
+### 단위
+
+물리량 단위는 코드와 동일한 의미를 갖도록 명시한다.
+
+```text
+[A]
+[V]
+[rad]
+[rad/s]
+[Hz]
+[s]
+[ns]
+```
+
+예:
+
+```c
+/**
+ * @param omega_ref_rad_s 기계 각속도 지령 [rad/s].
+ * @return q축 전류 지령 [A].
+ */
+```
+
+### UTF-8
+
+사용자 작성 `.c`, `.h`, `.md` 파일은 UTF-8로 저장한다.
+
+Doxygen 설정을 별도로 관리할 경우 입력 인코딩도 UTF-8을 사용한다.
+
+```text
+INPUT_ENCODING = UTF-8
+```
+
+Doxygen이 생성하는 UI 자체의 언어와 source documentation의 언어는 별개로 취급한다.  
+프로젝트 기본 정책은 **source documentation의 설명을 한국어로 작성하는 것**이며, Doxygen UI까지 반드시 한국어일 필요는 없다.
+
+---
+
+## 4. Comment style
 
 Public API와 documentable type에는 `/** ... */`를 사용한다.
 
@@ -50,7 +177,7 @@ Public API와 documentable type에는 `/** ... */`를 사용한다.
 
 ---
 
-## 3. 파일 header
+## 4. 파일 header
 
 각 사용자 작성 `.c/.h` 파일 시작 부분에는 최소한 `@file`과 `@brief`를 둔다.
 
@@ -59,10 +186,10 @@ Public API와 documentable type에는 `/** ... */`를 사용한다.
 ```c
 /**
  * @file foc.h
- * @brief Field-oriented current-control subsystem interface.
+ * @brief FOC 전류 제어 subsystem의 public interface를 정의한다.
  *
- * Defines the public interface and state required for d/q current control.
- * Hardware-specific ADC, CORDIC, PWM, and HAL details are not exposed here.
+ * d/q 전류 제어에 필요한 public API와 상태 타입을 정의한다.
+ * ADC, CORDIC, PWM, HAL 등 hardware-specific 세부사항은 노출하지 않는다.
  */
 ```
 
@@ -71,10 +198,10 @@ Public API와 documentable type에는 `/** ... */`를 사용한다.
 ```c
 /**
  * @file foc.c
- * @brief Field-oriented current-control subsystem implementation.
+ * @brief FOC 전류 제어 subsystem을 구현한다.
  *
- * Implements Clarke/Park transformation orchestration, d/q current PI control,
- * optional decoupling/feedforward, voltage limiting, and inverse Park.
+ * Clarke/Park 변환, d/q축 전류 PI 제어, 선택적 decoupling/feedforward,
+ * voltage limitation, inverse Park 변환을 수행한다.
  */
 ```
 
@@ -95,16 +222,17 @@ Modified by
 
 ---
 
-## 4. 구조체 Doxygen
+## 5. 구조체 Doxygen
 
 구조체 자체에는 그 타입의 의미와 lifetime/ownership에서 중요한 점을 쓴다.
 
 ```c
 /**
- * @brief PI controller runtime state and parameters.
+ * @brief PI 제어기의 runtime state와 parameter를 저장한다.
  *
- * The controller uses SI-unit float signals. The integrator state is updated
- * by pi_controller_update() and cleared by pi_controller_reset().
+ * 제어 신호는 SI 단위의 float를 사용한다.
+ * 적분 상태는 pi_controller_update()에서 갱신되고
+ * pi_controller_reset()에서 초기화된다.
  */
 typedef struct {
     float kp;              /**< Proportional gain. */
@@ -130,7 +258,7 @@ range나 의미가 중요한 필드는 명시한다.
 
 ```c
 /**
- * @brief Motor electrical parameters used by the control algorithms.
+ * @brief 제어 알고리즘에서 사용하는 모터 전기 파라미터.
  */
 typedef struct {
     float rs;              /**< Stator phase resistance [ohm]. */
@@ -143,11 +271,11 @@ typedef struct {
 
 ---
 
-## 5. Enum Doxygen
+## 6. Enum Doxygen
 
 ```c
 /**
- * @brief Motor control operating mode.
+ * @brief 모터 제어 동작 모드.
  */
 typedef enum {
     MOTOR_CONTROL_MODE_CURRENT,  /**< Direct d/q current control. */
@@ -160,7 +288,7 @@ enum member의 의미가 이름만으로 완전히 명확하면 각 항목 설�
 
 ---
 
-## 6. 함수 Doxygen
+## 7. 함수 Doxygen
 
 Public 함수에는 가능한 한 다음 정보를 담는다.
 
@@ -177,15 +305,15 @@ Public 함수에는 가능한 한 다음 정보를 담는다.
 
 ```c
 /**
- * @brief Executes one PI controller update.
+ * @brief PI 제어기의 한 주기를 계산한다.
  *
- * @param self Controller instance.
- * @param reference Reference input [SI unit of the controlled quantity].
- * @param feedback Measured/estimated feedback in the same unit as @p reference.
- * @return Saturated controller output.
+ * @param self 제어기 instance.
+ * @param reference 제어 대상 물리량의 지령값.
+ * @param feedback @p reference 와 동일한 단위를 사용하는 측정 또는 추정 feedback.
+ * @return 포화 제한이 적용된 제어기 출력.
  *
- * @pre @p self must be initialized with pi_controller_init().
- * @note This function updates the integrator state.
+ * @pre @p self는 pi_controller_init()으로 초기화되어 있어야 한다.
+ * @note 호출 시 내부 적분 상태가 갱신된다.
  */
 float pi_controller_update(
     pi_controller_t *self,
@@ -197,14 +325,14 @@ float pi_controller_update(
 
 ```c
 /**
- * @brief Executes one FOC current-control step.
+ * @brief FOC 전류 제어의 한 주기를 수행한다.
  *
- * @param self FOC controller instance.
- * @param input Current feedback, rotor state, references, and DC-link voltage.
- * @param output Computed alpha-beta voltage reference.
+ * @param self FOC 제어기 instance.
+ * @param input 전류 feedback, rotor state, reference, DC-link 전압을 포함하는 입력.
+ * @param output 계산된 alpha-beta 전압 지령.
  *
- * @pre All input physical quantities must use the units documented in foc_input_t.
- * @note This function does not write PWM registers and does not call HAL functions.
+ * @pre 모든 입력 물리량은 foc_input_t에 문서화된 단위를 사용해야 한다.
+ * @note 이 함수는 PWM register를 직접 쓰지 않으며 HAL 함수를 호출하지 않는다.
  */
 void foc_update(
     foc_t *self,
@@ -216,20 +344,20 @@ void foc_update(
 
 ```c
 /**
- * @brief Updates three-phase PWM duty commands.
+ * @brief 3상 PWM duty command를 갱신한다.
  *
- * @param duty Normalized phase duty ratios.
+ * @param duty 정규화된 a, b, c상 duty 값.
  *
- * @pre pwm_driver_init() must have completed successfully.
- * @note Each duty value is expected in the range [0.0, 1.0].
- * @note This function writes HRTIM compare registers.
+ * @pre pwm_driver_init()이 정상적으로 완료되어 있어야 한다.
+ * @note 각 duty 값의 정상 입력 범위는 [0.0, 1.0]이다.
+ * @note 이 함수는 HRTIM compare register를 갱신한다.
  */
 void pwm_driver_set_duty(const abc_t *duty);
 ```
 
 ---
 
-## 7. `@param` direction
+## 8. `@param` direction
 
 포인터 방향이 중요한 API에서는 Doxygen direction notation을 사용할 수 있다.
 
@@ -245,7 +373,7 @@ void pwm_driver_set_duty(const abc_t *duty);
 
 ---
 
-## 8. `@retval` / error return
+## 9. `@retval` / error return
 
 status code를 반환하면 각 의미를 적는다.
 
@@ -264,13 +392,13 @@ pwm_driver_status_t pwm_driver_init(...);
 
 ---
 
-## 9. Static/private 함수
+## 10. Static/private 함수
 
 private 함수는 복잡한 contract가 있거나 알고리즘적 의미가 크면 Doxygen 형식을 써도 된다.
 
 ```c
 /**
- * @brief Applies circular d/q voltage saturation.
+ * @brief d/q 전압 벡터에 원형 saturation을 적용한다.
  */
 static void foc_limit_voltage(...);
 ```
@@ -285,20 +413,20 @@ static float clamp(float x, float min, float max);
 
 ---
 
-## 10. 중요한 지역 주석
+## 11. 중요한 지역 주석
 
 주석은 **왜(why)** 를 우선한다.
 
 좋은 예:
 
 ```c
-/* Sample currents at the PWM center to avoid switching-edge transients. */
+/* Switching edge의 영향을 줄이기 위해 PWM 주기 중앙에서 전류를 샘플링한다. */
 ```
 
 나쁜 예:
 
 ```c
-/* Increment counter. */
+/* counter를 증가시킨다. */
 counter++;
 ```
 
@@ -312,7 +440,7 @@ counter++;
 
 ---
 
-## 11. TODO / FIXME
+## 12. TODO / FIXME
 
 임시 작업은 일관된 keyword를 사용한다.
 
@@ -339,7 +467,7 @@ counter++;
 
 ---
 
-## 12. Header guard
+## 13. Header guard
 
 기존 C 호환성과 toolchain 독립성을 위해 전통적인 header guard를 기본으로 한다.
 
@@ -356,7 +484,7 @@ counter++;
 
 ---
 
-## 13. 파일 끝
+## 14. 파일 끝
 
 모든 text source 파일은 **마지막 줄에 newline 하나로 끝낸다.**
 
@@ -390,14 +518,14 @@ void foc_reset(foc_t *self)
 
 ---
 
-## 14. 전체 예시
+## 15. 전체 예시
 
 ```c
 /**
  * @file speed_controller.h
- * @brief Motor speed controller interface.
+ * @brief 모터 속도 제어기의 public interface를 정의한다.
  *
- * Converts mechanical speed error into q-axis current reference.
+ * 기계 각속도 오차를 q축 전류 지령으로 변환하는 속도 제어기를 제공한다.
  */
 
 #ifndef SPEED_CONTROLLER_H
@@ -406,22 +534,22 @@ void foc_reset(foc_t *self)
 #include "pi_controller.h"
 
 /**
- * @brief Speed controller configuration and runtime state.
+ * @brief 속도 제어기의 설정값과 runtime state.
  */
 typedef struct {
-    pi_controller_t pi;  /**< Inner PI controller state. */
-    float i_q_min;       /**< Minimum q-axis current reference [A]. */
-    float i_q_max;       /**< Maximum q-axis current reference [A]. */
+    pi_controller_t pi;  /**< 내부 PI 제어기 상태. */
+    float i_q_min;       /**< q축 전류 지령 하한 [A]. */
+    float i_q_max;       /**< q축 전류 지령 상한 [A]. */
 } speed_controller_t;
 
 /**
- * @brief Initializes the speed controller.
+ * @brief 속도 제어기를 초기화한다.
  *
- * @param self Controller instance.
- * @param kp Proportional gain.
- * @param ki Integral gain.
- * @param i_q_min Minimum q-axis current reference [A].
- * @param i_q_max Maximum q-axis current reference [A].
+ * @param self 제어기 instance.
+ * @param kp 비례 gain.
+ * @param ki 적분 gain.
+ * @param i_q_min q축 전류 지령 하한 [A].
+ * @param i_q_max q축 전류 지령 상한 [A].
  */
 void speed_controller_init(
     speed_controller_t *self,
@@ -431,14 +559,14 @@ void speed_controller_init(
     float i_q_max);
 
 /**
- * @brief Executes one speed-control update.
+ * @brief 속도 제어기의 한 주기를 계산한다.
  *
- * @param self Controller instance.
- * @param omega_ref_rad_s Mechanical speed reference [rad/s].
- * @param omega_meas_rad_s Measured/estimated mechanical speed [rad/s].
- * @return q-axis current reference [A].
+ * @param self 제어기 instance.
+ * @param omega_ref_rad_s 기계 각속도 지령 [rad/s].
+ * @param omega_meas_rad_s 측정 또는 추정된 기계 각속도 [rad/s].
+ * @return q축 전류 지령 [A].
  *
- * @note This function updates the internal PI integrator state.
+ * @note 호출 시 내부 PI 제어기의 적분 상태가 갱신된다.
  */
 float speed_controller_update(
     speed_controller_t *self,
@@ -450,10 +578,13 @@ float speed_controller_update(
 
 ---
 
-## 15. MUST / SHOULD
+## 16. MUST / SHOULD
 
 ### MUST
 
+- Doxygen의 사람이 읽는 설명은 기본적으로 한국어로 작성한다.
+- Doxygen command와 code identifier는 원래 표기를 유지한다.
+- 사용자 작성 source/header/Markdown 파일은 UTF-8로 저장한다.
 - public API의 단위/범위가 이름만으로 충분히 명확하지 않으면 Doxygen에 명시한다.
 - Git이 담당하는 author/revision history를 source comment에 중복 관리하지 않는다.
 - header guard의 `#endif`에 guard 이름을 남긴다.

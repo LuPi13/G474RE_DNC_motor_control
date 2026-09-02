@@ -37,11 +37,12 @@
 
 1. 신호 흐름과 `#include` 의존성은 동일하지 않다.
 2. 하위 module은 상위 module을 모른다.
-3. 하나의 runtime 값에는 가능한 한 하나의 owner/source of truth만 둔다.
-4. Control/Algorithm 계층에서 HAL/LL/peripheral register를 직접 만지지 않는다.
-5. module 이름은 실제 책임을 반영한다.
-6. 유지보수성과 검증 가능성을 우선하고, 성능 최적화는 profiling 결과로 정당화한다.
-7. 구조를 변경했다면 코드뿐 아니라 관련 문서도 함께 갱신한다.
+3. `Common`은 여러 계층에서 공유하는 dependency-free 공용 타입/정의만 가진다.
+4. 하나의 runtime 값에는 가능한 한 하나의 owner/source of truth만 둔다.
+5. Control/Algorithm 계층에서 HAL/LL/peripheral register를 직접 만지지 않는다.
+6. module 이름은 실제 책임을 반영한다.
+7. 유지보수성과 검증 가능성을 우선하고, 성능 최적화는 profiling 결과로 정당화한다.
+8. 구조를 변경했다면 코드뿐 아니라 관련 문서도 함께 갱신한다.
 
 ## 규칙 강도
 

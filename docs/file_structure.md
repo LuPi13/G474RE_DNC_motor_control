@@ -30,6 +30,9 @@ Project/
 │  ├─ rotor_estimator.c
 │  └─ rotor_estimator.h
 │
+├─ Common/
+│  └─ vector_types.h
+│
 ├─ Algorithm/
 │  ├─ pi_controller.c
 │  ├─ pi_controller.h
@@ -39,8 +42,7 @@ Project/
 │  ├─ svpwm.h
 │  ├─ filter.c
 │  ├─ filter.h
-│  ├─ limiter.h
-│  └─ vector_types.h
+│  └─ limiter.h
 │
 ├─ Platform/
 │  ├─ pwm_driver.c
@@ -90,6 +92,19 @@ Project/
 - rotor estimator interface
 - control mode routing
 
+### Common
+
+여러 계층에서 함께 사용하는 **dependency-free 공용 타입/정의**:
+
+- `abc_t`
+- `alpha_beta_t`
+- `dq_t`
+- 계층에 종속되지 않는 최소한의 공용 value type
+
+`Common`은 Control, Algorithm, Platform, App 어디에서도 사용할 수 있지만, **Common 자신은 다른 프로젝트 계층을 include하지 않는다.**
+
+`Common`을 잡다한 utility나 전역 상태를 모아두는 폴더로 사용하지 않는다. 공용이라는 이유만으로 모든 것을 넣지 말고, 여러 계층에서 실제로 공유되며 의미가 계층 독립적인 타입/정의만 둔다.
+
 ### Algorithm
 
 하드웨어와 무관한 재사용 가능 계산:
@@ -99,7 +114,6 @@ Project/
 - SVPWM
 - limiter
 - filter
-- vector type
 - 기타 수학 알고리즘
 
 ### Platform
@@ -134,17 +148,35 @@ Application
    +---------> Control
    |
    +---------> Platform
+   |
+   +---------> Common
 
 Control
    |
    +---------> Algorithm
+   |
+   +---------> Common
+
+Algorithm
+   |
+   +---------> Common
 
 Platform
    |
+   +---------> Common
+   |
    +---------> STM32 HAL / LL / registers
+
+Common
+   |
+   +---------> no project-layer dependency
 ```
 
-Algorithm은 가능한 한 다른 프로젝트 계층에 의존하지 않는다.
+`Common`은 가장 아래의 공용 dependency 계층이다.
+
+Algorithm은 Platform/Control/App에 의존하지 않으며, 필요한 공용 value type은 `Common`에서 가져온다.
+
+Platform은 Algorithm을 include하지 않는다. 예를 들어 `pwm_driver`가 `abc_t`를 사용해야 한다면 `Algorithm/vector_types.h`에 의존시키지 않고 `Common/vector_types.h`를 사용한다.
 
 ---
 
@@ -227,7 +259,62 @@ motor_control       : 전체 drive mode/routing
 
 ---
 
-## 6. FOC의 경계
+## 6. Common vector type의 위치
+
+좌표계/3상 값을 표현하는 공용 value type은 `Common/vector_types.h`에서 정의한다.
+
+```c
+typedef struct {
+    float a;
+    float b;
+    float c;
+} abc_t;
+
+typedef struct {
+    float alpha;
+    float beta;
+} alpha_beta_t;
+
+typedef struct {
+    float d;
+    float q;
+} dq_t;
+```
+
+이 타입들은 계산 알고리즘이 아니라 **데이터 표현**이므로 Algorithm에 두지 않는다.
+
+예를 들어 다음 계층이 모두 같은 `abc_t`를 사용할 수 있다.
+
+```text
+Algorithm/svpwm.c
+    -> abc_t duty
+
+Platform/pwm_driver.c
+    -> const abc_t *duty
+
+Control/foc.c
+    -> abc_t current feedback
+```
+
+따라서 다음 dependency는 만들지 않는다.
+
+```text
+Platform/pwm_driver
+    -> Algorithm/vector_types   // 금지
+```
+
+대신:
+
+```text
+Platform/pwm_driver
+    -> Common/vector_types      // 허용
+```
+
+`vector_types.h`에는 타입 정의만 두고 transform, clamp, SVPWM 같은 계산 함수는 넣지 않는다.
+
+---
+
+## 7. FOC의 경계
 
 이 프로젝트에서 `foc.c`는 **FOC current-control subsystem**이다.
 
@@ -262,7 +349,7 @@ SVPWM은 modulation algorithm이고 PWM driver는 hardware access이므로 분�
 
 ---
 
-## 7. `*_driver` suffix
+## 8. `*_driver` suffix
 
 Platform wrapper에는 `_driver` suffix를 유지한다.
 
@@ -281,7 +368,7 @@ encoder_driver.c
 
 ---
 
-## 8. Header / Include 규칙
+## 9. Header / Include 규칙
 
 `.c` 파일은 자기 header를 가장 먼저 include한다.
 
@@ -310,7 +397,7 @@ header에는 외부에 공개해야 하는 최소 API만 둔다.
 
 ---
 
-## 9. Platform과 sensor conversion의 분리
+## 10. Platform과 sensor conversion의 분리
 
 초기에는 `adc_driver`가 raw acquisition과 unit conversion을 같이 해도 된다.
 
@@ -346,7 +433,7 @@ rotor_estimator
 
 ---
 
-## 10. 금지 dependency 예
+## 11. 금지 dependency 예
 
 ```text
 position_controller -> speed_controller   // 기본적으로 금지
@@ -354,12 +441,14 @@ speed_controller    -> foc                // 금지
 foc                 -> motor_control      // 금지
 pi_controller       -> foc                // 금지
 svpwm               -> pwm_driver         // 금지
+Platform            -> Algorithm          // 금지
+Common              -> App/Control/Algorithm/Platform // 금지
 Control/Algorithm   -> HAL                // 금지
 ```
 
 ---
 
-## 11. 구조가 너무 잘게 쪼개지는 것을 피하는 기준
+## 12. 구조가 너무 잘게 쪼개지는 것을 피하는 기준
 
 작은 module을 무조건 파일로 분리하는 것이 목적은 아니다.
 

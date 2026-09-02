@@ -84,6 +84,7 @@ App/
 Control/
 Algorithm/
 Platform/
+Common/
 Config/
 docs/
 ```
@@ -91,6 +92,9 @@ docs/
 최소한 다음 interface/header를 먼저 잡을 수 있다.
 
 ```text
+Common/
+    vector_types.h
+
 Platform/
     pwm_driver.h
     adc_driver.h
@@ -98,7 +102,6 @@ Platform/
     hall_driver.h
 
 Algorithm/
-    vector_types.h
     transform.h
     pi_controller.h
     svpwm.h
@@ -338,11 +341,11 @@ pi
 
 Hardware 없이 가능한 module을 먼저 검증한다.
 
-권장 순서:
+`vector_types.h`는 Algorithm이 아니라 `Common/`의 공용 타입 정의이며 Stage 0에서 준비한다.
+
+Algorithm 구현 권장 순서:
 
 ```text
-vector_types
-    ↓
 transform
     ↓
 pi_controller

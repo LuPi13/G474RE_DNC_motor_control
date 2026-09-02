@@ -250,6 +250,11 @@ internal i_q_ref
 
 좌표계 자체를 나타내는 공용 value type을 사용한다.
 
+이 타입들은 여러 계층이 함께 사용하므로 **`Common/vector_types.h`에서 정의한다.**  
+`Algorithm/vector_types.h`에 두지 않는다. `pwm_driver` 같은 Platform module도 `abc_t`를 사용할 수 있기 때문에, Algorithm에 두면 `Platform -> Algorithm` 의존성이 생긴다.
+
+`Common/vector_types.h`는 다른 프로젝트 계층을 include하지 않는 dependency-free header로 유지한다.
+
 ```c
 typedef struct {
     float a;

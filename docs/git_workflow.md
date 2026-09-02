@@ -572,9 +572,9 @@ chore: initialize STM32G474 motor drive project
 
 docs: add software architecture and coding conventions
 
-refactor: add App Control Algorithm Platform directories
+refactor: add App Control Algorithm Platform Common directories
 
-feat(algorithm): add common vector types
+feat(common): add shared motor-control vector types
 
 chore(cubemx): configure HRTIM timers
 
