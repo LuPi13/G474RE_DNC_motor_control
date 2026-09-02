@@ -21,6 +21,12 @@
 - [`runtime_and_dataflow.md`](runtime_and_dataflow.md)  
   fast loop, ISR, multi-rate scheduling, command/reference/feedback 흐름.
 
+- [`development_process.md`](development_process.md)  
+  실제 하드웨어 bring-up부터 FOC/속도/위치 제어까지의 권장 개발 순서.
+
+- [`git_workflow.md`](git_workflow.md)  
+  commit 단위, branch 사용 기준, CubeMX/tuning 분리, milestone tag 규칙.
+
 - [`architecture_change_policy.md`](architecture_change_policy.md)  
   구현 중 기존 설계가 맞지 않을 때의 변경 원칙과 예외 처리법.
 
