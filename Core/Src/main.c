@@ -21,7 +21,7 @@
 
 /* Private includes ----------------------------------------------------------*/
 /* USER CODE BEGIN Includes */
-
+#include "pwm_driver.h"
 /* USER CODE END Includes */
 
 /* Private typedef -----------------------------------------------------------*/
@@ -56,7 +56,16 @@ USART_HandleTypeDef husart3;
 PCD_HandleTypeDef hpcd_USB_FS;
 
 /* USER CODE BEGIN PV */
+static pwm_driver_t pwm_driver;
 
+static abc_t duty_abc = {
+    .a = 0.50f,
+    .b = 0.50f,
+    .c = 0.50f,
+};
+
+/* 디버거에서 함수 실행 결과 확인용 */
+static volatile pwm_driver_status_t pwm_test_status;
 /* USER CODE END PV */
 
 /* Private function prototypes -----------------------------------------------*/
@@ -119,13 +128,53 @@ int main(void)
   MX_USART3_Init();
   MX_USB_PCD_Init();
   /* USER CODE BEGIN 2 */
+  /* PWM 초기화 */
+  const pwm_driver_config_t pwm_config = {
+        .hrtim = &hhrtim1,
 
+        .phase_a = {
+            .timer_index = HRTIM_TIMERINDEX_TIMER_F,
+            .compare_unit = HRTIM_COMPAREUNIT_1,
+        },
+        .phase_b = {
+            .timer_index = HRTIM_TIMERINDEX_TIMER_D,
+            .compare_unit = HRTIM_COMPAREUNIT_1,
+        },
+        .phase_c = {
+            .timer_index = HRTIM_TIMERINDEX_TIMER_C,
+            .compare_unit = HRTIM_COMPAREUNIT_1,
+        },
+  };
+  pwm_test_status = pwm_driver_init(&pwm_driver, &pwm_config);
+    if (pwm_test_status != PWM_DRIVER_STATUS_OK) {
+        Error_Handler();
+    }
+
+    /* Output을 켜기 전에 초기 duty를 먼저 기록한다. */
+    pwm_test_status = pwm_driver_set_duty(&pwm_driver, &duty_abc);
+    if (pwm_test_status != PWM_DRIVER_STATUS_OK) {
+        Error_Handler();
+    }
+
+    pwm_test_status = pwm_driver_enable(&pwm_driver);
+    if (pwm_test_status != PWM_DRIVER_STATUS_OK) {
+        Error_Handler();
+    }
   /* USER CODE END 2 */
 
   /* Infinite loop */
   /* USER CODE BEGIN WHILE */
   while (1)
   {
+      pwm_test_status = pwm_driver_set_duty(&pwm_driver, &duty_abc);
+
+          if (pwm_test_status != PWM_DRIVER_STATUS_OK) {
+              (void)pwm_driver_disable(&pwm_driver);
+              Error_Handler();
+          }
+
+        /* Live Expressions에서 값을 바꿀 시간을 주고 불필요한 register 쓰기를 줄인다. */
+        HAL_Delay(1);
     /* USER CODE END WHILE */
 
     /* USER CODE BEGIN 3 */
@@ -529,11 +578,11 @@ static void MX_HRTIM1_Init(void)
     Error_Handler();
   }
   pDeadTimeCfg.Prescaler = HRTIM_TIMDEADTIME_PRESCALERRATIO_MUL4;
-  pDeadTimeCfg.RisingValue = 500;
+  pDeadTimeCfg.RisingValue = 100;
   pDeadTimeCfg.RisingSign = HRTIM_TIMDEADTIME_RISINGSIGN_POSITIVE;
   pDeadTimeCfg.RisingLock = HRTIM_TIMDEADTIME_RISINGLOCK_WRITE;
   pDeadTimeCfg.RisingSignLock = HRTIM_TIMDEADTIME_RISINGSIGNLOCK_READONLY;
-  pDeadTimeCfg.FallingValue = 500;
+  pDeadTimeCfg.FallingValue = 100;
   pDeadTimeCfg.FallingSign = HRTIM_TIMDEADTIME_FALLINGSIGN_POSITIVE;
   pDeadTimeCfg.FallingLock = HRTIM_TIMDEADTIME_FALLINGLOCK_WRITE;
   pDeadTimeCfg.FallingSignLock = HRTIM_TIMDEADTIME_FALLINGSIGNLOCK_READONLY;
@@ -545,8 +594,6 @@ static void MX_HRTIM1_Init(void)
   {
     Error_Handler();
   }
-  pDeadTimeCfg.RisingValue = 100;
-  pDeadTimeCfg.FallingValue = 100;
   if (HAL_HRTIM_DeadTimeConfig(&hhrtim1, HRTIM_TIMERINDEX_TIMER_F, &pDeadTimeCfg) != HAL_OK)
   {
     Error_Handler();
