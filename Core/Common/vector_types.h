@@ -1,31 +1,41 @@
-/*
- * vector_types.h
+/**
+ * @file vector_types.h
+ * @brief 모터 제어 계층에서 공유하는 좌표계별 vector type을 정의한다.
  *
- *  Created on: 2026. 9. 2.
- *      Author: JWDNC
+ * 각 type은 물리량의 표현 형식만 정의하며 특정 hardware나 algorithm에
+ * 의존하지 않는다. 각 성분의 물리 단위는 해당 type을 사용하는 API의
+ * contract를 따른다.
  */
 
 #ifndef COMMON_VECTOR_TYPES_H_
 #define COMMON_VECTOR_TYPES_H_
 
-// 3상 물리량이나 3상 duty를 묶기 위한 공용 벡터
+/**
+ * @brief a, b, c상의 물리량 또는 정규화된 duty를 표현하는 3상 vector.
+ */
 typedef struct {
-    float a;
-    float b;
-    float c;
+    float a;  /**< a상 성분. */
+    float b;  /**< b상 성분. */
+    float c;  /**< c상 성분. */
 } abc_t;
 
-// 정지 alpha-beta 좌표계의 2차원 벡터
+/**
+ * @brief 정지 alpha-beta 좌표계의 2차원 vector.
+ */
 typedef struct {
-    float alpha;
-    float beta;
+    float alpha;  /**< alpha축 성분. */
+    float beta;   /**< beta축 성분. */
 } alpha_beta_t;
 
-// 회전 d-q 좌표계의 2차원 벡터.
-// 정확한 축 방향 및 부호 convention은 transform module에서 정의.
+/**
+ * @brief 회전 d-q 좌표계의 2차원 vector.
+ *
+ * @note 축 방향과 부호 convention은 이 type을 사용하는 transform module의
+ *       contract에서 정의한다.
+ */
 typedef struct {
-    float d;
-    float q;
+    float d;  /**< d축 성분. */
+    float q;  /**< q축 성분. */
 } dq_t;
 
 #endif /* COMMON_VECTOR_TYPES_H_ */
