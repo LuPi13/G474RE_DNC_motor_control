@@ -467,15 +467,15 @@ void HAL_HRTIM_MspDeInit(HRTIM_HandleTypeDef* hhrtim)
 }
 
 /**
-  * @brief TIM_Encoder MSP Initialization
+  * @brief TIMEx_HallSensor MSP Initialization
   * This function configures the hardware resources used in this example
-  * @param htim_encoder: TIM_Encoder handle pointer
+  * @param htimex_hallsensor: TIMEx_HallSensor handle pointer
   * @retval None
   */
-void HAL_TIM_Encoder_MspInit(TIM_HandleTypeDef* htim_encoder)
+void HAL_TIMEx_HallSensor_MspInit(TIM_HandleTypeDef* htimex_hallsensor)
 {
   GPIO_InitTypeDef GPIO_InitStruct = {0};
-  if(htim_encoder->Instance==TIM2)
+  if(htimex_hallsensor->Instance==TIM2)
   {
     /* USER CODE BEGIN TIM2_MspInit 0 */
 
@@ -504,6 +504,9 @@ void HAL_TIM_Encoder_MspInit(TIM_HandleTypeDef* htim_encoder)
     GPIO_InitStruct.Alternate = GPIO_AF2_TIM2;
     HAL_GPIO_Init(GPIOA, &GPIO_InitStruct);
 
+    /* TIM2 interrupt Init */
+    HAL_NVIC_SetPriority(TIM2_IRQn, 1, 0);
+    HAL_NVIC_EnableIRQ(TIM2_IRQn);
     /* USER CODE BEGIN TIM2_MspInit 1 */
 
     /* USER CODE END TIM2_MspInit 1 */
@@ -513,14 +516,14 @@ void HAL_TIM_Encoder_MspInit(TIM_HandleTypeDef* htim_encoder)
 }
 
 /**
-  * @brief TIM_Encoder MSP De-Initialization
+  * @brief TIMEx_HallSensor MSP De-Initialization
   * This function freeze the hardware resources used in this example
-  * @param htim_encoder: TIM_Encoder handle pointer
+  * @param htimex_hallsensor: TIMEx_HallSensor handle pointer
   * @retval None
   */
-void HAL_TIM_Encoder_MspDeInit(TIM_HandleTypeDef* htim_encoder)
+void HAL_TIMEx_HallSensor_MspDeInit(TIM_HandleTypeDef* htimex_hallsensor)
 {
-  if(htim_encoder->Instance==TIM2)
+  if(htimex_hallsensor->Instance==TIM2)
   {
     /* USER CODE BEGIN TIM2_MspDeInit 0 */
 
@@ -536,6 +539,8 @@ void HAL_TIM_Encoder_MspDeInit(TIM_HandleTypeDef* htim_encoder)
     */
     HAL_GPIO_DeInit(GPIOA, GPIO_PIN_0|GPIO_PIN_1|GPIO_PIN_2|GPIO_PIN_5);
 
+    /* TIM2 interrupt DeInit */
+    HAL_NVIC_DisableIRQ(TIM2_IRQn);
     /* USER CODE BEGIN TIM2_MspDeInit 1 */
 
     /* USER CODE END TIM2_MspDeInit 1 */
