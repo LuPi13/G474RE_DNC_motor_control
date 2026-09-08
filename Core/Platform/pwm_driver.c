@@ -1,9 +1,11 @@
 /**
  * @file pwm_driver.c
  * @brief HRTIM 기반 3상 PWM driver를 구현한다.
+ * @ingroup platform_pwm_driver
  *
  * 논리적 a, b, c상의 hardware mapping을 검증하고 HRTIM counter와 output을
  * 제어하며, 정규화된 duty command를 compare 값으로 변환한다.
+ * @see pwm_driver.h 공개 API의 호출 조건과 update timing 계약.
  */
 
 #include "pwm_driver.h"
@@ -12,6 +14,7 @@
  * @brief duty 값을 [0.0, 1.0] 범위로 제한한다.
  *
  * @param duty 제한할 정규화된 duty 값.
+ * @pre duty는 유한한 값이어야 한다. NaN 입력은 검사하지 않는다.
  * @return [0.0, 1.0] 범위로 제한된 duty 값.
  */
 static float pwm_driver_clamp_duty(float duty)
@@ -31,7 +34,7 @@ static float pwm_driver_clamp_duty(float duty)
  * @brief HRTIM timer index에 대응하는 timer ID bit mask를 반환한다.
  *
  * @param timer_index 변환할 HRTIM_TIMERINDEX_TIMER_* 값.
- * @return 유효하지 않은 timer index이면 0을 반환한다.
+ * @return 대응하는 HRTIM_TIMERID_* mask. 유효하지 않은 timer index이면 0.
  */
 static uint32_t pwm_driver_get_timer_id(uint32_t timer_index)
 {
@@ -63,7 +66,7 @@ static uint32_t pwm_driver_get_timer_id(uint32_t timer_index)
  * @brief HRTIM timer index에 대응하는 software reset bit mask를 반환한다.
  *
  * @param timer_index 변환할 HRTIM_TIMERINDEX_TIMER_* 값.
- * @return 유효하지 않은 timer index이면 0을 반환한다.
+ * @return 대응하는 HRTIM_TIMERRESET_* mask. 유효하지 않은 timer index이면 0.
  */
 static uint32_t pwm_driver_get_timer_reset_mask(uint32_t timer_index)
 {
@@ -95,7 +98,7 @@ static uint32_t pwm_driver_get_timer_reset_mask(uint32_t timer_index)
  * @brief HRTIM timer index에 포함된 두 output의 bit mask를 반환한다.
  *
  * @param timer_index 변환할 HRTIM_TIMERINDEX_TIMER_* 값.
- * @return 유효하지 않은 timer index이면 0을 반환한다.
+ * @return 해당 timer의 output 1/2를 합친 mask. 유효하지 않은 timer index이면 0.
  */
 static uint32_t pwm_driver_get_output_mask(uint32_t timer_index)
 {
@@ -143,7 +146,8 @@ static bool pwm_driver_is_valid_compare_unit(uint32_t compare_unit)
  * @param self 초기화된 PWM driver instance.
  * @param phase 변환 대상 phase의 timer 및 compare 설정.
  * @param duty 정규화된 duty 값.
- * @return 해당 timer period를 기준으로 계산한 compare 값.
+ * @return Duty를 [0, 1]로 제한하고 period를 곱한 뒤 소수점 이하를 버린 compare 값.
+ * @pre duty는 유한한 값이어야 한다.
  */
 static uint32_t pwm_driver_duty_to_compare(
     const pwm_driver_t *self,

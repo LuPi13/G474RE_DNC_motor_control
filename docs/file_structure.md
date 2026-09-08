@@ -4,68 +4,50 @@
 
 ```text
 Project/
-├─ Core/                     # CubeMX generated code 위주
-│  ├─ Inc/
-│  └─ Src/
-│
-├─ App/
-│  ├─ app.c
-│  ├─ app.h
-│  ├─ state_machine.c
-│  ├─ state_machine.h
-│  ├─ command.c
-│  ├─ command.h
-│  ├─ fault_manager.c
-│  └─ fault_manager.h
-│
-├─ Control/
-│  ├─ motor_control.c
-│  ├─ motor_control.h
-│  ├─ foc.c
-│  ├─ foc.h
-│  ├─ speed_controller.c
-│  ├─ speed_controller.h
-│  ├─ position_controller.c
-│  ├─ position_controller.h
-│  ├─ rotor_estimator.c
-│  └─ rotor_estimator.h
-│
-├─ Common/
-│  └─ vector_types.h
-│
-├─ Algorithm/
-│  ├─ pi_controller.c
-│  ├─ pi_controller.h
-│  ├─ transform.c
-│  ├─ transform.h
-│  ├─ svpwm.c
-│  ├─ svpwm.h
-│  ├─ filter.c
-│  ├─ filter.h
-│  └─ limiter.h
-│
-├─ Platform/
-│  ├─ pwm_driver.c
-│  ├─ pwm_driver.h
-│  ├─ adc_driver.c
-│  ├─ adc_driver.h
-│  ├─ hall_driver.c
-│  ├─ hall_driver.h
-│  ├─ encoder_driver.c
-│  ├─ encoder_driver.h
-│  ├─ cordic_driver.c
-│  ├─ cordic_driver.h
-│  ├─ can_driver.c
-│  ├─ can_driver.h
-│  ├─ uart_driver.c
-│  └─ uart_driver.h
-│
-└─ Config/
-   ├─ motor_config.c
-   └─ motor_config.h
+├─ Core/
+│  ├─ Inc/                   # CubeMX generated header / USER CODE
+│  ├─ Src/                   # CubeMX generated source / USER CODE
+│  ├─ App/                   # 사용자 작성 시스템 통합
+│  │  ├─ app.c / app.h
+│  │  ├─ state_machine.c / state_machine.h
+│  │  ├─ command.c / command.h
+│  │  └─ fault_manager.c / fault_manager.h
+│  ├─ Control/
+│  │  ├─ motor_control.c / motor_control.h
+│  │  ├─ foc.c / foc.h
+│  │  ├─ speed_controller.c / speed_controller.h
+│  │  ├─ position_controller.c / position_controller.h
+│  │  └─ rotor_estimator.c / rotor_estimator.h
+│  ├─ Common/
+│  │  └─ vector_types.h
+│  ├─ Algorithm/
+│  │  ├─ pi_controller.c / pi_controller.h
+│  │  ├─ transform.c / transform.h
+│  │  ├─ svpwm.c / svpwm.h
+│  │  ├─ filter.c / filter.h
+│  │  └─ limiter.h
+│  ├─ Platform/
+│  │  ├─ pwm_driver.c / pwm_driver.h
+│  │  ├─ adc_driver.c / adc_driver.h
+│  │  ├─ hall_driver.c / hall_driver.h
+│  │  ├─ encoder_driver.c / encoder_driver.h
+│  │  ├─ cordic_driver.c / cordic_driver.h
+│  │  ├─ can_driver.c / can_driver.h
+│  │  └─ uart_driver.c / uart_driver.h
+│  └─ Config/
+│     └─ motor_config.c / motor_config.h
+└─ docs/
 ```
 
-`Core/`는 CubeMX regeneration의 영향을 받을 수 있으므로 사용자 코드의 핵심 로직을 가능한 한 외부 디렉터리에 둔다.
+위 구조는 향후 모듈을 포함한 배치 기준이며, 모든 파일이 이미 구현되었다는 뜻은 아니다.
+현재 `Core/Platform`과 `Core/Common`의 배치를 기준으로 사용자 작성 계층을 `Core/` 아래에 둔다.
+문서의 `App/`, `Control/`, `Common/`, `Algorithm/`, `Platform/`, `Config/` 표기는
+별도 언급이 없으면 `Core/` 아래의 계층을 가리킨다.
+
+CubeMX 생성 영역인 `Core/Src`, `Core/Inc`와 사용자 소유 계층 디렉터리를 구분한다.
+생성 파일에 필요한 연결 코드는 USER CODE 영역에 유지하고, 핵심 로직은 사용자 소유 모듈에 둔다.
+`Core/` 전체를 생성 코드로 취급해 사용자 모듈을 옮기거나 덮어쓰지 않는다.
+이 배치는 현재 구현 경로와 개발 가이드를 맞추기 위한 것이며 계층 간 dependency 규칙은 바꾸지 않는다.
 
 ---
 
@@ -131,6 +113,20 @@ MCU/peripheral 세부 구현:
 ### Config
 
 제품/모터별 configuration과 parameter 정의.
+
+### Driver 재사용 시 설정 책임
+
+- CubeMX: pin, peripheral channel, trigger, sampling time, PWM preload/update 등 하드웨어 설정.
+- main/App 통합 코드: driver instance와 config를 준비하고 초기화/시작/정지 순서를 관리한다.
+  Config가 커지면 제품별 정의를 `Core/Config`로 분리할 수 있다.
+- Driver config: 물리 채널과 논리적 a/b/c상 매핑, ADC 센서 영점/환산 계수 등을 전달한다.
+  ADC config의 channel/rank는 CubeMX 설정과 대조하는 값이지 하드웨어 재설정 명령이 아니다.
+- Driver 구현: 지원 구성 안의 매핑/계수 변경만으로 재사용 가능하면 수정하지 않는다.
+  다른 변환 방식이나 지원하지 않는 peripheral 구성이 필요하면 구현/API 변경을 검토한다.
+
+지원 구성, 전제 조건, API 사용법은 정상적인 재사용에도 필요하다.
+세부사항은 [`adc_driver.h`](../Core/Platform/adc_driver.h)와
+[`pwm_driver.h`](../Core/Platform/pwm_driver.h)의 Doxygen을 기준으로 확인한다.
 
 ---
 

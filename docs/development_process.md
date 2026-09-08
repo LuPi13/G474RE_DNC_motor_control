@@ -80,14 +80,20 @@
 예:
 
 ```text
-App/
-Control/
-Algorithm/
-Platform/
-Common/
-Config/
+Core/
+    Inc/        # CubeMX 생성 영역
+    Src/        # CubeMX 생성 영역
+    App/        # 이하 사용자 작성 계층
+    Control/
+    Algorithm/
+    Platform/
+    Common/
+    Config/
 docs/
 ```
+
+이하 계층 경로는 `Core/` 기준이다. 배치와 생성 코드의 경계는
+[`file_structure.md`](file_structure.md)를 따른다.
 
 최소한 다음 interface/header를 먼저 잡을 수 있다.
 
@@ -134,16 +140,17 @@ Control/
 
 가장 먼저 실제 하드웨어에서 검증할 module로 `pwm_driver`를 권장한다.
 
-최소 API 예:
+현재 API 형태 (전체 계약은 [`pwm_driver.h`](../Core/Platform/pwm_driver.h) 참조):
 
 ```c
-void pwm_driver_init(void);
-void pwm_driver_enable(void);
-void pwm_driver_disable(void);
-void pwm_driver_set_duty(const abc_t *duty);
+pwm_driver_status_t pwm_driver_init(pwm_driver_t *self, const pwm_driver_config_t *config);
+pwm_driver_status_t pwm_driver_enable(pwm_driver_t *self);
+pwm_driver_status_t pwm_driver_disable(pwm_driver_t *self);
+pwm_driver_status_t pwm_driver_set_duty(pwm_driver_t *self, const abc_t *duty);
 ```
 
 FOC나 SVPWM을 붙이지 않고 고정 duty를 직접 넣는다.
+다음은 `pwm_driver` instance의 초기화 성공 후 호출하는 예다.
 
 ```c
 abc_t duty = {
@@ -152,14 +159,24 @@ abc_t duty = {
     .c = 0.75f,
 };
 
-pwm_driver_set_duty(&duty);
+pwm_driver_status_t status = pwm_driver_set_duty(&pwm_driver, &duty);
+if (status != PWM_DRIVER_STATUS_OK) {
+    /* Bring-up 오류를 기록하고 output을 활성화하지 않는다. */
+    return;
+}
 ```
+
+`pwm_driver_init()`은 counter를 시작하지만 output은 비활성 상태로 둔다.
+초기 duty의 update 반영을 확인한 뒤 `pwm_driver_enable()`을 호출하고 반환값을 확인한다.
+ADC와 연동할 때는 counter 시작 전 ADC를 준비해야 하므로
+[`runtime_and_dataflow.md`](runtime_and_dataflow.md)의 시작 순서를 따른다.
 
 ### 확인 항목
 
 - PWM frequency
 - center-aligned 동작
 - 3상 timer synchronization
+- preload/update 설정과 세 compare 쓰기의 update deadline
 - high-side / low-side channel mapping
 - complementary output
 - dead time
@@ -184,28 +201,29 @@ PWM driver API만 사용해서 예상한 3상 PWM을 안정적으로 출력할 �
 
 ADC 자체보다 **PWM에 동기화된 sampling**이 핵심이다.
 
-개념적 흐름:
+현재 구현의 수집 경로:
 
 ```text
-HRTIM event
-    ↓
-ADC trigger
-    ↓
-injected conversion
-    ↓
-conversion complete ISR
+HRTIM 전류 trigger -> 세 ADC injected 변환 -> 각 완료 callback
+                                                ↓
+                                 ADC driver가 3상 완료 취합
+                                                ↓
+HRTIM 전압 trigger -> 단일 regular 변환 -> 완료된 Vdc 결과를 DR에서 읽기
+                                                ↓
+                                       raw sample 묶음
 ```
 
-초기에는 raw sample만 검증해도 된다.
+전류와 전압의 trigger 시점은 같다고 가정하지 않는다. Vdc는 DMA 없이 읽으며,
+읽는 함수가 변환을 시작하거나 polling 대기하지 않는다.
+`adc_driver_init()`은 설정 검증과 ADC 자체 calibration을 수행하고,
+`adc_driver_start()`가 regular 및 injected 그룹을 외부 trigger 대기 상태로 준비한다.
+보정은 신호 수가 아니라 실제 ADC와 사용 입력 모드에 맞춰 수행한다.
 
-```c
-typedef struct {
-    uint16_t phase_a;
-    uint16_t phase_b;
-    uint16_t phase_c;
-    uint16_t dc_link;
-} adc_raw_sample_t;
-```
+초기에는 `adc_driver_raw_sample_t`의 `phase_a`, `phase_b`, `phase_c`, `dc_link`만 검증해도 된다.
+현재 보드의 매핑/환산 계수 예와 지원 구성은
+[`adc_driver.h`](../Core/Platform/adc_driver.h)를 참조한다.
+Callback 연결, sample 소비 및 오류 처리 조건은
+[`runtime_and_dataflow.md`](runtime_and_dataflow.md)를 따른다.
 
 ### 확인 항목
 
@@ -215,6 +233,9 @@ typedef struct {
 - channel ordering
 - ADC saturation 여부
 - ISR execution timing
+- 한 전류 수집 주기당 3상 완료 판정/묶음 소비가 한 번씩 이루어지는지
+- Vdc 변환 완료와 DR 읽기 시점, NOT_READY/overrun 발생 여부
+- callback 누락/중복 및 실행 deadline 위반의 검출/복구 경로
 
 ISR 진입 시 debug GPIO를 toggle하여 PWM과 timing을 함께 관찰하는 방법을 권장한다.
 
@@ -247,7 +268,15 @@ i_c = ...
 v_dc = ...
 ```
 
-초기에는 `adc_driver`에 conversion을 둘 수 있다.
+현재는 `adc_driver_convert()`가 config의 영점과 gain으로
+`(code - offset_counts) * gain_per_count`를 계산하여 `abc_t` 전류 [A]와
+`float` DC-link 전압 [V]를 반환한다. App은 성공한 결과만 feedback으로 전달한다.
+
+ADC 자체 calibration과 센서 영점/이득 보정은 별개다.
+무전류 영점, 기준 전류/전압 대비 gain과 극성을 확인해야 하며,
+raw 값이 들어온다는 사실만으로 센서 정확도 검증이 끝난 것은 아니다.
+
+초기에는 이처럼 `adc_driver`에 conversion을 둘 수 있다.
 
 복잡도가 증가하면:
 

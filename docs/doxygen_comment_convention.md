@@ -53,14 +53,19 @@ Doxygen을 포함한 **사람이 읽는 source documentation은 기본적으로 
 /**
  * @brief 3상 PWM duty를 갱신한다.
  *
- * @param duty a, b, c상의 정규화된 duty command.
+ * @param[in] self 초기화된 PWM driver instance.
+ * @param[in] duty a, b, c상의 정규화된 duty command. 유한한 값을 전달한다.
+ * @return PWM_DRIVER_STATUS_OK 또는 인자/초기화 상태 오류를 나타내는 status.
  *
  * @pre PWM driver가 초기화되어 있어야 한다.
  * @note 각 duty 값의 정상 입력 범위는 [0.0, 1.0]이다.
- * @note 세 상의 compare 값은 동일한 HRTIM update event에서 반영된다.
+ * @note Preload가 활성화되고 세 타이머의 update 시점이 동기화되어 있으며,
+ *       해당 update 전에 세 compare 쓰기를 모두 완료하면 같은 시점에 반영된다.
  */
-void pwm_driver_set_duty(const abc_t *duty);
+pwm_driver_status_t pwm_driver_set_duty(pwm_driver_t *self, const abc_t *duty);
 ```
+
+위 예시는 주석 형식을 설명하는 축약본이다. 실제 API의 전체 계약은 해당 header를 따른다.
 
 다음 Doxygen command는 그대로 사용한다.
 
@@ -75,6 +80,10 @@ void pwm_driver_set_duty(const abc_t *duty);
 @note
 @warning
 @see
+@defgroup
+@ingroup
+@ref
+@par
 ```
 
 ### 기술 용어
@@ -117,9 +126,12 @@ Doxygen 안에서도 실제 identifier는 번역하거나 다른 이름으로 �
 
 ```c
 /**
- * @pre @p self는 speed_controller_init()으로 초기화되어 있어야 한다.
+ * @pre @p self 는 speed_controller_init()으로 초기화되어 있어야 한다.
  */
 ```
+
+`@p`, `@ref` 뒤의 identifier에는 한글 조사를 바로 붙이지 않는다.
+공백으로 구분하여 `self는` 같은 문자열이 identifier로 해석되지 않게 한다.
 
 ### 단위
 
@@ -159,7 +171,7 @@ Doxygen이 생성하는 UI 자체의 언어와 source documentation의 언어는
 
 ---
 
-## 4. Comment style
+## 3. Comment style
 
 Public API와 documentable type에는 `/** ... */`를 사용한다.
 
@@ -219,6 +231,19 @@ Modified by
 ```
 
 법적 copyright/license 요구가 있는 경우의 license header는 별개로 유지할 수 있다.
+
+### 모듈 개요와 문서 소유권
+
+- Public API/type의 전체 계약은 header에 두고, source에는 구현 이유와 private 동작을 설명한다.
+- 관련 API가 많은 모듈은 header의 `@defgroup`으로 사용 안내와 public 선언을 묶을 수 있다.
+  파일은 `@ingroup`으로 연결하고, 관련 타입/API/모듈은 `@ref` 또는 `@see`로 참조한다.
+- 사용 안내는 `@par`로 책임, 지원 구성, 호출 순서, 오류 복구 등을 나눌 수 있다.
+  지원 범위 안에서 사용하는 사람에게도 설정 위치와 호출 계약이 보이도록 작성한다.
+- `docs/`는 계층 간 연결과 설계 이유를 설명하고, 함수별 계약은 header/Doxygen을 참조한다.
+  동일한 API 설명을 여러 문서에 통째로 복제하지 않는다.
+
+기존 예는 [`adc_driver.h`](../Core/Platform/adc_driver.h)와
+[`pwm_driver.h`](../Core/Platform/pwm_driver.h)를 참고한다.
 
 ---
 
@@ -312,7 +337,7 @@ Public 함수에는 가능한 한 다음 정보를 담는다.
  * @param feedback @p reference 와 동일한 단위를 사용하는 측정 또는 추정 feedback.
  * @return 포화 제한이 적용된 제어기 출력.
  *
- * @pre @p self는 pi_controller_init()으로 초기화되어 있어야 한다.
+ * @pre @p self 는 pi_controller_init()으로 초기화되어 있어야 한다.
  * @note 호출 시 내부 적분 상태가 갱신된다.
  */
 float pi_controller_update(
@@ -346,13 +371,18 @@ void foc_update(
 /**
  * @brief 3상 PWM duty command를 갱신한다.
  *
- * @param duty 정규화된 a, b, c상 duty 값.
+ * @param[in] self 초기화된 PWM driver instance.
+ * @param[in] duty 정규화된 a, b, c상 duty 값. 유한한 값을 전달한다.
+ * @retval PWM_DRIVER_STATUS_OK compare 쓰기 완료. 실제 반영 시점은 update 설정을 따른다.
+ * @retval PWM_DRIVER_STATUS_INVALID_ARGUMENT NULL 인자 또는 초기화되지 않은 instance.
  *
  * @pre pwm_driver_init()이 정상적으로 완료되어 있어야 한다.
  * @note 각 duty 값의 정상 입력 범위는 [0.0, 1.0]이다.
  * @note 이 함수는 HRTIM compare register를 갱신한다.
+ * @note Preload를 사용하는 경우 세 타이머의 update 시점을 동기화하고,
+ *       목표 update 전에 모든 compare 쓰기를 완료해야 같은 시점에 반영된다.
  */
-void pwm_driver_set_duty(const abc_t *duty);
+pwm_driver_status_t pwm_driver_set_duty(pwm_driver_t *self, const abc_t *duty);
 ```
 
 ---
@@ -379,14 +409,16 @@ status code를 반환하면 각 의미를 적는다.
 
 ```c
 /**
- * @brief Initializes the PWM driver.
+ * @brief 준비된 3상 전류와 DC-link 전압을 읽는다.
  *
- * @retval PWM_DRIVER_OK Initialization succeeded.
- * @retval PWM_DRIVER_ERROR_INVALID_CONFIG Configuration is invalid.
- * @retval PWM_DRIVER_ERROR_HAL HAL initialization failed.
+ * @retval ADC_DRIVER_STATUS_OK raw sample을 반환함.
+ * @retval ADC_DRIVER_STATUS_NOT_READY 세 전류가 준비되지 않았거나 전압 EOC가 없음.
+ * @retval ADC_DRIVER_STATUS_OVERRUN 전압 overrun을 검출하여 해당 묶음을 폐기함.
  */
-pwm_driver_status_t pwm_driver_init(...);
+adc_driver_status_t adc_driver_read_raw(adc_driver_t *self, adc_driver_raw_sample_t *sample);
 ```
+
+위 예시는 반환값 설명의 일부만 발췌한 것이다. 실제 API 문서에는 모든 반환 경로를 설명한다.
 
 단순 `bool` 반환이라도 실패 의미가 모호하면 설명한다.
 
