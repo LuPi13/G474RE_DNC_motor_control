@@ -121,12 +121,19 @@ MCU/peripheral 세부 구현:
   Config가 커지면 제품별 정의를 `Core/Config`로 분리할 수 있다.
 - Driver config: 물리 채널과 논리적 a/b/c상 매핑, ADC 센서 영점/환산 계수 등을 전달한다.
   ADC config의 channel/rank는 CubeMX 설정과 대조하는 값이지 하드웨어 재설정 명령이 아니다.
+  Hall config도 TIM/GPIO mapping, 정방향 state sequence, timer kernel clock 및 electrical
+  angle offset을 전달하며 CubeMX의 TIM mode나 GPIO alternate function을 다시 설정하지 않는다.
 - Driver 구현: 지원 구성 안의 매핑/계수 변경만으로 재사용 가능하면 수정하지 않는다.
   다른 변환 방식이나 지원하지 않는 peripheral 구성이 필요하면 구현/API 변경을 검토한다.
 
 지원 구성, 전제 조건, API 사용법은 정상적인 재사용에도 필요하다.
 세부사항은 [`adc_driver.h`](../Core/Platform/adc_driver.h)와
-[`pwm_driver.h`](../Core/Platform/pwm_driver.h)의 Doxygen을 기준으로 확인한다.
+[`pwm_driver.h`](../Core/Platform/pwm_driver.h),
+[`hall_driver.h`](../Core/Platform/hall_driver.h)의 Doxygen을 기준으로 확인한다.
+
+Hall mode와 encoder mode는 현재 같은 TIM2 resource를 사용한다. 두 driver를 별도 module로
+유지하더라도 동시에 peripheral을 소유하게 해서는 안 되며, CubeMX configuration과 App
+초기화 경로에서 둘 중 하나만 선택한다.
 
 ---
 
@@ -352,6 +359,7 @@ Platform wrapper에는 `_driver` suffix를 유지한다.
 ```text
 adc_driver.c
 pwm_driver.c
+hall_driver.c
 cordic_driver.c
 encoder_driver.c
 ```
@@ -414,7 +422,23 @@ voltage_sensor.c
 
 분리 기준은 파일 길이가 아니라 **peripheral access와 sensor calibration/conversion이 독립적으로 변하기 시작하는지**다.
 
-Hall도 동일하다.
+현재 bring-up 단계의 `hall_driver`는 GPIO/TIM capture뿐 아니라 Hall sequence에 직접
+결합된 sector, direction, edge-to-edge electrical speed 및 기본 electrical angle 계산까지
+함께 제공한다. 이 계산들은 TIM capture/timeout 의미와 강하게 결합되어 있고 아직 독립적인
+estimator 정책이 필요하지 않으므로 초기 Platform boundary 안에 두는 것을 허용한다.
+
+또한 TIM2 writer보다 ADC reader의 interrupt priority가 높은 현재 구성에서 일관된 feedback을
+전달하기 위해 `hall_driver` instance가 double buffer와 active index를 소유한다. 이것은
+hardware interrupt 경계의 snapshot 전달 책임이며 Control의 중복 rotor state가 아니다.
+
+다음 중 하나가 필요해지면 acquisition과 estimation을 분리한다.
+
+- Hall edge 사이의 continuous angle extrapolation
+- filtering, hysteresis 또는 motor별 sensor 위치 보정
+- hardware와 독립된 estimator 단위 테스트
+- Hall, encoder, EEMF 등 여러 feedback source의 runtime 선택/공통화
+
+분리할 경우의 목표 구조는 다음과 같다.
 
 ```text
 hall_driver

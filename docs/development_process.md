@@ -298,39 +298,103 @@ Debugger에서 raw count가 아니라 실제 SI 값으로 신뢰 가능한 feedb
 
 사용할 sensor부터 최소 기능으로 검증한다.
 
-Hall 예:
+현재 Hall 구성의 수집/추정 경로:
 
 ```text
-GPIO state
+TIM2 CH1/CH2/CH3의 Hall A/B/C
     ↓
-valid Hall state
+XOR edge capture / counter overflow timeout
     ↓
-sector
+GPIO state (A/B/C = bit 2/1/0)
+    ↓
+valid Hall state / sector
     ↓
 direction
     ↓
-speed
+edge-to-edge electrical speed
     ↓
-electrical angle
+sector boundary electrical angle
+    ↓
+완성 feedback snapshot publish
 ```
 
-처음부터 estimator 전체를 만들 필요는 없다.
-
-먼저:
+현재 API 형태의 전체 계약은
+[`hall_driver.h`](../Core/Platform/hall_driver.h)를 따른다.
 
 ```c
-uint8_t hall_driver_get_state(void);
+hall_driver_status_t hall_driver_init(
+    hall_driver_t *self,
+    const hall_driver_config_t *config);
+
+hall_driver_status_t hall_driver_start(hall_driver_t *self);
+
+hall_driver_status_t hall_driver_handle_capture(
+    hall_driver_t *self,
+    TIM_HandleTypeDef *htim);
+
+hall_driver_status_t hall_driver_handle_timeout(
+    hall_driver_t *self,
+    TIM_HandleTypeDef *htim);
+
+hall_driver_status_t hall_driver_get_feedback(
+    const hall_driver_t *self,
+    hall_driver_feedback_t *feedback);
 ```
 
-가 정확한지 확인한다.
+Board/motor별 config에는 TIM handle, Hall A/B/C GPIO mapping, 정방향 Hall sequence,
+prescaler 적용 전 TIM kernel clock 및 electrical angle offset을 둔다. 현재 정방향
+sequence는 다음과 같다.
 
-그 다음 speed/angle estimation을 추가한다.
+```text
+101 -> 100 -> 110 -> 010 -> 011 -> 001 -> 101
+sector 0   1      2      3      4      5
+```
 
-Encoder도 동일한 방식으로 raw acquisition → position → speed 순으로 진행한다.
+정방향은 물리적인 시계/반시계 방향으로 고정된 의미가 아니라 이 sequence가 증가하는
+사용자 정의 방향이다. Sector는 이 순서에 붙인 논리 번호이며 절대 기계 위치가 아니다.
+
+현재 기본 각도 모델은 sensor가 정확히 60 electrical degree 간격으로 배치되었다고
+가정한다. 유효 transition 뒤 sector 중심에서 정방향은 `-pi/6`, 역방향은 `+pi/6`인
+경계각을 사용한다. Electrical offset은 실제 FOC 전에 rotor flux와 phase 기준으로
+별도 보정해야 한다.
+
+현재 bring-up의 TIM2 counter는 170 MHz timer kernel clock과 prescaler `16`으로
+10 MHz이며, auto-reload `9,999,999`를 사용해 약 1초의 timeout을 만든다. 이 값은
+저속 측정 범위와 정지 판정 지연의 trade-off이므로 motor/application 요구에 따라
+CubeMX config와 driver 입력을 함께 검토한다.
+
+### 확인 순서
+
+1. Hall A/B/C mapping과 `000`, `111` invalid state 검출을 확인한다.
+2. 손으로 정·역회전하며 Hall sequence, sector 및 direction을 확인한다.
+3. 연속된 두 유효 edge에서 signed `omega_e_rad_s`의 크기와 부호를 확인한다.
+4. Timeout 시 `omega_e_rad_s == 0`, `is_timed_out == true`가 되는지 확인한다.
+5. Timeout 직후 첫 edge에서는 속도가 무효이고 다음 edge부터 다시 유효해지는지 확인한다.
+6. `invalid_state_count`, `invalid_transition_count`, `timeout_count`가 의도한 사건에만 증가하는지 확인한다.
+7. ADC가 TIM2 ISR을 선점하는 구성에서 `hall_driver_get_feedback()`이 완성된 snapshot만 반환하는지 확인한다.
+
+Hall edge 사이의 continuous angle extrapolation, filtering, hysteresis 및 sensor별 위치
+보정은 현재 driver 범위에 포함하지 않는다. 필요해지면 hardware-independent 추정을
+`hall_estimator` 또는 공통 `rotor_estimator`로 분리한다.
+
+### Hall과 encoder 선택
+
+Encoder는 향후 별도 `encoder_driver.c/.h`로 구현한다. Hall mode와 encoder mode가
+같은 TIM2를 사용하므로 한 firmware configuration에서 동시에 시작하지 않는다.
+CubeMX에서 선택한 mode에 맞는 driver 하나만 App에서 초기화한다.
+
+Hall feedback은 절대 기계 원점, multi-turn 위치 또는 위치제어에 필요한 연속 기계각을
+제공하지 않는다. 따라서 현재 Hall-only configuration의 목표는 전기각/전기각속도 기반
+FOC와 속도제어까지이며 위치제어는 지원 범위에서 제외한다. 위치제어 단계에서는 encoder
+등 필요한 위치 관측 가능성을 제공하는 feedback 구성을 먼저 마련해야 한다.
+
+Encoder도 raw acquisition → position → speed 순으로 작은 단계부터 검증한다.
 
 ### 완료 조건
 
-회전 방향, 기계각/전기각, 속도의 의미와 단위가 일관되고 실제 회전과 맞는다.
+선택한 feedback 장치가 제공하는 범위 안에서 회전 방향, 전기각/기계각 및 속도의 의미와
+단위가 일관되고 실제 회전과 맞는다. Hall 구성에서는 invalid state/transition, timeout,
+재동기화 동작과 FOC에 사용할 electrical offset까지 별도로 검증한다.
 
 ---
 
@@ -623,6 +687,10 @@ FOC
 
 `motor_control`이 cascade를 orchestration한다.
 
+이 단계는 feedback 장치가 위치제어에 필요한 연속 기계각과 원점 기준을 제공할 때만
+진행한다. 현재 Hall-only configuration은 이 조건을 만족하지 않으므로 위치제어 mode를
+제공하지 않는다. 향후 encoder를 사용할 때 원점/index 처리와 multi-turn 정책을 먼저 정한다.
+
 ---
 
 # 17. Stage 13 — State Machine / Communication / Diagnostics
@@ -665,6 +733,7 @@ Git tag를 사용할 경우 예:
 ```text
 bringup-pwm-v1
 bringup-adc-sync-v1
+bringup-hall-v1
 open-loop-svpwm-v1
 current-control-v1
 speed-control-v1

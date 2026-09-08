@@ -72,6 +72,15 @@ motor_control / FOC
 
 각 module의 내부 state가 필요한 경우에도 외부에 전달되는 canonical output의 owner를 명확히 한다.
 
+현재 Hall 구성에서는 `hall_driver`가 TIM capture/timeout으로부터 만든 최신
+`hall_driver_feedback_t` snapshot의 owner다. App은 fast loop가 시작될 때
+`hall_driver_get_feedback()`으로 이 snapshot을 읽어 해당 제어 주기의
+`motor_feedback`을 구성한다. Control/FOC는 driver 내부 buffer를 직접 참조하거나
+별도의 Hall 각도를 독립적으로 갱신하지 않는다.
+
+`main.c`의 `hall_test_feedback`은 hardware bring-up 중 debugger 관찰을 위한 임시
+복사본이며 canonical runtime feedback으로 사용하지 않는다.
+
 ---
 
 ## 3. Fast loop
@@ -91,7 +100,9 @@ app_motor_fast_loop()
    ->
 feedback acquire/convert
    ->
-rotor estimate update
+Hall feedback snapshot acquire
+   ->
+rotor estimate/update when configured
    ->
 motor_control fast update
    ->
@@ -150,12 +161,57 @@ App 함수로 분리해도 실행 문맥은 같은 ADC ISR이며, main loop로 �
 지원 ADC 구성, sample 폐기 조건 및 동기 오류 복구 절차의 상세 계약은
 [`adc_driver.h`](../Core/Platform/adc_driver.h)를 따른다.
 
-### ADC / PWM 시작과 정지
+### Hall feedback 갱신과 전달
+
+Hall feedback은 ADC sample 주기마다 새로 측정되는 값이 아니다. TIM2의 XOR Hall
+edge 또는 counter overflow가 발생할 때 비동기적으로 갱신되고, ADC fast loop는
+그 시점까지 publish된 최신 완성본을 읽는다.
+
+```text
+TIM2 XOR Hall edge
+ -> HAL_TIM_IC_CaptureCallback()
+ -> hall_driver_handle_capture()
+ -> inactive feedback buffer 완성
+ -> active index publish
+
+TIM2 counter overflow
+ -> HAL_TIM_PeriodElapsedCallback()
+ -> hall_driver_handle_timeout()
+ -> 정지/0 rad/s 상태 publish
+
+세 ADC injected 변환 완료
+ -> app_motor_fast_loop()
+ -> hall_driver_get_feedback()
+ -> 최신 완성 Hall snapshot 소비
+```
+
+현재 NVIC preemption priority는 ADC1/2와 ADC3가 `0`, TIM2가 `1`이다. 따라서 ADC
+fast loop가 Hall feedback 작성 중 TIM2 ISR을 선점할 수 있다. `hall_driver`는 inactive
+buffer의 모든 field를 완성하고 memory barrier 뒤 active index 하나를 바꾸는 double
+buffer 방식으로 publish한다. ADC reader는 선점 시점에 따라 이전 또는 새 완성본을
+읽지만 두 시점의 field가 섞인 snapshot은 노출되지 않는다.
+
+다음 계약을 유지한다.
+
+- Hall feedback은 `hall_driver_get_feedback()`으로만 읽고 내부 buffer/index를 직접 읽거나 수정하지 않는다.
+- Hall capture/timeout handler를 호출하는 writer는 해당 TIM ISR 하나뿐이다.
+- Hall ISR에서는 FOC/SVPWM을 실행하지 않는다. 제어 stack은 세 ADC 완료로 시작되는 fast loop에서 실행한다.
+- Driver는 Hall edge 사이의 angle extrapolation이나 filtering을 수행하지 않는다.
+- Fast loop는 `has_valid_state`, `has_valid_angle`, `has_valid_speed`, `is_timed_out`을 확인하고
+  사용할 수 없는 feedback으로 제어를 진행하지 않는 정책을 App에서 결정한다.
+- Timeout 뒤 첫 Hall edge의 capture 시간은 완전한 edge-to-edge 간격이 아니므로 속도를
+  계산하지 않는다. 다음 유효 edge부터 속도 계산을 재개한다.
+- Priority 관계나 실행 문맥을 바꾸면 double buffer의 single-writer/reader 선점 전제를
+  다시 검토한다. 자세한 계약은 [`hall_driver.h`](../Core/Platform/hall_driver.h)를 따른다.
+
+### Hall / ADC / PWM 시작과 정지
 
 현재 driver 조합의 시작 순서는 다음과 같다.
 
 ```text
 CubeMX peripheral 초기화 (ADC trigger가 발생하지 않는 상태)
+ -> hall_driver_init(): TIM/GPIO mapping, 정방향 sequence 및 timer 설정 검증
+ -> hall_driver_start(): Hall capture와 overflow timeout interrupt 시작
  -> adc_driver_init(): 매핑 검증과 ADC 자체 calibration
  -> adc_driver_start(): regular 및 세 injected 그룹을 trigger 대기 상태로 준비
  -> pwm_driver_init(): HRTIM counter 시작과 동기화
@@ -171,6 +227,12 @@ App이 startup 상태를 구분하여 PWM driver 초기화 완료 전에 duty �
 ADC 정지/재동기화 시에는 App/Platform 통합 경로에서 trigger를 막고 진행 중인 ISR 처리가
 끝난 뒤 `adc_driver_stop()`을 호출한다. 재시작도 trigger를 막은 상태에서 ADC를 먼저 준비한다.
 ADC driver는 PWM/time base를 직접 제어하지 않는다.
+
+Hall timer는 PWM/ADC trigger와 독립적으로 먼저 시작할 수 있지만, rotor feedback을 사용하는
+fast loop가 시작되기 전에는 준비되어 있어야 한다. `hall_driver_stop()`은 마지막 Hall
+state/sector/angle과 diagnostic counter를 보존하면서 속도를 `0 rad/s`로 만들고
+`has_valid_speed`를 false로 설정한다. 정지 중에도 rotor 움직임을 관찰해야 하는 시스템이면
+PWM output 정지와 Hall timer 정지를 동일한 동작으로 묶지 않고 App state policy로 결정한다.
 
 ---
 
@@ -191,6 +253,10 @@ ISR/callback은:
 - HAL callback에서 global variable를 여기저기 갱신
 - controller 간 실행 순서를 callback 파일에 분산
 - blocking communication
+
+현재 HAL TIM callback은 `main.c`의 CubeMX USER CODE 영역에서 event source를 확인하고
+대응하는 Hall handler만 호출한다. 향후 App 통합 후에도 Hall callback 안에 motor-control
+stack을 직접 넣지 않고, 세 ADC 완료 callback에서 시작하는 fast-loop entry point를 유지한다.
 
 ---
 
@@ -280,6 +346,10 @@ command.i_d_ref / i_q_ref
 ```
 
 controller끼리 서로 호출하지 않고 `motor_control`이 routing한다.
+
+위 Position mode는 필요한 위치 feedback이 제공되는 구성의 일반적인 routing이다.
+현재 Hall-only configuration은 절대 기계 원점과 연속 기계각을 제공하지 않으므로
+Position mode를 지원하지 않는다.
 
 ---
 
