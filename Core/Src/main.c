@@ -22,6 +22,7 @@
 /* Private includes ----------------------------------------------------------*/
 /* USER CODE BEGIN Includes */
 #include "adc_driver.h"
+#include "hall_driver.h"
 #include "pwm_driver.h"
 /* USER CODE END Includes */
 
@@ -58,6 +59,7 @@ PCD_HandleTypeDef hpcd_USB_FS;
 /* USER CODE BEGIN PV */
 static pwm_driver_t pwm_driver;
 static adc_driver_t adc_driver;
+static hall_driver_t hall_driver;
 
 static abc_t duty_abc = {
     .a = 0.50f,
@@ -75,6 +77,14 @@ static volatile uint32_t adc_test_not_ready_count;
 static volatile adc_driver_raw_sample_t adc_test_raw;
 static volatile abc_t adc_test_i_abc;
 static volatile float adc_test_v_dc;
+
+/* Hall sensor Live Expressions 확인용 */
+static volatile hall_driver_status_t hall_test_init_status;
+static volatile hall_driver_status_t hall_test_start_status;
+static volatile hall_driver_status_t hall_test_capture_status;
+static volatile hall_driver_status_t hall_test_timeout_status;
+static volatile hall_driver_status_t hall_test_feedback_status;
+static volatile hall_driver_feedback_t hall_test_feedback;
 /* USER CODE END PV */
 
 /* Private function prototypes -----------------------------------------------*/
@@ -94,6 +104,19 @@ static void MX_USB_PCD_Init(void);
 
 /* Private user code ---------------------------------------------------------*/
 /* USER CODE BEGIN 0 */
+static void hall_test_refresh_feedback(void)
+{
+    hall_driver_feedback_t feedback;
+
+    hall_test_feedback_status = hall_driver_get_feedback(
+        &hall_driver,
+        &feedback
+    );
+
+    if (hall_test_feedback_status == HALL_DRIVER_STATUS_OK) {
+        hall_test_feedback = feedback;
+    }
+}
 
 /* USER CODE END 0 */
 
@@ -135,6 +158,52 @@ int main(void)
   MX_USART3_Init();
   MX_USB_PCD_Init();
   /* USER CODE BEGIN 2 */
+  const hall_driver_config_t hall_config = {
+      .timer = &htim2,
+
+      /* Hall state bit 순서: A/B/C = bit 2/1/0 */
+      .hall_a = {
+          .port = GPIOA,
+          .pin = GPIO_PIN_0,
+      },
+      .hall_b = {
+          .port = GPIOA,
+          .pin = GPIO_PIN_1,
+      },
+      .hall_c = {
+          .port = GPIOA,
+          .pin = GPIO_PIN_2,
+      },
+
+      /* 사용자 정의 정방향: 101 -> 100 -> 110 -> 010 -> 011 -> 001 */
+      .hall_state_by_sector = {
+          0x5U,
+          0x4U,
+          0x6U,
+          0x2U,
+          0x3U,
+          0x1U,
+      },
+
+      /* 현재 CubeMX 설정의 APB1 timer kernel clock [Hz] */
+      .timer_clock_hz = 170000000U,
+
+      /* Bring-up용 임시 기준. 실제 FOC 적용 전 rotor flux 기준으로 보정한다. */
+      .electrical_offset_rad = 0.0f,
+  };
+
+  hall_test_init_status = hall_driver_init(&hall_driver, &hall_config);
+  if (hall_test_init_status != HALL_DRIVER_STATUS_OK) {
+      Error_Handler();
+  }
+
+  hall_test_start_status = hall_driver_start(&hall_driver);
+  if (hall_test_start_status != HALL_DRIVER_STATUS_OK) {
+      Error_Handler();
+  }
+
+  hall_test_refresh_feedback();
+
   /* PWM counter가 trigger를 발생시키기 전에 모든 ADC의 보정과 시작을 완료한다. */
   const adc_driver_config_t adc_config = {
       .phase_a = {
@@ -676,11 +745,11 @@ static void MX_HRTIM1_Init(void)
     Error_Handler();
   }
   pDeadTimeCfg.Prescaler = HRTIM_TIMDEADTIME_PRESCALERRATIO_MUL4;
-  pDeadTimeCfg.RisingValue = 100;
+  pDeadTimeCfg.RisingValue = 500;
   pDeadTimeCfg.RisingSign = HRTIM_TIMDEADTIME_RISINGSIGN_POSITIVE;
   pDeadTimeCfg.RisingLock = HRTIM_TIMDEADTIME_RISINGLOCK_WRITE;
   pDeadTimeCfg.RisingSignLock = HRTIM_TIMDEADTIME_RISINGSIGNLOCK_READONLY;
-  pDeadTimeCfg.FallingValue = 100;
+  pDeadTimeCfg.FallingValue = 500;
   pDeadTimeCfg.FallingSign = HRTIM_TIMDEADTIME_FALLINGSIGN_POSITIVE;
   pDeadTimeCfg.FallingLock = HRTIM_TIMDEADTIME_FALLINGLOCK_WRITE;
   pDeadTimeCfg.FallingSignLock = HRTIM_TIMDEADTIME_FALLINGSIGNLOCK_READONLY;
@@ -986,6 +1055,34 @@ void HAL_ADCEx_InjectedConvCpltCallback(ADC_HandleTypeDef *hadc)
     if (is_complete) {
         adc_test_update();
     }
+}
+
+void HAL_TIM_IC_CaptureCallback(TIM_HandleTypeDef *htim)
+{
+    if (htim != &htim2) {
+        return;
+    }
+
+    hall_test_capture_status = hall_driver_handle_capture(
+        &hall_driver,
+        htim
+    );
+
+    hall_test_refresh_feedback();
+}
+
+void HAL_TIM_PeriodElapsedCallback(TIM_HandleTypeDef *htim)
+{
+    if (htim != &htim2) {
+        return;
+    }
+
+    hall_test_timeout_status = hall_driver_handle_timeout(
+        &hall_driver,
+        htim
+    );
+
+    hall_test_refresh_feedback();
 }
 /* USER CODE END 4 */
 
