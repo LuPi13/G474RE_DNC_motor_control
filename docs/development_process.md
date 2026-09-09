@@ -589,6 +589,17 @@ theta += omega * sampling_period_s;
 
 형태로 open-loop rotating voltage vector를 만든다.
 
+현재 구현은 `Core/App/app.c/.h`의 `app_motor_fast_loop()`에서 ADC sample 소비/환산부터
+CORDIC, SVPWM, PWM duty 기록까지 연결한다. `voltage_angle_rad`는 rotor angle이 아니라
+인가할 alpha-beta 전압 vector의 phase이며, command는 전압 크기 [V]와 signed 전기각속도
+[rad/s]로 구성한다. 초기 command는 0 V, 0 rad/s이고 `app_start_open_loop()` 전에는
+ADC feedback만 갱신한다.
+
+Main 쪽 command writer가 ADC ISR에 선점되어도 두 command field가 섞이지 않도록
+double buffer로 전달한다. Writer는 단일 실행 문맥이고 ADC ISR보다 낮은 preemption
+priority여야 한다. 범위를 벗어난 command는 이전 command를 유지하며, 실행 중 하위 module
+오류는 open-loop 정지와 software PWM disable로 이어진다.
+
 ### 검증 목적
 
 FOC current loop 없이도 다음 stack을 확인할 수 있다.

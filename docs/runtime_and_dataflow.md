@@ -179,8 +179,10 @@ void ADC3_IRQHandler(void)
 App의 오류 처리 경로에 연결해야 한다.
 
 HAL callback 정의는 `Core/Src/main.c`의 CubeMX USER CODE 영역에 두고,
-실제 orchestration은 `Core/App/app.c`에 둔다. 현재 bring-up에서는 App 진입점 대신
-`main.c`의 `adc_test_update()`가 raw 수집과 SI 환산만 수행한다.
+실제 orchestration은 `Core/App/app.c`에 둔다. 현재 open-loop bring-up에서는
+`main.c`의 IRQ 후처리 helper가 `app_motor_fast_loop()`을 호출하며, App이 raw sample
+소비와 SI 환산부터 CORDIC/SVPWM/PWM duty 갱신까지 수행한다. Main의 `adc_test_*` 변수는
+App이 성공한 해당 주기 결과를 debugger에서 보기 위한 복사본일 뿐 canonical feedback이 아니다.
 `app_adc_irq_epilogue()`는 `ADC1_2_IRQHandler()`와 `ADC3_IRQHandler()`의 HAL 호출 뒤
 CubeMX USER CODE 영역에서 호출한다. App 함수로 분리해도 실행 문맥은
 같은 ADC ISR이며, main loop로 실행이 이동하지 않는다.
@@ -459,6 +461,34 @@ CPU 170 MHz, fast loop 40 kHz의 한 주기는
 별도로 보존해 비용을 구분한다. IRQ 진입 직전 hardware latency와 최종
 interrupt 복귀 비용은 포함되지 않으므로 interrupt jitter와 duty write deadline을
 위한 margin을 남겨야 한다.
+
+### 현재 open-loop App 연결
+
+Stage 8의 `app_motor_fast_loop()`은 다음 경로를 한 ADC 주기에서 실행한다.
+
+```text
+adc_driver_read_raw / convert
+ -> voltage_angle의 CORDIC sin/cos
+ -> v_alpha_beta
+ -> svpwm_calculate
+ -> pwm_driver_set_duty
+ -> 다음 주기 voltage_angle 적분
+```
+
+Open-loop command는 전압 vector 크기 [V]와 signed electrical angular velocity [rad/s]이며,
+rotor electrical angle과 별개의 값이다. 0 V command는 DC-link가 0 V인 bring-up 상태에서도
+정의되도록 CORDIC/SVPWM을 생략하고 0.5 duty를 사용한다. Command writer와 ADC ISR reader
+사이에는 App이 소유한 double buffer를 사용한다. Writer는 하나이고 ADC ISR보다 낮은
+preemption priority에서 실행해야 한다.
+
+App은 PWM counter 시작 중 발생할 수 있는 ADC event를 소비하되 `app_start_open_loop()` 전에는
+PWM compare를 갱신하지 않는다. 실행 중 ADC/CORDIC/SVPWM/PWM 오류가 발생하면 현재 bring-up
+정책으로 open-loop 갱신을 중지하고 software PWM disable을 시도한다. 이 경로는 hardware
+break/fault와 통합 fault manager를 대신하지 않는다.
+
+Injected 완료 취합 단계의 동기 오류나 HAL ADC 오류는 fast loop가 실행되지 않을 수 있으므로
+`main.c` callback이 `app_handle_adc_error()`에 전달한다. Callback 안에서는 open-loop 중지와
+software PWM disable만 수행하며 CORDIC/SVPWM 계산은 실행하지 않는다.
 
 ---
 
