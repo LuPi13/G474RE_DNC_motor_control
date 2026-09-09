@@ -124,6 +124,7 @@ static void MX_HRTIM1_Init(void);
 static void MX_TIM2_Init(void);
 static void MX_USART3_Init(void);
 static void MX_USB_PCD_Init(void);
+static void MX_CORDIC_Init(void);
 /* USER CODE BEGIN PFP */
 
 /* USER CODE END PFP */
@@ -196,6 +197,7 @@ int main(void)
   MX_TIM2_Init();
   MX_USART3_Init();
   MX_USB_PCD_Init();
+  MX_CORDIC_Init();
   /* USER CODE BEGIN 2 */
   const hall_driver_config_t hall_config = {
       .timer = &htim2,
@@ -622,6 +624,33 @@ static void MX_ADC3_Init(void)
   /* USER CODE BEGIN ADC3_Init 2 */
 
   /* USER CODE END ADC3_Init 2 */
+
+}
+
+/**
+  * @brief CORDIC Initialization Function
+  * @param None
+  * @retval None
+  */
+static void MX_CORDIC_Init(void)
+{
+
+  /* USER CODE BEGIN CORDIC_Init 0 */
+
+  /* USER CODE END CORDIC_Init 0 */
+
+  /* Peripheral clock enable */
+  LL_AHB1_GRP1_EnableClock(LL_AHB1_GRP1_PERIPH_CORDIC);
+
+  /* USER CODE BEGIN CORDIC_Init 1 */
+
+  /* USER CODE END CORDIC_Init 1 */
+
+  /* nothing else to be configured */
+
+  /* USER CODE BEGIN CORDIC_Init 2 */
+
+  /* USER CODE END CORDIC_Init 2 */
 
 }
 
