@@ -22,6 +22,7 @@
 /* Private includes ----------------------------------------------------------*/
 /* USER CODE BEGIN Includes */
 #include "adc_driver.h"
+#include "app.h"
 #include "cordic_driver.h"
 #include "hall_driver.h"
 #include "hall_estimator.h"
@@ -36,7 +37,7 @@
 /* Private define ------------------------------------------------------------*/
 /* USER CODE BEGIN PD */
 
-#define ADC_FAST_LOOP_TEST_FREQUENCY_HZ  40000U
+#define APP_FAST_LOOP_FREQUENCY_HZ  40000U
 
 /* USER CODE END PD */
 
@@ -65,10 +66,11 @@ static pwm_driver_t pwm_driver;
 static adc_driver_t adc_driver;
 static hall_driver_t hall_driver;
 static hall_estimator_t hall_estimator;
+static app_t app;
 
 /* HRTIM Timer C reset과 동기화된 현재 40 kHz fast-loop 주기 [s]. */
 static const float hall_estimator_test_period_s =
-    1.0f / (float)ADC_FAST_LOOP_TEST_FREQUENCY_HZ;
+    1.0f / (float)APP_FAST_LOOP_FREQUENCY_HZ;
 
 static abc_t duty_abc = {
     .a = 0.50f,
@@ -86,6 +88,10 @@ static volatile uint32_t adc_test_not_ready_count;
 static volatile adc_driver_raw_sample_t adc_test_raw;
 static volatile abc_t adc_test_i_abc;
 static volatile float adc_test_v_dc;
+
+/* Open-loop App Live Expressions 확인용. last_error는 정상 주기에도 유지한다. */
+static volatile app_status_t app_test_status;
+static volatile app_status_t app_test_last_error;
 
 /* ADC IRQ 후처리와 fast-loop 실행시간 확인용 */
 static volatile bool adc_fast_loop_pending;
@@ -154,7 +160,7 @@ static void adc_fast_loop_timing_test_init(void)
     DWT->CTRL |= DWT_CTRL_CYCCNTENA_Msk;
 
     adc_fast_loop_budget_cycles =
-        SystemCoreClock / ADC_FAST_LOOP_TEST_FREQUENCY_HZ;
+        SystemCoreClock / APP_FAST_LOOP_FREQUENCY_HZ;
 }
 
 /* USER CODE END 0 */
@@ -296,6 +302,20 @@ int main(void)
       Error_Handler();
   }
 
+  /* PWM counter가 시작되기 전에 App의 ADC/PWM 연결과 안전한 0 V command를 준비한다. */
+  const app_config_t app_config = {
+      .adc_driver = &adc_driver,
+      .pwm_driver = &pwm_driver,
+      .sampling_period_s = 1.0f / (float)APP_FAST_LOOP_FREQUENCY_HZ,
+      .initial_voltage_angle_rad = 0.0f,
+  };
+
+  app_test_status = app_init(&app, &app_config);
+  if (app_test_status != APP_STATUS_OK) {
+      app_test_last_error = app_test_status;
+      Error_Handler();
+  }
+
   /* PWM 초기화 */
   const pwm_driver_config_t pwm_config = {
         .hrtim = &hhrtim1,
@@ -324,6 +344,13 @@ int main(void)
         Error_Handler();
     }
 
+    /* 현재 command는 0 V, 0 rad/s다. 실제 구동값은 App API로 별도 설정한다. */
+    app_test_status = app_start_open_loop(&app);
+    if (app_test_status != APP_STATUS_OK) {
+        app_test_last_error = app_test_status;
+        Error_Handler();
+    }
+
     pwm_test_status = pwm_driver_enable(&pwm_driver);
     if (pwm_test_status != PWM_DRIVER_STATUS_OK) {
         Error_Handler();
@@ -334,15 +361,7 @@ int main(void)
   /* USER CODE BEGIN WHILE */
   while (1)
   {
-      pwm_test_status = pwm_driver_set_duty(&pwm_driver, &duty_abc);
-
-          if (pwm_test_status != PWM_DRIVER_STATUS_OK) {
-              (void)pwm_driver_disable(&pwm_driver);
-              Error_Handler();
-          }
-
-        /* Live Expressions에서 값을 바꿀 시간을 주고 불필요한 register 쓰기를 줄인다. */
-        HAL_Delay(1);
+      HAL_Delay(1);
     /* USER CODE END WHILE */
 
     /* USER CODE BEGIN 3 */
@@ -1125,35 +1144,30 @@ static void hall_estimator_test_update(void)
     }
 }
 
-/* 나중에 App fast loop가 들어갈 자리. 현재는 ADC와 Hall 연속각을 함께 확인한다. */
-static void adc_test_update(void)
+/* App fast loop 결과와 Hall 연속각을 debugger에서 함께 확인한다. */
+static void app_fast_loop_test_update(void)
 {
-    adc_driver_raw_sample_t raw;
-    abc_t i_abc;
-    float v_dc;
+    app_fast_loop_output_t output;
 
-    adc_driver_status_t status = adc_driver_read_raw(&adc_driver, &raw);
-    if (status == ADC_DRIVER_STATUS_NOT_READY) {
+    app_test_status = app_motor_fast_loop(&app, &output);
+    if (app_test_status == APP_STATUS_ADC_NOT_READY) {
         /* 시작 직후 전압이 아직 변환되지 않은 경우 등을 관찰한다. */
         ++adc_test_not_ready_count;
         return;
     }
 
-    if (status != ADC_DRIVER_STATUS_OK) {
-        adc_test_last_error = status;
+    if (app_test_status != APP_STATUS_OK) {
+        app_test_last_error = app_test_status;
+        if (app.last_adc_status != ADC_DRIVER_STATUS_OK) {
+            adc_test_last_error = app.last_adc_status;
+        }
         return;
     }
 
-    status = adc_driver_convert(&adc_driver, &raw, &i_abc, &v_dc);
-    if (status != ADC_DRIVER_STATUS_OK) {
-        adc_test_last_error = status;
-        return;
-    }
-
-    /* 성공한 측정 묶음만 debugger 관찰 변수에 반영한다. */
-    adc_test_raw = raw;
-    adc_test_i_abc = i_abc;
-    adc_test_v_dc = v_dc;
+    /* App이 실제 사용한 측정 묶음만 기존 debugger 관찰 변수에 복사한다. */
+    adc_test_raw = output.raw;
+    adc_test_i_abc = output.i_abc;
+    adc_test_v_dc = output.v_dc;
     ++adc_test_sample_count;
 
     hall_estimator_test_update();
@@ -1182,7 +1196,7 @@ void app_adc_irq_epilogue(void)
     adc_fast_loop_pending = false;
 
     const uint32_t body_start_cycles = DWT->CYCCNT;
-    adc_test_update();
+    app_fast_loop_test_update();
     const uint32_t end_cycles = DWT->CYCCNT;
     const uint32_t body_elapsed_cycles = end_cycles - body_start_cycles;
 
@@ -1220,6 +1234,8 @@ void HAL_ADCEx_InjectedConvCpltCallback(ADC_HandleTypeDef *hadc)
 
     if (status != ADC_DRIVER_STATUS_OK) {
         adc_test_last_error = status;
+        app_test_status = app_handle_adc_error(&app, status);
+        app_test_last_error = app_test_status;
         adc_fast_loop_pending = false;
         adc_fast_loop_cycle_measurement_active = false;
         return;
@@ -1229,6 +1245,22 @@ void HAL_ADCEx_InjectedConvCpltCallback(ADC_HandleTypeDef *hadc)
         /* 실제 계산은 HAL이 현재 ADC의 JEOC/JEOS를 지운 뒤 IRQ 후단에서 실행한다. */
         adc_fast_loop_pending = true;
     }
+}
+
+void HAL_ADC_ErrorCallback(ADC_HandleTypeDef *hadc)
+{
+    if ((hadc != &hadc1) && (hadc != &hadc2) && (hadc != &hadc3)) {
+        return;
+    }
+
+    adc_test_last_error = ADC_DRIVER_STATUS_HAL_ERROR;
+    app_test_status = app_handle_adc_error(
+        &app,
+        ADC_DRIVER_STATUS_HAL_ERROR
+    );
+    app_test_last_error = app_test_status;
+    adc_fast_loop_pending = false;
+    adc_fast_loop_cycle_measurement_active = false;
 }
 
 void HAL_TIM_IC_CaptureCallback(TIM_HandleTypeDef *htim)
