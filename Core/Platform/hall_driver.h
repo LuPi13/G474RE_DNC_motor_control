@@ -47,7 +47,8 @@
  * 2. hall_driver_init()으로 mapping과 peripheral 설정을 검증한다.
  * 3. hall_driver_start()로 capture와 overflow timeout interrupt를 시작한다.
  * 4. HAL TIM callback에서 대응하는 handler를 호출한다.
- * 5. 상위 계층은 hall_driver_get_feedback()으로 완성된 최신 snapshot을 읽는다.
+ * 5. Fast-loop는 hall_driver_get_rotor_feedback()으로 경량 snapshot을 읽고,
+ *    진단 경로는 hall_driver_get_feedback()으로 전체 snapshot을 읽는다.
  *
  * @{
  */
@@ -166,6 +167,27 @@ typedef struct {
 } hall_driver_feedback_t;
 
 /**
+ * @brief Fast-loop rotor estimator에 필요한 Hall feedback의 경량 snapshot.
+ *
+ * hall_driver_feedback_t의 hardware diagnostic field를 매 fast-loop 주기마다
+ * 복사하지 않도록 rotor angle/speed 관측에 필요한 값만 제공한다.
+ * 이 구조체는 별도 runtime state의 owner가 아니라 active feedback buffer의
+ * 읽기 전용 snapshot이다.
+ */
+typedef struct {
+    float theta_e_rad;   /**< Hall sector 중심 또는 edge 전기각 [rad]. */
+    float omega_e_rad_s; /**< 방향 부호가 있는 전기각속도 [rad/s]. */
+    uint32_t transition_count; /**< 수락한 유효 Hall transition 누적 횟수. */
+    uint8_t sector;             /**< 0부터 5까지의 최신 sector 또는 HALL_DRIVER_INVALID_SECTOR. */
+    bool has_valid_state;      /**< Hall state와 sector가 유효함. */
+    bool has_valid_direction;  /**< 최신 transition 방향이 유효함. */
+    bool has_valid_angle;      /**< theta_e_rad를 사용할 수 있음. */
+    bool has_valid_speed;      /**< omega_e_rad_s를 사용할 수 있음. */
+    bool is_angle_from_edge;   /**< 각도가 임시 sector 중심이 아니라 Hall edge 기준임. */
+    bool is_timed_out;         /**< Hall 변화 timeout으로 정지 상태가 확정됨. */
+} hall_driver_rotor_feedback_t;
+
+/**
  * @brief Hall driver 설정, lookup table 및 runtime 상태를 소유하는 instance.
  *
  * 최초 사용 전 0으로 초기화하고 init 이후 내부 필드를 application에서 직접 변경하지 않는다.
@@ -279,6 +301,7 @@ hall_driver_status_t hall_driver_stop(hall_driver_t *self);
  * @retval HALL_DRIVER_STATUS_INVALID_TRANSITION 이전 sector와 인접하지 않은 transition임.
  * @retval HALL_DRIVER_STATUS_INVALID_CAPTURE CH1 callback이 아니거나 capture tick이 0임.
  * @see hall_driver_get_feedback()
+ * @see hall_driver_get_rotor_feedback()
  */
 hall_driver_status_t hall_driver_handle_capture(
     hall_driver_t *self,
@@ -326,6 +349,25 @@ hall_driver_status_t hall_driver_handle_timeout(
 hall_driver_status_t hall_driver_get_feedback(
     const hall_driver_t *self,
     hall_driver_feedback_t *feedback
+);
+
+/**
+ * @brief Active Hall buffer에서 rotor estimator용 필수 field만 snapshot으로 읽는다.
+ *
+ * @param[in] self 초기화된 Hall driver instance.
+ * @param[out] feedback 성공 시 sector, 각도, 속도, transition과 validity field를 받는다.
+ *
+ * @details Active index를 한 번만 읽은 뒤 같은 double buffer에서 필요한 field만
+ *          복사한다. hall_driver_get_feedback()과 같은 snapshot 동시성 계약을 따른다.
+ * @note Fast-loop의 rotor angle/speed 경로에서 사용한다. 전체 Hall diagnostic이
+ *       필요하면 hall_driver_get_feedback()을 사용한다.
+ *
+ * @retval HALL_DRIVER_STATUS_OK Rotor feedback 복사 완료.
+ * @retval HALL_DRIVER_STATUS_INVALID_ARGUMENT self/feedback이 NULL이거나 instance가 초기화되지 않음.
+ */
+hall_driver_status_t hall_driver_get_rotor_feedback(
+    const hall_driver_t *self,
+    hall_driver_rotor_feedback_t *feedback
 );
 
 /** @} */

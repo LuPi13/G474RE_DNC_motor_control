@@ -726,3 +726,32 @@ hall_driver_status_t hall_driver_get_feedback(
 
     return HALL_DRIVER_STATUS_OK;
 }
+
+hall_driver_status_t hall_driver_get_rotor_feedback(
+    const hall_driver_t *self,
+    hall_driver_rotor_feedback_t *feedback
+)
+{
+    if ((self == NULL) || (feedback == NULL) || !self->is_initialized) {
+        return HALL_DRIVER_STATUS_INVALID_ARGUMENT;
+    }
+
+    const uint32_t active_index = self->active_feedback_index;
+    __DMB();
+
+    const volatile hall_driver_feedback_t *source =
+        &self->feedback_buffer[active_index];
+
+    feedback->theta_e_rad = source->theta_e_rad;
+    feedback->omega_e_rad_s = source->omega_e_rad_s;
+    feedback->transition_count = source->transition_count;
+    feedback->sector = source->sector;
+    feedback->has_valid_state = source->has_valid_state;
+    feedback->has_valid_direction = source->has_valid_direction;
+    feedback->has_valid_angle = source->has_valid_angle;
+    feedback->has_valid_speed = source->has_valid_speed;
+    feedback->is_angle_from_edge = source->is_angle_from_edge;
+    feedback->is_timed_out = source->is_timed_out;
+
+    return HALL_DRIVER_STATUS_OK;
+}
