@@ -471,6 +471,8 @@ Algorithm 구현 권장 순서:
 ```text
 transform
     ↓
+limiter / rate_limiter
+    ↓
 pi_controller
     ↓
 svpwm
@@ -492,6 +494,19 @@ Clarke 변환을 사용한다. inverse Clarke는 `a + b + c = 0`을 가정하며
 Park 변환은 양의 전기각에 대해 alpha-beta vector를 `-theta`만큼 회전하는
 부호 규약을 사용한다. Park와 inverse Park에는 같은 각도에서 한 번 계산한
 `sin_theta`, `cos_theta`를 전달해 재사용한다.
+
+## Limiter test
+
+`limiter_clamp()`은 범위 안의 값과 상·하한 밖의 값을 확인한다.
+
+`rate_limiter`는 다음을 확인한다.
+
+- 비대칭 상승·하강 rate
+- target 도달 시 overshoot 없이 정확히 정착
+- runtime rate 변경 시 output 연속성 유지
+- 0 rate 방향의 출력 정지
+- reset
+- 잘못된 rate/sampling period 거부
 
 ## PI controller test
 

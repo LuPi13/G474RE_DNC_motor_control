@@ -25,7 +25,8 @@ Project/
 │  │  ├─ transform.c / transform.h
 │  │  ├─ svpwm.c / svpwm.h
 │  │  ├─ filter.c / filter.h
-│  │  └─ limiter.h
+│  │  ├─ limiter.h
+│  │  └─ rate_limiter.c / rate_limiter.h
 │  ├─ Platform/
 │  │  ├─ pwm_driver.c / pwm_driver.h
 │  │  ├─ adc_driver.c / adc_driver.h
@@ -95,6 +96,7 @@ CubeMX 생성 영역인 `Core/Src`, `Core/Inc`와 사용자 소유 계층 디렉
 - Clarke/Park
 - SVPWM
 - limiter
+- rate limiter
 - filter
 - 기타 수학 알고리즘
 

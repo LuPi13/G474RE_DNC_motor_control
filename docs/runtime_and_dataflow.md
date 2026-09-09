@@ -42,6 +42,22 @@ typedef struct {
 
 하나의 거대한 `sMotor`에 hardware instance, sensor raw data, command, controller state, fault/state machine을 모두 몰아넣지 않는다.
 
+외부 통신이 step 형태의 command를 갱신하더라도 controller reference에 직접 전달하지 않고,
+필요한 command 범위를 먼저 제한한 뒤 고정 주기 rate limiter를 거쳐 전달할 수 있다.
+
+```text
+external command
+  -> command range clamp
+  -> rate limiter
+  -> limited reference
+  -> controller
+```
+
+통신 수신 경로는 target만 갱신하며 rate limiter는 통신 packet 도착 시점이 아니라 해당
+reference를 소비하는 scheduler의 고정 주기에서 실행한다. Runtime rate 변경도 limiter
+instance를 통신/ISR 양쪽에서 직접 수정하지 않고 같은 scheduler 문맥에서 적용한다.
+정상 stop ramp와 달리 fault/emergency shutdown은 rate limiter를 우회해 즉시 안전 출력을 적용한다.
+
 ---
 
 ## 2. Single source of truth
