@@ -423,13 +423,23 @@ CORDIC은 독립적으로 검증한다.
 권장 API:
 
 ```c
-void cordic_driver_sin_cos(
+cordic_driver_status_t cordic_driver_init(void);
+
+cordic_driver_status_t cordic_driver_sin_cos(
     float theta_rad,
     float *sin_theta,
     float *cos_theta);
+
+cordic_driver_status_t cordic_driver_cartesian_to_polar(
+    float x,
+    float y,
+    float *magnitude,
+    float *theta_rad);
 ```
 
-Q31 변환은 driver 내부에 가둔다.
+Q31 변환은 driver 내부에 가둔다. `sin_cos`는 [rad]를 받고 무차원 sine/cosine을
+반환한다. `cartesian_to_polar`는 Q1.31 포화를 피하도록 두 입력을 같은 비율로 내부
+scaling하고, 입력과 같은 단위의 magnitude 및 [-pi, pi) [rad] phase를 반환한다.
 
 ### 최소 test point
 
@@ -441,6 +451,8 @@ pi
 ```
 
 `math.h`의 `sinf/cosf`와 비교하는 reference test를 권장한다.
+직교-극좌표 변환은 축 방향, 사분면, 영벡터와 `(3, 4)`처럼 Q1.31 범위를 넘는
+입력을 포함해 `sqrtf/atan2f` reference와 비교한다.
 
 ### 완료 조건
 

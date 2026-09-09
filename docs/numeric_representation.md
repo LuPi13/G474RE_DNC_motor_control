@@ -51,7 +51,7 @@ FOC가 Q31이라는 representation을 직접 알 필요는 없다.
 권장 public API:
 
 ```c
-void cordic_driver_sin_cos(
+cordic_driver_status_t cordic_driver_sin_cos(
     float theta_rad,
     float *sin_theta,
     float *cos_theta);

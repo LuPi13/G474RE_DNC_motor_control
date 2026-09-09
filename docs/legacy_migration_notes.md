@@ -157,6 +157,12 @@ CORDIC boundary
 
 `theta / pi` 같은 normalization은 CORDIC driver 내부에 제한한다.
 
+Legacy `CORDIC_SinCos()`는 CORDIC을 `SINE` function으로 설정하고도 첫 번째 결과를
+cosine, 두 번째 결과를 sine에 저장했다. STM32 CORDIC의 `SINE` 결과 순서는
+`RES1 = sin(theta)`, `RES2 = cos(theta)`이므로 신규 driver에서는 이 순서로 읽는다.
+Legacy 호출부의 변수명만 보고 결과 순서를 복사하지 않으며, 기본 각도의 sine/cosine을
+reference와 대조한다.
+
 ---
 
 ## 7. PI initializer positional argument 위험
