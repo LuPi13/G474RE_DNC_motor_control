@@ -74,8 +74,9 @@ motor_control / FOC
 
 현재 Hall 구성에서는 `hall_driver`가 TIM capture/timeout으로부터 만든 최신
 `hall_driver_feedback_t` snapshot의 owner다. App은 fast loop가 시작될 때
-`hall_driver_get_feedback()`으로 이 snapshot을 읽어 해당 제어 주기의
-`motor_feedback`을 구성한다. Control/FOC는 driver 내부 buffer를 직접 참조하거나
+`hall_driver_get_rotor_feedback()`으로 필요한 rotor field만 읽어 해당 제어 주기의
+`motor_feedback`을 구성한다. 전체 diagnostic snapshot은 저속 진단 경로에서
+`hall_driver_get_feedback()`으로 읽는다. Control/FOC는 driver 내부 buffer를 직접 참조하거나
 별도의 Hall 각도를 독립적으로 갱신하지 않는다.
 
 `main.c`의 `hall_test_feedback`은 hardware bring-up 중 debugger 관찰을 위한 임시
@@ -96,6 +97,12 @@ ISR/callback
    ->
 ADC driver가 3상 injected 완료 취합
    ->
+fast-loop pending 표시
+   ->
+HAL IRQ 처리 종료 및 현재 ADC flag 정리
+   ->
+ADC IRQ 후처리
+   ->
 app_motor_fast_loop()
    ->
 feedback acquire/convert
@@ -114,7 +121,8 @@ PWM duty write
 HAL callback에는 로직을 길게 작성하지 않는다.
 
 현재 전류는 서로 다른 세 ADC의 injected 변환으로 수집한다. 따라서 callback마다
-fast loop를 실행하지 않고, driver가 세 상의 완료를 취합한 뒤 한 번만 호출한다.
+fast loop를 실행하지 않고, driver가 세 상의 완료를 취합한 뒤 pending을
+한 번만 표시한다. Callback은 즉시 반환하고 fast loop는 HAL IRQ 처리 후에 실행한다.
 
 향후 App 연결 예 (`adc_driver`는 초기화/시작된 instance):
 
@@ -131,8 +139,23 @@ void HAL_ADCEx_InjectedConvCpltCallback(ADC_HandleTypeDef *hadc)
     }
 
     if (is_complete) {
-        app_motor_fast_loop();
+        adc_fast_loop_pending = true;
     }
+}
+
+void ADC1_2_IRQHandler(void)
+{
+    app_adc_irq_prologue();
+    HAL_ADC_IRQHandler(&hadc1);
+    HAL_ADC_IRQHandler(&hadc2);
+    app_adc_irq_epilogue();
+}
+
+void ADC3_IRQHandler(void)
+{
+    app_adc_irq_prologue();
+    HAL_ADC_IRQHandler(&hadc3);
+    app_adc_irq_epilogue();
 }
 ```
 
@@ -142,11 +165,20 @@ App의 오류 처리 경로에 연결해야 한다.
 HAL callback 정의는 `Core/Src/main.c`의 CubeMX USER CODE 영역에 두고,
 실제 orchestration은 `Core/App/app.c`에 둔다. 현재 bring-up에서는 App 진입점 대신
 `main.c`의 `adc_test_update()`가 raw 수집과 SI 환산만 수행한다.
-App 함수로 분리해도 실행 문맥은 같은 ADC ISR이며, main loop로 실행이 이동하지 않는다.
+`app_adc_irq_epilogue()`는 `ADC1_2_IRQHandler()`와 `ADC3_IRQHandler()`의 HAL 호출 뒤
+CubeMX USER CODE 영역에서 호출한다. App 함수로 분리해도 실행 문맥은
+같은 ADC ISR이며, main loop로 실행이 이동하지 않는다.
+
+STM32 HAL은 `HAL_ADCEx_InjectedConvCpltCallback()`이 반환된 뒤 현재
+JEOC/JEOS flag를 정리한다. Callback 안에서 다음 PWM 주기까지 걸릴 수 있는
+계산을 실행하면, 계산 중 새로 설정된 완료 flag까지 HAL의 후속 clear에
+손실될 수 있다. 이 위험을 피하기 위해 callback은 driver 취합과 pending 표시만
+수행하고, fast loop는 HAL이 현재 flag를 정리한 뒤 IRQ 후처리에서 실행한다.
 
 ### Sample 소비와 실행 조건
 
-- App fast loop는 완료 판정 직후 같은 ISR 흐름에서 `adc_driver_read_raw()`로 묶음을 한 번 소비한다.
+- App fast loop는 완료 판정 직후 같은 ADC ISR의 HAL 처리 후에서
+  `adc_driver_read_raw()`로 묶음을 한 번 소비한다.
 - Vdc는 외부 trigger에 의한 단일 regular 변환 결과를 DMA 없이 읽는다.
   읽을 때 새 변환을 시작하거나 완료를 polling하지 않는다.
 - 전압 변환은 읽기 전에 완료되어야 하고, 읽는 동안 다음 전압 변환이 완료되지 않아야 한다.
@@ -180,9 +212,12 @@ TIM2 counter overflow
  -> 정지/0 rad/s 상태 publish
 
 세 ADC injected 변환 완료
+ -> fast-loop pending 표시
+ -> HAL ADC flag 정리
+ -> ADC IRQ 후처리
  -> app_motor_fast_loop()
- -> hall_driver_get_feedback()
- -> 최신 완성 Hall snapshot 소비
+ -> hall_driver_get_rotor_feedback()
+ -> 최신 완성 Hall rotor snapshot 소비
 ```
 
 현재 NVIC preemption priority는 ADC1/2와 ADC3가 `0`, TIM2가 `1`이다. 따라서 ADC
@@ -193,10 +228,19 @@ buffer 방식으로 publish한다. ADC reader는 선점 시점에 따라 이전 
 
 다음 계약을 유지한다.
 
-- Hall feedback은 `hall_driver_get_feedback()`으로만 읽고 내부 buffer/index를 직접 읽거나 수정하지 않는다.
+- Fast-loop rotor feedback은 `hall_driver_get_rotor_feedback()`으로 읽고, 전체 diagnostic
+  snapshot이 필요한 경로는 `hall_driver_get_feedback()`을 사용한다. 내부 buffer/index는
+  직접 읽거나 수정하지 않는다.
 - Hall capture/timeout handler를 호출하는 writer는 해당 TIM ISR 하나뿐이다.
 - Hall ISR에서는 FOC/SVPWM을 실행하지 않는다. 제어 stack은 세 ADC 완료로 시작되는 fast loop에서 실행한다.
 - Driver는 Hall edge 사이의 angle extrapolation이나 filtering을 수행하지 않는다.
+- 현재 Hall estimator는 마지막 유효 edge 이후 `abs(omega_e) * elapsed_s`를 적분하되,
+  이동량을 이상적인 한 Hall sector 폭인 `pi/3`으로 제한한다. Signed speed가 양수이면
+  edge 각도에서 증가하고 음수이면 감소하며, 다음 Hall edge가 없으면 해당 방향의 sector
+  출구 경계에서 대기한다. 따라서 Hall state 변화 없이 추정각만 다음 sector로 넘어가지 않는다.
+- 경량 Hall snapshot은 최신 sector도 함께 전달한다. Estimator는 transition count와 validity
+  flag뿐 아니라 sector 변화도 관측 갱신으로 취급하므로, 연속된 비인접 transition 오류에서
+  sector 중심각이 바뀌어도 이전 관측을 잘못 재사용하지 않는다.
 - Fast loop는 `has_valid_state`, `has_valid_angle`, `has_valid_speed`, `is_timed_out`을 확인하고
   사용할 수 없는 feedback으로 제어를 진행하지 않는 정책을 App에서 결정한다.
 - Timeout 뒤 첫 Hall edge의 capture 시간은 완전한 edge-to-edge 간격이 아니므로 속도를
@@ -256,7 +300,8 @@ ISR/callback은:
 
 현재 HAL TIM callback은 `main.c`의 CubeMX USER CODE 영역에서 event source를 확인하고
 대응하는 Hall handler만 호출한다. 향후 App 통합 후에도 Hall callback 안에 motor-control
-stack을 직접 넣지 않고, 세 ADC 완료 callback에서 시작하는 fast-loop entry point를 유지한다.
+stack을 직접 넣지 않고, 세 ADC 완료 callback이 pending을 표시한 뒤
+HAL 처리 후 ADC IRQ 후처리에서 fast-loop entry point를 실행하는 구조를 유지한다.
 
 ---
 
@@ -383,6 +428,15 @@ Preload는 CPU가 세 값을 모두 쓸 때까지 update를 기다려주는 기�
 따라서 App은 ADC 완료부터 제어/SVPWM 계산과 마지막 compare 쓰기까지의 실행 시간을
 목표 update deadline 안에 확보해야 한다. 순차 쓰기 자체를 동시 반영 불가로 해석하지 않는다.
 API 상세 계약은 [`pwm_driver.h`](../Core/Platform/pwm_driver.h)를 따른다.
+
+Bring-up 단계에서는 Cortex-M DWT cycle counter로 첫 ADC IRQ 진입부터
+fast-loop entry point 종료까지의 cycle을 측정할 수 있다. 예를 들어
+CPU 170 MHz, fast loop 40 kHz의 한 주기는
+`170000000 / 40000 = 4250 cycles`이다. 측정 구간이 HAL IRQ 진입/처리 비용을
+포함하도록 IRQ prologue/epilogue에서 측정하며, fast-loop body만의 값도
+별도로 보존해 비용을 구분한다. IRQ 진입 직전 hardware latency와 최종
+interrupt 복귀 비용은 포함되지 않으므로 interrupt jitter와 duty write deadline을
+위한 margin을 남겨야 한다.
 
 ---
 

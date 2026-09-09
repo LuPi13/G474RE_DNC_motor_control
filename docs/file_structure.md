@@ -423,32 +423,36 @@ voltage_sensor.c
 분리 기준은 파일 길이가 아니라 **peripheral access와 sensor calibration/conversion이 독립적으로 변하기 시작하는지**다.
 
 현재 bring-up 단계의 `hall_driver`는 GPIO/TIM capture뿐 아니라 Hall sequence에 직접
-결합된 sector, direction, edge-to-edge electrical speed 및 기본 electrical angle 계산까지
-함께 제공한다. 이 계산들은 TIM capture/timeout 의미와 강하게 결합되어 있고 아직 독립적인
-estimator 정책이 필요하지 않으므로 초기 Platform boundary 안에 두는 것을 허용한다.
+결합된 sector, direction, edge-to-edge electrical speed 및 Hall edge angle 계산까지
+제공한다. 이 계산들은 TIM capture/timeout 의미와 강하게 결합되어 있으므로 Platform
+boundary에 둔다.
+
+Hall edge 사이의 continuous electrical angle은 Control의 `hall_estimator`가 소유한다.
+Estimator는 hardware-independent observation을 받아 직전 signed speed를 적분하고,
+새 Hall edge에서 동기화하며, Hall state 변화 없이 추정각만 다음 sector로 넘어가지 않도록
+이동량을 `pi/3`으로 제한한다. HAL이나 `hall_driver.h`에는 직접 의존하지 않는다.
 
 또한 TIM2 writer보다 ADC reader의 interrupt priority가 높은 현재 구성에서 일관된 feedback을
 전달하기 위해 `hall_driver` instance가 double buffer와 active index를 소유한다. 이것은
 hardware interrupt 경계의 snapshot 전달 책임이며 Control의 중복 rotor state가 아니다.
 
-다음 중 하나가 필요해지면 acquisition과 estimation을 분리한다.
+현재 구조보다 추정 책임을 더 세분화하거나 공통화해야 하는 조건은 다음과 같다.
 
-- Hall edge 사이의 continuous angle extrapolation
 - filtering, hysteresis 또는 motor별 sensor 위치 보정
-- hardware와 독립된 estimator 단위 테스트
+- acceleration model, PLL 또는 sensorless phase correction
 - Hall, encoder, EEMF 등 여러 feedback source의 runtime 선택/공통화
 
-분리할 경우의 목표 구조는 다음과 같다.
+현재 구조와 향후 공통화 목표는 다음과 같다.
 
 ```text
 hall_driver
-  : GPIO / timer / raw state
+  : GPIO / timer / Hall state / sector / direction / edge angle / edge speed
 
 hall_estimator
-  : direction / speed / electrical angle
+  : edge 사이의 continuous electrical angle / sector 범위 제한
 
 rotor_estimator
-  : Hall / encoder / EEMF 등의 공통 interface
+  : Hall / encoder / EEMF 등의 runtime 선택과 공통 interface (향후)
 ```
 
 ---

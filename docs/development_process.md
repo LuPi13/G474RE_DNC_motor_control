@@ -339,6 +339,18 @@ hall_driver_status_t hall_driver_handle_timeout(
 hall_driver_status_t hall_driver_get_feedback(
     const hall_driver_t *self,
     hall_driver_feedback_t *feedback);
+
+hall_driver_status_t hall_driver_get_rotor_feedback(
+    const hall_driver_t *self,
+    hall_driver_rotor_feedback_t *feedback);
+
+hall_estimator_status_t hall_estimator_init(hall_estimator_t *self);
+
+hall_estimator_status_t hall_estimator_update(
+    hall_estimator_t *self,
+    const hall_estimator_observation_t *observation,
+    float elapsed_s,
+    hall_estimator_output_t *output);
 ```
 
 Board/motor별 config에는 TIM handle, Hall A/B/C GPIO mapping, 정방향 Hall sequence,
@@ -371,11 +383,17 @@ CubeMX config와 driver 입력을 함께 검토한다.
 4. Timeout 시 `omega_e_rad_s == 0`, `is_timed_out == true`가 되는지 확인한다.
 5. Timeout 직후 첫 edge에서는 속도가 무효이고 다음 edge부터 다시 유효해지는지 확인한다.
 6. `invalid_state_count`, `invalid_transition_count`, `timeout_count`가 의도한 사건에만 증가하는지 확인한다.
-7. ADC가 TIM2 ISR을 선점하는 구성에서 `hall_driver_get_feedback()`이 완성된 snapshot만 반환하는지 확인한다.
+7. ADC가 TIM2 ISR을 선점하는 구성에서 `hall_driver_get_rotor_feedback()`과
+   `hall_driver_get_feedback()`이 완성된 snapshot만 반환하는지 확인한다.
+8. `hall_estimator`가 정방향에서는 증가, 역방향에서는 감소하는 연속 전기각을 만드는지 확인한다.
+9. `0`과 `2*pi` 경계에서 전기각이 [0, 2*pi) 범위로 정상 wrap되는지 확인한다.
+10. 다음 Hall edge가 늦으면 이동량이 `pi/3`으로 제한되고 `is_sector_limited`가 true가 되는지 확인한다.
 
-Hall edge 사이의 continuous angle extrapolation, filtering, hysteresis 및 sensor별 위치
-보정은 현재 driver 범위에 포함하지 않는다. 필요해지면 hardware-independent 추정을
-`hall_estimator` 또는 공통 `rotor_estimator`로 분리한다.
+Hall edge 사이의 continuous angle extrapolation은 현재 Control의 `hall_estimator`가
+담당한다. 직전 signed electrical speed를 적분하고 새 edge에서 동기화하며, 추정 이동량은
+이상적인 한 Hall sector 폭인 `pi/3`을 넘지 않는다. Filtering, hysteresis, sensor별 위치
+보정 및 Hall/encoder/EEMF 공통 선택은 아직 지원하지 않으며, 필요해지면 별도 estimator
+정책 또는 공통 `rotor_estimator`로 확장한다.
 
 ### Hall과 encoder 선택
 
