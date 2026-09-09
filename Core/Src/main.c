@@ -22,6 +22,7 @@
 /* Private includes ----------------------------------------------------------*/
 /* USER CODE BEGIN Includes */
 #include "adc_driver.h"
+#include "cordic_driver.h"
 #include "hall_driver.h"
 #include "hall_estimator.h"
 #include "pwm_driver.h"
@@ -199,6 +200,10 @@ int main(void)
   MX_USB_PCD_Init();
   MX_CORDIC_Init();
   /* USER CODE BEGIN 2 */
+  if (cordic_driver_init() != CORDIC_DRIVER_STATUS_OK) {
+      Error_Handler();
+  }
+
   const hall_driver_config_t hall_config = {
       .timer = &htim2,
 
