@@ -331,6 +331,7 @@ Clarke
   -> d/q current PI
   -> decoupling/feedforward
   -> voltage limitation
+  -> 실제 적용 가능한 d/q 성분을 PI back-calculation에 tracking
   -> inverse Park
 ```
 

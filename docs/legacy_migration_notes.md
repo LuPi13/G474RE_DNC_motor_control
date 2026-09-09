@@ -188,6 +188,11 @@ const pi_controller_config_t config = {
 
 명시적 field name으로 범위 뒤집힘을 줄인다.
 
+Legacy PI는 integral 자체와 scalar output을 각각 같은 범위로 자르므로 proportional 항으로
+output이 포화된 양이나 d/q vector limiter처럼 외부에서 추가로 제한된 양을 적분기에
+되먹이지 못한다. 신규 PI는 scalar saturation 차이에 back-calculation을 적용하고,
+외부 limiter가 결정한 실제 applied output도 별도 tracking할 수 있게 한다.
+
 ---
 
 ## 8. Transform 검증

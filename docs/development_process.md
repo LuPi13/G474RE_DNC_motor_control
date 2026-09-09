@@ -515,7 +515,8 @@ Park 변환은 양의 전기각에 대해 alpha-beta vector를 `-theta`만큼 �
 - proportional response
 - integral accumulation
 - saturation
-- anti-windup
+- scalar saturation의 back-calculation anti-windup
+- 외부에서 추가 제한된 applied output tracking
 - reset
 - output min/max
 
