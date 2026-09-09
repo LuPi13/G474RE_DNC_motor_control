@@ -205,6 +205,11 @@ alpha_beta -> dq -> alpha_beta
 
 zero-sequence 가정과 Clarke scaling convention도 문서화한다.
 
+Legacy `foc.c`의 inverse Clarke는 b/c상의 beta 계수에
+`+/-1/(2*sqrt(3))`을 사용하지만, 같은 파일의 amplitude-invariant Clarke와
+역변환 관계가 되려면 `+/-sqrt(3)/2`여야 한다. 신규 `transform` module에는
+수정된 계수를 사용하고 legacy 식을 복사하지 않는다.
+
 ---
 
 ## 9. Hidden prescaler 제거

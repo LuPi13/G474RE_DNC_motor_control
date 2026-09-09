@@ -487,6 +487,12 @@ alpha_beta -> dq -> alpha_beta
 
 Clarke scaling, sign convention, zero-sequence 가정을 명시한다.
 
+현재 `transform` module은 a상 축과 alpha축을 일치시키는 amplitude-invariant
+Clarke 변환을 사용한다. inverse Clarke는 `a + b + c = 0`을 가정하며,
+Park 변환은 양의 전기각에 대해 alpha-beta vector를 `-theta`만큼 회전하는
+부호 규약을 사용한다. Park와 inverse Park에는 같은 각도에서 한 번 계산한
+`sin_theta`, `cos_theta`를 전달해 재사용한다.
+
 ## PI controller test
 
 확인:
