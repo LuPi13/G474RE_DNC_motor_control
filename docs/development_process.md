@@ -543,6 +543,11 @@ abc_t duty;
 
 SVPWM은 HRTIM register를 직접 쓰지 않는다.
 
+현재 `svpwm` module은 inverse Clarke 뒤 `-(v_max + v_min) / 2`의 common-mode를
+주입하는 min-max 방식을 사용한다. 상전압 span이 `v_dc`를 초과하면 duty를 상별로
+clamp하지 않고 overmodulation을 반환한다. d/q voltage vector limitation과 PI tracking은
+FOC에서 먼저 수행한다.
+
 ### 확인 항목
 
 - sector transition

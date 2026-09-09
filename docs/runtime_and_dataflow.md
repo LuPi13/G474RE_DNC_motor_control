@@ -427,6 +427,12 @@ PWM driver
  -> HRTIM compare register
 ```
 
+FOC는 현재 v_dc와 voltage margin에 맞게 d/q 전압 vector를 제한하고 실제 적용 가능한
+각 축 성분을 PI back-calculation에 tracking한 뒤 v_alpha_beta_ref를 만든다. SVPWM은
+입력 vector의 방향을 바꾸는 별도 overmodulation을 수행하지 않으며, 선형 modulation
+범위를 벗어난 입력은 오류로 반환한다. PWM driver의 최종 duty clamp는 register 보호를
+위한 방어선이지 정상적인 modulation 제한 경로가 아니다.
+
 SVPWM은 HRTIM period count, channel register, dead-time register를 몰라야 한다.
 
 PWM driver는 FOC의 `i_d`, `i_q`, speed reference 등을 몰라야 한다.

@@ -215,6 +215,11 @@ Legacy `foc.c`의 inverse Clarke는 b/c상의 beta 계수에
 역변환 관계가 되려면 `+/-sqrt(3)/2`여야 한다. 신규 `transform` module에는
 수정된 계수를 사용하고 legacy 식을 복사하지 않는다.
 
+Legacy `FOC_SVPWM()`의 min-max common-mode 식 자체는 재사용할 수 있지만 FOC와 SVPWM의
+module 경계가 섞여 있고, v_dc 유효성이나 overmodulation을 확인하지 않은 채 duty를
+계산한다. 신규 `svpwm` module은 같은 modulation 원리를 독립 Algorithm으로 옮기고,
+범위 초과를 호출자가 처리할 수 있는 명시적 status로 반환한다.
+
 ---
 
 ## 9. Hidden prescaler 제거
