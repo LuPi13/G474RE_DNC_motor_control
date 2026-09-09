@@ -56,6 +56,18 @@ void Error_Handler(void);
 
 /* USER CODE BEGIN EFP */
 
+/**
+ * @brief ADC IRQ 진입 시 현재 3상 수집 묶음의 cycle 측정을 시작한다.
+ * @note ADC1_2_IRQHandler()와 ADC3_IRQHandler()의 USER CODE 0에서 호출한다.
+ */
+void app_adc_irq_prologue(void);
+
+/**
+ * @brief ADC IRQ 내부의 HAL 처리가 끝난 뒤 pending fast-loop를 실행한다.
+ * @note ADC1_2_IRQHandler()와 ADC3_IRQHandler()의 USER CODE 1에서 호출한다.
+ */
+void app_adc_irq_epilogue(void);
+
 /* USER CODE END EFP */
 
 /* Private defines -----------------------------------------------------------*/

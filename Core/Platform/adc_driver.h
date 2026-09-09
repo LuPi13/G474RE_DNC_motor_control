@@ -40,8 +40,9 @@
  * 2. Trigger가 발생하지 않는 상태에서 adc_driver_start()를 호출한다.
  * 3. 모든 ADC가 준비되면 PWM time base를 시작한다.
  * 4. Injected callback에서 adc_driver_handle_injected_complete()를 호출한다.
- * 5. 세 전류가 준비되면 같은 ISR 흐름에서 adc_driver_read_raw()와
- *    adc_driver_convert()를 호출하고, 성공한 결과를 App의 feedback에 반영한다.
+ * 5. 세 전류가 준비되면 pending을 표시하고 callback을 즉시 종료한다.
+ * 6. HAL IRQ handler가 현재 injected 완료 flag를 정리한 뒤, 같은 ADC IRQ의
+ *    후처리에서 adc_driver_read_raw()와 adc_driver_convert()를 호출한다.
  *
  * @par 정지와 오류 복구
  * Trigger를 막고 진행 중인 ISR 처리가 끝난 뒤 adc_driver_stop()을 호출한다.
@@ -238,7 +239,8 @@ adc_driver_status_t adc_driver_stop(adc_driver_t *self);
  * @pre 각 ADC의 HAL_ADCEx_InjectedConvCpltCallback()에서 한 번씩 호출한다.
  *      ADC ISR끼리는 서로 선점하지 않아야 하며, 다음 수집 주기 전에 처리를 끝낸다.
  * @post 완료 시 complete_mask는 0, is_sample_ready는 true가 된다.
- *       App은 같은 ISR 흐름에서 adc_driver_read_raw()로 이 묶음을 소비해야 한다.
+ *       App은 같은 ADC IRQ의 HAL 처리 후 adc_driver_read_raw()로 이 묶음을
+ *       소비해야 한다.
  *
  * @details 중복 완료 또는 이전 묶음 미소비를 검출하면 묶음을 폐기하고 동기 오류를 유지한다.
  *          범위 밖 전류도 동기 오류를 유지하며, 이후 호출은 SYNC_ERROR를 반환한다.
@@ -252,10 +254,15 @@ adc_driver_status_t adc_driver_stop(adc_driver_t *self);
  * adc_driver_status_t status = adc_driver_handle_injected_complete(
  *     &adc_driver, hadc, &is_complete);
  * if (status == ADC_DRIVER_STATUS_OK && is_complete) {
- *     app_motor_fast_loop();
+ *     adc_fast_loop_pending = true;
  * }
  * // status 오류와 HAL 오류 callback은 App의 오류 처리 경로에 전달한다.
  * @endcode
+ *
+ * @note HAL_ADC_IRQHandler()는 injected callback이 반환된 뒤 현재 JEOC/JEOS flag를
+ *       정리한다. Callback 안에서 긴 fast-loop를 실행하면 그 사이 발생한
+ *       다음 변환 flag까지 손실될 수 있으므로 callback은 pending만 표시한다.
+ *       Fast-loop는 ADC IRQ handler의 HAL 호출 뒤 USER CODE 후처리에서 실행한다.
  *
  * @retval ADC_DRIVER_STATUS_OK 해당 상을 수집함. 세 상의 완료 여부는 is_complete로 확인.
  * @retval ADC_DRIVER_STATUS_INVALID_ARGUMENT NULL 인자, 초기화되지 않은 instance 또는 등록되지 않은 handle.

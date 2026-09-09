@@ -23,6 +23,7 @@
 /* USER CODE BEGIN Includes */
 #include "adc_driver.h"
 #include "hall_driver.h"
+#include "hall_estimator.h"
 #include "pwm_driver.h"
 /* USER CODE END Includes */
 
@@ -33,6 +34,8 @@
 
 /* Private define ------------------------------------------------------------*/
 /* USER CODE BEGIN PD */
+
+#define ADC_FAST_LOOP_TEST_FREQUENCY_HZ  40000U
 
 /* USER CODE END PD */
 
@@ -60,6 +63,11 @@ PCD_HandleTypeDef hpcd_USB_FS;
 static pwm_driver_t pwm_driver;
 static adc_driver_t adc_driver;
 static hall_driver_t hall_driver;
+static hall_estimator_t hall_estimator;
+
+/* HRTIM Timer C reset과 동기화된 현재 40 kHz fast-loop 주기 [s]. */
+static const float hall_estimator_test_period_s =
+    1.0f / (float)ADC_FAST_LOOP_TEST_FREQUENCY_HZ;
 
 static abc_t duty_abc = {
     .a = 0.50f,
@@ -78,6 +86,17 @@ static volatile adc_driver_raw_sample_t adc_test_raw;
 static volatile abc_t adc_test_i_abc;
 static volatile float adc_test_v_dc;
 
+/* ADC IRQ 후처리와 fast-loop 실행시간 확인용 */
+static volatile bool adc_fast_loop_pending;
+static volatile uint32_t adc_fast_loop_budget_cycles;
+static volatile bool adc_fast_loop_cycle_measurement_active;
+static volatile uint32_t adc_fast_loop_cycle_start;
+static volatile uint32_t adc_fast_loop_cycles_last;
+static volatile uint32_t adc_fast_loop_cycles_max;
+static volatile uint32_t adc_fast_loop_deadline_miss_count;
+static volatile uint32_t adc_fast_loop_body_cycles_last;
+static volatile uint32_t adc_fast_loop_body_cycles_max;
+
 /* Hall sensor Live Expressions 확인용 */
 static volatile hall_driver_status_t hall_test_init_status;
 static volatile hall_driver_status_t hall_test_start_status;
@@ -85,6 +104,13 @@ static volatile hall_driver_status_t hall_test_capture_status;
 static volatile hall_driver_status_t hall_test_timeout_status;
 static volatile hall_driver_status_t hall_test_feedback_status;
 static volatile hall_driver_feedback_t hall_test_feedback;
+
+/* Hall 연속 전기각 추정 Live Expressions 확인용 */
+static volatile hall_estimator_status_t hall_estimator_test_init_status;
+static volatile hall_estimator_status_t hall_estimator_test_update_status;
+static volatile hall_driver_status_t hall_estimator_test_feedback_status;
+static volatile hall_estimator_output_t hall_estimator_test_output;
+static volatile uint32_t hall_estimator_test_update_count;
 /* USER CODE END PV */
 
 /* Private function prototypes -----------------------------------------------*/
@@ -118,6 +144,17 @@ static void hall_test_refresh_feedback(void)
     }
 }
 
+/* Cortex-M4 DWT cycle counter를 켜고 현재 CPU clock 기준 fast-loop budget을 계산한다. */
+static void adc_fast_loop_timing_test_init(void)
+{
+    CoreDebug->DEMCR |= CoreDebug_DEMCR_TRCENA_Msk;
+    DWT->CYCCNT = 0U;
+    DWT->CTRL |= DWT_CTRL_CYCCNTENA_Msk;
+
+    adc_fast_loop_budget_cycles =
+        SystemCoreClock / ADC_FAST_LOOP_TEST_FREQUENCY_HZ;
+}
+
 /* USER CODE END 0 */
 
 /**
@@ -144,6 +181,8 @@ int main(void)
   SystemClock_Config();
 
   /* USER CODE BEGIN SysInit */
+
+  adc_fast_loop_timing_test_init();
 
   /* USER CODE END SysInit */
 
@@ -203,6 +242,11 @@ int main(void)
   }
 
   hall_test_refresh_feedback();
+
+  hall_estimator_test_init_status = hall_estimator_init(&hall_estimator);
+  if (hall_estimator_test_init_status != HALL_ESTIMATOR_STATUS_OK) {
+      Error_Handler();
+  }
 
   /* PWM counter가 trigger를 발생시키기 전에 모든 ADC의 보정과 시작을 완료한다. */
   const adc_driver_config_t adc_config = {
@@ -1006,7 +1050,48 @@ static void MX_GPIO_Init(void)
 }
 
 /* USER CODE BEGIN 4 */
-/* 나중에 App fast loop가 들어갈 자리. 현재는 raw 수집과 A/V 환산만 확인한다. */
+static void hall_estimator_test_update(void)
+{
+    hall_driver_rotor_feedback_t hall_feedback;
+    hall_estimator_output_t estimator_output;
+
+    /* Fast-loop에서는 diagnostic field를 제외한 rotor feedback만 snapshot으로 읽는다. */
+    hall_estimator_test_feedback_status = hall_driver_get_rotor_feedback(
+        &hall_driver,
+        &hall_feedback
+    );
+
+    if (hall_estimator_test_feedback_status != HALL_DRIVER_STATUS_OK) {
+        return;
+    }
+
+    const hall_estimator_observation_t observation = {
+        .theta_e_rad = hall_feedback.theta_e_rad,
+        .omega_e_rad_s = hall_feedback.omega_e_rad_s,
+        .transition_count = hall_feedback.transition_count,
+        .sector = hall_feedback.sector,
+        .has_valid_state = hall_feedback.has_valid_state,
+        .has_valid_direction = hall_feedback.has_valid_direction,
+        .has_valid_angle = hall_feedback.has_valid_angle,
+        .has_valid_speed = hall_feedback.has_valid_speed,
+        .is_angle_from_edge = hall_feedback.is_angle_from_edge,
+        .is_timed_out = hall_feedback.is_timed_out,
+    };
+
+    hall_estimator_test_update_status = hall_estimator_update(
+        &hall_estimator,
+        &observation,
+        hall_estimator_test_period_s,
+        &estimator_output
+    );
+
+    if (hall_estimator_test_update_status == HALL_ESTIMATOR_STATUS_OK) {
+        hall_estimator_test_output = estimator_output;
+        ++hall_estimator_test_update_count;
+    }
+}
+
+/* 나중에 App fast loop가 들어갈 자리. 현재는 ADC와 Hall 연속각을 함께 확인한다. */
 static void adc_test_update(void)
 {
     adc_driver_raw_sample_t raw;
@@ -1036,6 +1121,58 @@ static void adc_test_update(void)
     adc_test_i_abc = i_abc;
     adc_test_v_dc = v_dc;
     ++adc_test_sample_count;
+
+    hall_estimator_test_update();
+}
+
+void app_adc_irq_prologue(void)
+{
+    /* 측정 자체가 IRQ deadline에 주는 영향을 최소화한다. */
+    if (!adc_fast_loop_cycle_measurement_active) {
+        adc_fast_loop_cycle_start = DWT->CYCCNT;
+        adc_fast_loop_cycle_measurement_active = true;
+    }
+}
+
+void app_adc_irq_epilogue(void)
+{
+    if (!adc_fast_loop_pending) {
+        /* 처리한 ADC event가 없는 shared IRQ 재진입은 측정 묶음에서 제외한다. */
+        if ((adc_driver.complete_mask == 0U) && !adc_driver.is_sample_ready) {
+            adc_fast_loop_cycle_measurement_active = false;
+        }
+        return;
+    }
+
+    /* Pending을 먼저 소비해 같은 ADC 묶음을 두 IRQ 후단에서 중복 실행하지 않는다. */
+    adc_fast_loop_pending = false;
+
+    const uint32_t body_start_cycles = DWT->CYCCNT;
+    adc_test_update();
+    const uint32_t end_cycles = DWT->CYCCNT;
+    const uint32_t body_elapsed_cycles = end_cycles - body_start_cycles;
+
+    adc_fast_loop_body_cycles_last = body_elapsed_cycles;
+    if (body_elapsed_cycles > adc_fast_loop_body_cycles_max) {
+        adc_fast_loop_body_cycles_max = body_elapsed_cycles;
+    }
+
+    if (!adc_fast_loop_cycle_measurement_active) {
+        return;
+    }
+
+    /* 첫 ADC IRQ 진입부터 HAL 처리와 fast-loop 종료까지를 측정한다. */
+    const uint32_t elapsed_cycles = end_cycles - adc_fast_loop_cycle_start;
+    adc_fast_loop_cycle_measurement_active = false;
+
+    adc_fast_loop_cycles_last = elapsed_cycles;
+    if (elapsed_cycles > adc_fast_loop_cycles_max) {
+        adc_fast_loop_cycles_max = elapsed_cycles;
+    }
+
+    if (elapsed_cycles >= adc_fast_loop_budget_cycles) {
+        ++adc_fast_loop_deadline_miss_count;
+    }
 }
 
 void HAL_ADCEx_InjectedConvCpltCallback(ADC_HandleTypeDef *hadc)
@@ -1049,11 +1186,14 @@ void HAL_ADCEx_InjectedConvCpltCallback(ADC_HandleTypeDef *hadc)
 
     if (status != ADC_DRIVER_STATUS_OK) {
         adc_test_last_error = status;
+        adc_fast_loop_pending = false;
+        adc_fast_loop_cycle_measurement_active = false;
         return;
     }
 
     if (is_complete) {
-        adc_test_update();
+        /* 실제 계산은 HAL이 현재 ADC의 JEOC/JEOS를 지운 뒤 IRQ 후단에서 실행한다. */
+        adc_fast_loop_pending = true;
     }
 }
 

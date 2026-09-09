@@ -208,10 +208,14 @@ void ADC1_2_IRQHandler(void)
 {
   /* USER CODE BEGIN ADC1_2_IRQn 0 */
 
+  app_adc_irq_prologue();
+
   /* USER CODE END ADC1_2_IRQn 0 */
   HAL_ADC_IRQHandler(&hadc1);
   HAL_ADC_IRQHandler(&hadc2);
   /* USER CODE BEGIN ADC1_2_IRQn 1 */
+
+  app_adc_irq_epilogue();
 
   /* USER CODE END ADC1_2_IRQn 1 */
 }
@@ -237,9 +241,13 @@ void ADC3_IRQHandler(void)
 {
   /* USER CODE BEGIN ADC3_IRQn 0 */
 
+  app_adc_irq_prologue();
+
   /* USER CODE END ADC3_IRQn 0 */
   HAL_ADC_IRQHandler(&hadc3);
   /* USER CODE BEGIN ADC3_IRQn 1 */
+
+  app_adc_irq_epilogue();
 
   /* USER CODE END ADC3_IRQn 1 */
 }
