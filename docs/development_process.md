@@ -644,9 +644,29 @@ fault latch / state transition
 
 hardware emergency path는 software state machine보다 빠르게 동작할 수 있어야 한다.
 
+현재 PCB에는 별도의 gate-driver fault/HRTIM fault 입력이 연결되어 있지 않다. 따라서 현재
+vertical slice는 App 계층 `fault_manager`에서 다음 software 보호를 먼저 제공한다.
+
+- 각 상 `|i_phase| >= 10.0 A`에서 과전류 latch
+- `v_dc >= 79.2 V`에서 DC-link 과전압 latch
+- ADC/CORDIC/SVPWM/PWM 오류 원인 latch
+- Fault 발생 시 open-loop 중지와 `pwm_driver_disable()`
+- PWM 비활성, 0 command, 정상 측정 조건을 확인한 명령 기반 latch 해제
+- 해제 뒤 자동 재시작 금지
+
+상전류 `1.0 A`, DC-link `75.0 V`를 현재 clear hysteresis 기준으로 사용한다. 이 값들은
+제품/보드 설정이며 향후 Config 계층으로 이동할 수 있다. ADC 동기 오류처럼 정상 sample이
+재개되지 않는 경우에는 명령 clear보다 먼저 ADC 재동기화나 MCU reset이 필요하다.
+
+이 software 보호를 hardware 과전류 보호로 간주하지 않는다. 향후 PCB revision에서는
+gate-driver fault 또는 COMP 출력에서 HRTIM fault까지 이어지는 CPU 독립 경로를 추가하고
+실제 신호를 강제로 인가해 output safe state를 검증해야 한다.
+
 ### 완료 조건
 
-잘못된 상태에서 PWM이 확실히 safe state로 들어간다.
+현재 PCB에서는 software fault를 강제로 발생시켜 PWM disable, latch, 차단된 clear,
+정상 clear 및 자동 재시작 금지를 검증한다. HRTIM hardware fault까지 추가되는 보드에서는
+software 실행과 무관하게 PWM이 safe state로 들어가는 것도 별도로 검증한다.
 
 ---
 

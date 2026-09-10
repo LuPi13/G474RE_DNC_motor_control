@@ -482,13 +482,14 @@ rotor electrical angle과 별개의 값이다. 0 V command는 DC-link가 0 V인 
 preemption priority에서 실행해야 한다.
 
 App은 PWM counter 시작 중 발생할 수 있는 ADC event를 소비하되 `app_start_open_loop()` 전에는
-PWM compare를 갱신하지 않는다. 실행 중 ADC/CORDIC/SVPWM/PWM 오류가 발생하면 현재 bring-up
-정책으로 open-loop 갱신을 중지하고 software PWM disable을 시도한다. 이 경로는 hardware
-break/fault와 통합 fault manager를 대신하지 않는다.
+PWM compare를 갱신하지 않는다. 각 유효 sample에서 `fault_manager`가 3상 과전류와 DC-link
+과전압을 먼저 검사한다. 실행 중 threshold 위반이나 ADC/CORDIC/SVPWM/PWM 오류가 발생하면
+원인을 latch하고 open-loop 갱신을 중지한 뒤 software PWM disable을 시도한다. 이 경로는
+현재 PCB에 없는 HRTIM break/fault나 COMP 기반 hardware 긴급 차단을 대신하지 않는다.
 
 Injected 완료 취합 단계의 동기 오류나 HAL ADC 오류는 fast loop가 실행되지 않을 수 있으므로
-`main.c` callback이 `app_handle_adc_error()`에 전달한다. Callback 안에서는 open-loop 중지와
-software PWM disable만 수행하며 CORDIC/SVPWM 계산은 실행하지 않는다.
+`main.c` callback이 `app_handle_adc_error()`에 전달한다. Callback 안에서는 ADC fault latch,
+open-loop 중지와 software PWM disable만 수행하며 CORDIC/SVPWM 계산은 실행하지 않는다.
 
 ---
 
@@ -519,3 +520,40 @@ PWM disable
 ```
 
 low-level driver가 임의로 system state를 변경하지 않는다. 단, hardware emergency shutdown 같은 안전 path는 예외이며 architecture에 명시한다.
+
+### 현재 software fault manager
+
+현재 App은 별도 `fault_manager_t` instance를 연결해 다음 fault를 bitmask로 latch한다.
+
+- ADC 일반 오류, 수집 동기 오류, DC-link overrun
+- 유효하지 않은 측정값
+- a/b/c상 각각의 과전류
+- DC-link 과전압
+- CORDIC, SVPWM, PWM 오류
+
+현재 보드의 초기 설정은 상전류 절댓값 `10.0 A`와 DC-link `79.2 V`에서 trip한다.
+Latch 해제를 위한 hysteresis는 상전류 절댓값 `1.0 A` 이하, DC-link `75.0 V` 이하로
+설정한다. Threshold는 보드/제품 설정이므로 `main.c`의 App 통합 config에서 전달하며
+fault manager 구현에 숨은 기본값을 두지 않는다.
+
+Fault가 latch되면 App은 PWM output을 disable하고 open-loop 실행 상태를 해제한다.
+ADC trigger와 counter는 계속 동작하므로 ADC가 정상인 fault에서는 측정값을 계속 갱신해
+active 원인이 사라졌는지 판단할 수 있다. 외부 명령은 0 V, 0 rad/s command를 먼저
+publish하고 `app_request_fault_clear()`로 일회성 해제를 요청한다. 다음 유효 fast loop에서
+다음 조건을 모두 만족할 때만 latch를 해제한다.
+
+```text
+PWM output disabled
+command = 0 V, 0 rad/s
+latest measurement valid
+active measurement fault 없음
+```
+
+요청은 성공/실패와 관계없이 한 번만 소비한다. 해제 성공 후에도 open-loop와 PWM은
+비활성 상태이며 별도의 새 command와 시작 절차가 필요하다. 따라서 이전 nonzero command로
+자동 재시작하지 않는다. ADC 동기 오류처럼 유효 sample 자체가 재개되지 않는 fault는
+명령 해제만으로 처리하지 않고 trigger 차단, ADC stop/start 재동기화 또는 MCU reset이 필요하다.
+
+현재 fault manager는 ADC 결과를 사용하는 software 보호다. 실제 hardware revision에서는
+gate-driver fault 또는 COMP/window comparator를 HRTIM fault에 연결해 CPU와 무관한 긴급 차단을
+추가하고, software latch는 원인 기록과 재시작 정책을 담당하게 한다.

@@ -65,10 +65,12 @@ CubeMX 생성 영역인 `Core/Src`, `Core/Inc`와 사용자 소유 계층 디렉
 - scheduler entry point
 - Control과 Platform 사이 wiring
 
-현재 Stage 8의 `app.c/.h`는 첫 vertical slice로서 ADC sample 소비/환산과 open-loop
-전압 vector, CORDIC, SVPWM, PWM 갱신만 연결한다. Hall/FOC/통신/state machine/fault
-latch까지 하나의 구조체에 미리 모으지 않으며, 이후 기능은 책임에 맞는 module을 추가해
-App이 호출 순서와 data flow만 조정한다.
+현재 `app.c/.h`는 ADC sample 소비/환산, software fault 보호, open-loop 전압 vector,
+CORDIC, SVPWM, PWM 갱신을 연결한다. Fault threshold, active/latch 상태와 최초 진단
+snapshot은 별도 `fault_manager.c/.h`가 소유하고 App은 측정/오류 전달과 PWM disable,
+명령 기반 clear 순서를 조정한다. Hall/FOC/통신/완전한 state machine까지 하나의 구조체에
+미리 모으지 않으며, 이후 기능은 책임에 맞는 module을 추가해 App이 호출 순서와
+data flow만 조정한다.
 
 ### Control
 
