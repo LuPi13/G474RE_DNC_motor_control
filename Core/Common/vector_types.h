@@ -11,7 +11,9 @@
 #define COMMON_VECTOR_TYPES_H_
 
 /**
- * @brief a, b, c상의 물리량 또는 정규화된 duty를 표현하는 3상 vector.
+ * @brief a, b, c상에 같은 단위로 대응하는 값을 표현하는 3상 vector.
+ * @note 물리량, 정규화 duty, Platform 내부 보정값 등 구체적인 단위와 의미는
+ *       이 type을 사용하는 API의 contract를 따른다.
  */
 typedef struct {
     float a;  /**< a상 성분. */
