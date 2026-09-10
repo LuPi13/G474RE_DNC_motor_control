@@ -30,6 +30,8 @@ Project/
 │  ├─ Platform/
 │  │  ├─ pwm_driver.c / pwm_driver.h
 │  │  ├─ adc_driver.c / adc_driver.h
+│  │  ├─ current_sensor.c / current_sensor.h
+│  │  ├─ voltage_sensor.c / voltage_sensor.h
 │  │  ├─ hall_driver.c / hall_driver.h
 │  │  ├─ encoder_driver.c / encoder_driver.h
 │  │  ├─ cordic_driver.c / cordic_driver.h
@@ -65,7 +67,8 @@ CubeMX 생성 영역인 `Core/Src`, `Core/Inc`와 사용자 소유 계층 디렉
 - scheduler entry point
 - Control과 Platform 사이 wiring
 
-현재 `app.c/.h`는 ADC sample 소비/환산, software fault 보호, open-loop 전압 vector,
+현재 `app.c/.h`는 ADC raw sample을 sensor module에 전달하고 SI feedback을 소비하며,
+software fault 보호, open-loop 전압 vector,
 CORDIC, SVPWM, PWM 갱신을 연결한다. Fault threshold, active/latch 상태와 최초 진단
 snapshot은 별도 `fault_manager.c/.h`가 소유하고 App은 측정/오류 전달과 PWM disable,
 명령 기반 clear 순서를 조정한다. Hall/FOC/통신/완전한 state machine까지 하나의 구조체에
@@ -413,9 +416,8 @@ header에는 외부에 공개해야 하는 최소 API만 둔다.
 
 ## 10. Platform과 sensor conversion의 분리
 
-초기에는 `adc_driver`가 raw acquisition과 unit conversion을 같이 해도 된다.
-
-복잡도가 증가하면:
+현재는 peripheral access와 sensor calibration/conversion이 독립적으로 바뀌므로 다음처럼
+분리한다.
 
 ```text
 adc_driver.c
@@ -428,9 +430,8 @@ voltage_sensor.c
   : raw -> voltage [V]
 ```
 
-로 분리한다.
-
 분리 기준은 파일 길이가 아니라 **peripheral access와 sensor calibration/conversion이 독립적으로 변하기 시작하는지**다.
+Raw offset과 보정 누적 상태는 `current_sensor`만 소유하며 App이나 `adc_driver`에 복제하지 않는다.
 
 현재 bring-up 단계의 `hall_driver`는 GPIO/TIM capture뿐 아니라 Hall sequence에 직접
 결합된 sector, direction, edge-to-edge electrical speed 및 Hall edge angle 계산까지

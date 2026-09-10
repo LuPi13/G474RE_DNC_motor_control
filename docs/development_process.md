@@ -268,17 +268,23 @@ i_c = ...
 v_dc = ...
 ```
 
-현재는 `adc_driver_convert()`가 config의 영점과 gain으로
-`(code - offset_counts) * gain_per_count`를 계산하여 `abc_t` 전류 [A]와
-`float` DC-link 전압 [V]를 반환한다. App은 성공한 결과만 feedback으로 전달한다.
+현재 `adc_driver`는 ADC peripheral 매핑과 raw sample 취합만 담당한다.
+`current_sensor`는 상별 `(code - offset_counts) * gain_a_per_count`를 계산하여
+`abc_t` 전류 [A]를 반환하고, `voltage_sensor`는 DC-link 전압 [V]를 반환한다.
+App은 이 module의 성공한 SI 결과만 feedback으로 전달한다.
 
 ADC 자체 calibration과 센서 영점/이득 보정은 별개다.
 무전류 영점, 기준 전류/전압 대비 gain과 극성을 확인해야 하며,
 raw 값이 들어온다는 사실만으로 센서 정확도 검증이 끝난 것은 아니다.
 
-초기에는 이처럼 `adc_driver`에 conversion을 둘 수 있다.
+현재 기동 경로는 PWM output을 끈 채 HRTIM counter의 ADC trigger만 실행한다. App은 raw
+sample을 `current_sensor`에 전달하고, `current_sensor`가 settling sample을 버린 뒤 3상
+offset을 평균하여 허용 범위 안의 결과만 소유한다. 평균 완료나 timeout 확인 전에는
+open-loop와 PWM output을 활성화하지 않는다. 범위 오류나 timeout은 current-sensor fault로
+latch한다. 운전 중 재보정이 필요하면 PWM 차단만으로 충분하다고 가정하지 말고 실제 상전류
+감쇠와 rotor 정지를 확인한 뒤 같은 절차를 수행한다.
 
-복잡도가 증가하면:
+센서 보정과 환산이 ADC peripheral 수집과 독립적으로 바뀌므로 현재 구현은 다음처럼 분리한다.
 
 ```text
 adc_driver.c
@@ -286,7 +292,8 @@ current_sensor.c
 voltage_sensor.c
 ```
 
-로 분리한다.
+`current_sensor`만 raw offset, 보정 누적 상태와 gain을 소유한다. App이나 `adc_driver`에 같은
+offset 또는 누적 상태를 복제하지 않는다.
 
 ### 완료 조건
 
@@ -683,6 +690,8 @@ Park
   ↓
 i_d / i_q
   ↓
+d/q IIR low-pass (제어 feedback 경로)
+  ↓
 d/q PI
   ↓
 decoupling / feedforward
@@ -693,6 +702,11 @@ inverse Park
   ↓
 v_alpha_beta_ref
 ```
+
+Digital current filter는 Clarke/Park 뒤의 `i_d`, `i_q` feedback에 적용한다. 상전류
+과전류 보호는 지연된 filter 출력이 아니라 offset 보정만 끝난 unfiltered `i_abc`를 사용한다.
+센서 출력과 MCU ADC 사이의 analog RC filter는 anti-alias/noise 제한용 hardware 경계로
+취급하며, digital IIR의 상태나 coefficient를 `current_sensor` 또는 `adc_driver`가 소유하지 않는다.
 
 그 다음:
 

@@ -201,9 +201,10 @@ JEOC/JEOS flag를 정리한다. Callback 안에서 다음 PWM 주기까지 걸�
   읽을 때 새 변환을 시작하거나 완료를 polling하지 않는다.
 - 전압 변환은 읽기 전에 완료되어야 하고, 읽는 동안 다음 전압 변환이 완료되지 않아야 한다.
   전류와 전압이 같은 시점에 샘플링된다고 가정하지 말고 trigger 간 시간 관계를 검증한다.
-- `adc_driver_read_raw()`와 `adc_driver_convert()`가 모두 성공한 경우에만 feedback을 갱신하고
-  제어/SVPWM 계산을 진행한다. NOT_READY나 오류가 발생한 묶음으로 제어를 진행하지 않는다.
-  반복 오류에 대한 보호 동작은 App이 결정한다.
+- `adc_driver_read_raw()`, `current_sensor_convert()`, `voltage_sensor_convert()`가 모두
+  성공한 경우에만 완전한 feedback을 갱신하고 제어/SVPWM 계산을 진행한다. 전류 영점 보정
+  중에는 `current_sensor_process_offset_sample()`로 raw sample을 소비하고 DC-link 전압 보호만
+  갱신한다. NOT_READY나 오류가 발생한 묶음으로 제어를 진행하지 않으며 보호 동작은 App이 결정한다.
 - 해당 전압 DR은 driver만 읽는다. 다른 코드에서 먼저 읽으면 EOC 등 상태 판정에 영향을 준다.
 - 전류 ADC ISR끼리는 서로 선점하지 않도록 구성하고, 묶음 소비를 다음 수집 주기 전에 끝낸다.
   완료 bitmask는 PWM 주기 번호를 증명하지 않으므로 trigger 누락과 실행 deadline은 App에서 별도로 감시한다.
@@ -276,7 +277,9 @@ CubeMX peripheral 초기화 (ADC trigger가 발생하지 않는 상태)
  -> hall_driver_start(): Hall capture와 overflow timeout interrupt 시작
  -> adc_driver_init(): 매핑 검증과 ADC 자체 calibration
  -> adc_driver_start(): regular 및 세 injected 그룹을 trigger 대기 상태로 준비
+ -> app_start_current_offset_calibration(): PWM 비활성 조건에서 무전류 평균 수집 요청
  -> pwm_driver_init(): HRTIM counter 시작과 동기화
+ -> settling sample 폐기 및 3상 영점 평균 완료 대기
  -> 초기 duty 준비 및 update 반영 확인
  -> pwm_driver_enable(): PWM output 활성화
 ```
@@ -284,6 +287,12 @@ CubeMX peripheral 초기화 (ADC trigger가 발생하지 않는 상태)
 `pwm_driver_init()`의 counter 시작/software reset부터 ADC trigger가 발생할 수 있다.
 따라서 callback이 사용하는 상태를 먼저 준비해야 한다. 향후 제어를 연결할 때는
 App이 startup 상태를 구분하여 PWM driver 초기화 완료 전에 duty 갱신을 호출하지 않게 한다.
+현재 App은 보정 중 open-loop 또는 PWM output 활성화를 거부한다. `current_sensor`는 settling
+sample 폐기, 3상 평균 누적, 허용 ADC code 범위 검사와 완료 offset의 유일한 owner다.
+결과가 범위를 벗어나거나 timeout이 발생하면 current-sensor fault를 latch하고 PWM을
+fail-stop 처리한다. App은 raw count나 누적 합을 별도로 소유하지 않으며, 보정 완료 뒤에는
+`current_sensor_convert()`가 `abc_t` 전류 [A]를 반환한다. `adc_driver`는 센서 영점이나 gain을
+알지 않고 ADC peripheral 매핑과 raw sample 취합만 담당한다.
 
 `pwm_driver_disable()`은 output만 끄며 counter와 ADC trigger를 정지하지 않는다.
 ADC 정지/재동기화 시에는 App/Platform 통합 경로에서 trigger를 막고 진행 중인 ISR 처리가
