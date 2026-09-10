@@ -205,6 +205,50 @@ fault_manager_status_t fault_manager_update_measurements(
     return FAULT_MANAGER_STATUS_OK;
 }
 
+fault_manager_status_t fault_manager_update_dc_link_voltage(
+    fault_manager_t *self,
+    float v_dc
+)
+{
+    if (self == NULL) {
+        return FAULT_MANAGER_STATUS_INVALID_ARGUMENT;
+    }
+    if (!self->is_initialized) {
+        return FAULT_MANAGER_STATUS_INVALID_STATE;
+    }
+
+    if (!fault_manager_float_is_finite(v_dc)) {
+        self->has_valid_measurement = false;
+        self->active_fault_mask |= FAULT_MANAGER_FAULT_INVALID_MEASUREMENT;
+        fault_manager_latch_internal(
+            self,
+            FAULT_MANAGER_FAULT_INVALID_MEASUREMENT
+        );
+        self->last_status = FAULT_MANAGER_STATUS_OK;
+        return FAULT_MANAGER_STATUS_OK;
+    }
+
+    const bool was_overvoltage_active =
+        (self->active_fault_mask &
+            FAULT_MANAGER_FAULT_DC_LINK_OVERVOLTAGE) != 0U;
+    self->latest_v_dc = v_dc;
+    self->has_valid_measurement = false;
+    self->active_fault_mask &= ~FAULT_MANAGER_FAULT_DC_LINK_OVERVOLTAGE;
+    if (fault_manager_update_voltage_condition(
+            v_dc,
+            was_overvoltage_active,
+            &self->config)) {
+        self->active_fault_mask |= FAULT_MANAGER_FAULT_DC_LINK_OVERVOLTAGE;
+        fault_manager_latch_internal(
+            self,
+            FAULT_MANAGER_FAULT_DC_LINK_OVERVOLTAGE
+        );
+    }
+
+    self->last_status = FAULT_MANAGER_STATUS_OK;
+    return FAULT_MANAGER_STATUS_OK;
+}
+
 fault_manager_status_t fault_manager_latch(
     fault_manager_t *self,
     fault_manager_fault_mask_t fault_mask

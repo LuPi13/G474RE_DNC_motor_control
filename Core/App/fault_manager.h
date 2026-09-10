@@ -66,7 +66,8 @@ typedef enum {
     FAULT_MANAGER_FAULT_DC_LINK_OVERVOLTAGE = (1UL << 7),
     FAULT_MANAGER_FAULT_CORDIC = (1UL << 8),
     FAULT_MANAGER_FAULT_SVPWM = (1UL << 9),
-    FAULT_MANAGER_FAULT_PWM = (1UL << 10)
+    FAULT_MANAGER_FAULT_PWM = (1UL << 10),
+    FAULT_MANAGER_FAULT_CURRENT_SENSOR = (1UL << 11)
 } fault_manager_fault_t;
 
 /** 모든 public fault bit의 합집합. */
@@ -82,7 +83,8 @@ typedef enum {
         FAULT_MANAGER_FAULT_DC_LINK_OVERVOLTAGE | \
         FAULT_MANAGER_FAULT_CORDIC | \
         FAULT_MANAGER_FAULT_SVPWM | \
-        FAULT_MANAGER_FAULT_PWM))
+        FAULT_MANAGER_FAULT_PWM | \
+        FAULT_MANAGER_FAULT_CURRENT_SENSOR))
 
 /** ADC 측정값으로 매 주기 active 상태를 갱신하는 fault bit의 합집합. */
 #define FAULT_MANAGER_MEASUREMENT_FAULT_MASK \
@@ -177,6 +179,24 @@ fault_manager_status_t fault_manager_init(
 fault_manager_status_t fault_manager_update_measurements(
     fault_manager_t *self,
     const abc_t *i_abc,
+    float v_dc
+);
+
+/**
+ * @brief 상전류가 아직 유효하지 않은 기동 단계에서 DC-link 전압 보호만 갱신한다.
+ *
+ * @param[in,out] self 초기화된 fault manager instance.
+ * @param[in] v_dc DC-link 전압 [V].
+ *
+ * @details DC-link 과전압 active/latch만 갱신하고 기존 상전류 active 상태는 보존한다.
+ *          완전한 측정값이 아니므로 fault clear에 필요한 has_valid_measurement는 false로 만든다.
+ *          NaN/Inf는 INVALID_MEASUREMENT로 latch한다.
+ * @retval FAULT_MANAGER_STATUS_OK 전압 보호 상태 갱신 완료.
+ * @retval FAULT_MANAGER_STATUS_INVALID_ARGUMENT self가 NULL임.
+ * @retval FAULT_MANAGER_STATUS_INVALID_STATE 초기화되지 않음.
+ */
+fault_manager_status_t fault_manager_update_dc_link_voltage(
+    fault_manager_t *self,
     float v_dc
 );
 
