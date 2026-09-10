@@ -13,17 +13,19 @@
 
 #include "adc_driver.h"
 #include "cordic_driver.h"
+#include "current_sensor.h"
 #include "fault_manager.h"
 #include "pwm_driver.h"
 #include "svpwm.h"
+#include "voltage_sensor.h"
 
 /**
  * @defgroup app_open_loop Open-loop inverter App
  * @brief ADC, software fault 보호, CORDIC, SVPWM, PWM driver를 연결하는 fast-loop orchestration.
  *
  * @par 책임
- * 이 module은 준비된 ADC 전류 묶음과 DC-link 전압을 소비하고, open-loop 회전 전압
- * vector를 만들어 SVPWM duty를 PWM driver에 기록한다. HAL callback 자체와 IRQ 후처리
+ * 이 module은 준비된 ADC raw sample을 sensor module에 전달하고, 유효한 SI feedback으로
+ * open-loop 회전 전압 vector를 만들어 SVPWM duty를 PWM driver에 기록한다. HAL callback과 IRQ 후처리
  * 진입점, peripheral 초기화 순서, PWM output enable은 main/CubeMX 영역에 남긴다.
  * Hall rotor feedback은 현재 open-loop vector 생성에 사용하지 않는다. Fault manager는
  * 별도 instance로 유지하며 App이 측정/계산 오류와 PWM disable 순서를 조정한다.
@@ -31,10 +33,11 @@
  * @par 시작 순서
  *
  * 1. ADC driver를 초기화하고 시작한다.
- * 2. Fault manager를 초기화한 뒤 app_init()으로 driver 연결과 fast-loop 주기를 설정한다.
- * 3. PWM driver를 초기화하고 0.5 duty를 준비한다.
- * 4. app_start_open_loop() 성공 뒤 PWM output을 활성화하고 fault 상태를 다시 확인한다.
- * 5. 세 ADC 완료 판정 뒤 HAL IRQ 후처리에서 app_motor_fast_loop()을 한 번 호출한다.
+ * 2. Current/voltage sensor와 fault manager를 초기화한 뒤 app_init()으로 연결한다.
+ * 3. app_start_current_offset_calibration()을 호출한다.
+ * 4. PWM driver를 초기화하여 ADC trigger용 counter를 시작하고, output은 끈 채 보정 완료를 기다린다.
+ * 5. 0.5 duty를 준비하고 app_start_open_loop() 성공 뒤 PWM output을 활성화한다.
+ * 6. 세 ADC 완료 판정 뒤 HAL IRQ 후처리에서 app_motor_fast_loop()을 한 번 호출한다.
  *
  * PWM counter 시작 중 발생할 수 있는 ADC event를 안전하게 소비할 수 있도록 app_init()은
  * pwm_driver_init()보다 먼저 호출할 수 있다. app_start_open_loop() 전에는 ADC feedback만
@@ -60,7 +63,7 @@
  *
  * @par Fault 처리와 명령 해제
  * ADC NOT_READY는 해당 주기만 건너뛴다. 실행 중 threshold 위반이나
- * ADC/CORDIC/SVPWM/PWM 오류가 발생하면 fault manager에 원인을 latch하고 open-loop를
+ * ADC/sensor/CORDIC/SVPWM/PWM 오류가 발생하면 fault manager에 원인을 latch하고 open-loop를
  * 중지한 뒤 pwm_driver_disable()을 시도한다. 외부 명령은 먼저 0 V, 0 rad/s를 publish한
  * 다음 app_request_fault_clear()로 일회성 해제를 요청한다. 다음 유효 ADC sample에서
  * 안전 조건을 검사하며, 성공해도 PWM과 open-loop는 자동으로 재시작하지 않는다.
@@ -77,7 +80,10 @@ typedef enum {
     APP_STATUS_INVALID_ARGUMENT,   /**< NULL 또는 범위 밖 설정/명령/출력 인자. */
     APP_STATUS_INVALID_STATE,      /**< App이 초기화되지 않았거나 요청한 실행 상태가 아님. */
     APP_STATUS_ADC_NOT_READY,      /**< 이번 fast loop에서 완성된 ADC 묶음을 얻지 못함. */
-    APP_STATUS_ADC_ERROR,          /**< ADC raw 읽기 또는 SI 환산 실패. */
+    APP_STATUS_ADC_ERROR,          /**< ADC raw 읽기 실패. */
+    APP_STATUS_CURRENT_SENSOR_ERROR, /**< 전류 센서 보정 또는 SI 환산 실패. */
+    APP_STATUS_CURRENT_OFFSET_CALIBRATION_TIMEOUT, /**< 외부 deadline 안에 영점 보정이 끝나지 않음. */
+    APP_STATUS_VOLTAGE_SENSOR_ERROR, /**< DC-link 전압 센서 SI 환산 실패. */
     APP_STATUS_CORDIC_ERROR,       /**< Open-loop phase의 sine/cosine 계산 실패. */
     APP_STATUS_SVPWM_ERROR,        /**< Duty 계산 실패 또는 overmodulation. */
     APP_STATUS_PWM_ERROR,          /**< PWM duty 기록 또는 fail-stop disable 실패. */
@@ -90,6 +96,8 @@ typedef enum {
  */
 typedef struct {
     adc_driver_t *adc_driver;       /**< 초기화/시작되는 ADC driver instance. */
+    current_sensor_t *current_sensor; /**< 초기화된 3상 전류 sensor instance. */
+    voltage_sensor_t *voltage_sensor; /**< 초기화된 DC-link voltage sensor instance. */
     pwm_driver_t *pwm_driver;       /**< 초기화될 PWM driver instance. */
     fault_manager_t *fault_manager; /**< 초기화된 software fault manager instance. */
     float sampling_period_s;        /**< 고정 fast-loop 호출 주기 [s], 양의 유한값. */
@@ -108,12 +116,13 @@ typedef struct {
  * @brief 한 번의 App fast loop에서 정상적으로 계산하고 적용한 결과.
  */
 typedef struct {
-    adc_driver_raw_sample_t raw; /**< 이번 주기에 소비한 ADC 원본 code. */
+    adc_driver_raw_sample_t raw; /**< Platform 진단용 ADC 원본 code. Control feedback으로 사용하지 않음. */
     abc_t i_abc;                 /**< 환산된 a/b/c상 전류 [A]. */
     float v_dc;                  /**< 환산된 DC-link 전압 [V]. */
     float voltage_angle_rad;     /**< 이번 duty 계산에 사용한 전압 vector phase [rad]. */
     alpha_beta_t v_alpha_beta;   /**< 적용한 alpha-beta 전압 지령 [V]. */
     abc_t duty;                  /**< PWM driver에 기록한 정규화 duty. */
+    bool has_valid_phase_current; /**< true이면 i_abc가 보정 완료된 유효 전류 feedback임. */
     bool has_applied_duty;       /**< true이면 이번 호출에서 PWM compare를 갱신함. */
 } app_fast_loop_output_t;
 
@@ -137,6 +146,8 @@ typedef struct {
     abc_t last_duty;                /**< 마지막으로 PWM driver에 기록한 duty. */
 
     adc_driver_status_t last_adc_status;       /**< 마지막 ADC 하위 호출 결과. */
+    current_sensor_status_t last_current_sensor_status; /**< 마지막 current sensor 호출 결과. */
+    voltage_sensor_status_t last_voltage_sensor_status; /**< 마지막 voltage sensor 호출 결과. */
     cordic_driver_status_t last_cordic_status; /**< 마지막 CORDIC 하위 호출 결과. */
     svpwm_status_t last_svpwm_status;           /**< 마지막 SVPWM 하위 호출 결과. */
     pwm_driver_status_t last_pwm_status;        /**< 마지막 PWM 하위 호출 결과. */
@@ -144,7 +155,7 @@ typedef struct {
     fault_manager_status_t last_fault_clear_status; /**< 마지막 비동기 clear 요청 처리 결과. */
     app_status_t last_status;                   /**< 마지막 App API 실행 결과. */
 
-    uint32_t fast_loop_count;   /**< ADC 환산까지 성공한 fast-loop 횟수. */
+    uint32_t fast_loop_count;   /**< Raw ADC와 필요한 sensor 처리를 완료한 fast-loop 횟수. */
     uint32_t duty_update_count; /**< PWM duty 기록까지 성공한 횟수. */
     uint32_t not_ready_count;   /**< ADC NOT_READY로 건너뛴 횟수. */
     uint32_t error_count;       /**< NOT_READY를 제외한 runtime 오류 횟수. */
@@ -170,7 +181,7 @@ typedef struct {
  *
  * @retval APP_STATUS_OK 초기화 완료.
  * @retval APP_STATUS_INVALID_ARGUMENT NULL 연결, 유효하지 않은 주기 또는 초기각.
- * @retval APP_STATUS_INVALID_STATE Fault manager가 초기화되지 않음.
+ * @retval APP_STATUS_INVALID_STATE ADC/current/voltage sensor 또는 fault manager가 초기화되지 않음.
  */
 app_status_t app_init(app_t *self, const app_config_t *config);
 
@@ -198,6 +209,39 @@ app_status_t app_set_open_loop_command(
 );
 
 /**
+ * @brief PWM 출력이 꺼진 상태에서 3상 전류 센서 영점 측정을 시작한다.
+ *
+ * @param[in,out] self 초기화된 App instance.
+ * @details 이후 app_motor_fast_loop()이 raw 전류를 current_sensor에 전달한다.
+ * @pre ADC driver가 시작되었고 PWM output과 open-loop 갱신이 비활성 상태여야 한다.
+ * @pre 실제 상전류가 0 A이고 모터가 회전하지 않아 역기전력 전류가 생기지 않아야 한다.
+ * @note PWM counter가 ADC trigger를 제공하는 구성에서는 이 함수를 먼저 호출한 뒤
+ *       pwm_driver_init()으로 counter를 시작할 수 있다.
+ * @warning 보정 중 PWM output을 활성화하면 current sensor fault를 latch한다.
+ *
+ * @retval APP_STATUS_OK 보정 요청을 등록함.
+ * @retval APP_STATUS_INVALID_ARGUMENT self가 NULL임.
+ * @retval APP_STATUS_INVALID_STATE App/ADC 상태가 유효하지 않거나 PWM/open-loop가 활성 상태임.
+ * @retval APP_STATUS_FAULT_ACTIVE 이미 fault가 latch되어 있음.
+ * @retval APP_STATUS_CURRENT_SENSOR_ERROR Current sensor가 보정을 시작하지 못함.
+ */
+app_status_t app_start_current_offset_calibration(app_t *self);
+
+/**
+ * @brief 외부 deadline 안에 끝나지 않은 current sensor 보정을 fail-stop 처리한다.
+ *
+ * @param[in,out] self 보정 중인 App instance.
+ * @details Current sensor를 FAILED로 전환하고 fault를 latch한 뒤 PWM disable을 시도한다.
+ * @retval APP_STATUS_OK Deadline 처리와 동시에 보정 완료가 확인되어 중단하지 않음.
+ * @retval APP_STATUS_CURRENT_OFFSET_CALIBRATION_TIMEOUT 보정을 중단하고 PWM disable도 성공했거나 불필요함.
+ * @retval APP_STATUS_PWM_ERROR PWM disable 실패.
+ * @retval APP_STATUS_FAULT_MANAGER_ERROR Current sensor fault latch 실패.
+ * @retval APP_STATUS_INVALID_ARGUMENT self가 NULL임.
+ * @retval APP_STATUS_INVALID_STATE App이 초기화되지 않았거나 sensor가 보정 중이 아님.
+ */
+app_status_t app_handle_current_offset_calibration_timeout(app_t *self);
+
+/**
  * @brief Fast loop의 open-loop duty 갱신을 시작한다.
  *
  * @param[in,out] self 초기화된 App instance.
@@ -206,7 +250,7 @@ app_status_t app_set_open_loop_command(
  *
  * @retval APP_STATUS_OK Open-loop 갱신 활성화 또는 이미 활성 상태.
  * @retval APP_STATUS_INVALID_ARGUMENT self가 NULL임.
- * @retval APP_STATUS_INVALID_STATE App 또는 PWM driver가 초기화되지 않음.
+ * @retval APP_STATUS_INVALID_STATE App/PWM이 준비되지 않았거나 current sensor 보정이 완료되지 않음.
  * @retval APP_STATUS_FAULT_ACTIVE Fault가 latch되어 시작을 거부함.
  */
 app_status_t app_start_open_loop(app_t *self);
@@ -277,15 +321,18 @@ app_status_t app_handle_adc_error(
  * @pre 세 ADC injected 완료가 취합된 직후, HAL ADC IRQ 처리 후단에서 한 번 호출한다.
  * @pre ADC driver와 PWM driver를 다른 실행 문맥에서 동시에 사용하지 않는다.
  * @post Open-loop가 활성화되었으면 성공할 때만 다음 duty와 voltage angle을 갱신한다.
- * @note 비활성 상태에서도 ADC 묶음은 소비/환산하며 @p output 의 has_applied_duty는 false다.
+ * @note 보정 중에는 ADC 묶음과 DC-link 전압만 처리하며 has_valid_phase_current와
+ *       has_applied_duty는 false다.
  * @note 각 유효 sample에서 3상 과전류와 DC-link 과전압을 먼저 검사한다. Fault가 latch된
  *       동안에도 sample을 소비하여 active fault와 명령 기반 해제 조건을 갱신한다.
  * @note 0 V command는 CORDIC/SVPWM을 생략하고 정확한 0.5 duty를 사용한다.
  * @warning 실제 전력 인가 전 hardware fault/break 및 emergency shutdown을 별도로 검증한다.
  *
- * @retval APP_STATUS_OK ADC 환산과 요청된 duty 처리 완료.
+ * @retval APP_STATUS_OK Sensor feedback과 요청된 duty 처리 완료.
  * @retval APP_STATUS_ADC_NOT_READY 이번 주기에 사용할 ADC 묶음이 없음.
- * @retval APP_STATUS_ADC_ERROR ADC raw 읽기 또는 SI 환산 실패.
+ * @retval APP_STATUS_ADC_ERROR ADC raw 읽기 실패.
+ * @retval APP_STATUS_CURRENT_SENSOR_ERROR 전류 sensor 보정 또는 환산 실패.
+ * @retval APP_STATUS_VOLTAGE_SENSOR_ERROR DC-link voltage sensor 환산 실패.
  * @retval APP_STATUS_CORDIC_ERROR Sine/cosine 계산 실패.
  * @retval APP_STATUS_SVPWM_ERROR Vdc 오류, 수치 오류 또는 overmodulation.
  * @retval APP_STATUS_PWM_ERROR Duty 기록 또는 fail-stop disable 실패.

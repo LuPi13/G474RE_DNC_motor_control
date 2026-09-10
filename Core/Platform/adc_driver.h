@@ -1,6 +1,6 @@
 /**
  * @file adc_driver.h
- * @brief 3상 전류와 DC-link 전압의 ADC 수집 및 SI 단위 환산 API.
+ * @brief 3상 전류와 DC-link 전압의 ADC raw 수집 API.
  * @ingroup platform_adc_driver
  * @see @ref platform_adc_driver "ADC driver 사용 안내"
  */
@@ -12,7 +12,6 @@
 #include <stdint.h>
 
 #include "stm32g4xx_hal.h"
-#include "vector_types.h"
 
 /**
  * @defgroup platform_adc_driver ADC driver
@@ -20,7 +19,7 @@
  *
  * @par 책임과 설정 위치
  * CubeMX는 pin, channel, rank, trigger, sampling time, oversampling을 설정한다.
- * 호출자는 adc_driver_config_t 에 논리적 상 매핑과 센서 환산 계수를 지정한다.
+ * 호출자는 adc_driver_config_t 에 논리적 상과 ADC 입력의 매핑을 지정한다.
  * Driver는 매핑 검증, ADC 자체 calibration, 변환 시작/정지, 완료 수집을 맡는다.
  * HAL callback 정의와 제어 실행은 main/App에 두며, DMA와 PWM 제어는 포함하지 않는다.
  *
@@ -42,14 +41,14 @@
  * 4. Injected callback에서 adc_driver_handle_injected_complete()를 호출한다.
  * 5. 세 전류가 준비되면 pending을 표시하고 callback을 즉시 종료한다.
  * 6. HAL IRQ handler가 현재 injected 완료 flag를 정리한 뒤, 같은 ADC IRQ의
- *    후처리에서 adc_driver_read_raw()와 adc_driver_convert()를 호출한다.
+ *    후처리에서 adc_driver_read_raw()를 호출한다.
  *
  * @par 정지와 오류 복구
  * Trigger를 막고 진행 중인 ISR 처리가 끝난 뒤 adc_driver_stop()을 호출한다.
  * 정지 실패 시 다시 정지를 시도한다. 완전 정지 후 start와 trigger 재개로 재동기화한다.
  * PWM 차단, HAL 오류 callback 처리, 제어 deadline 감시는 App의 책임이다.
  *
- * @see adc_driver_config_t 보드별 매핑과 환산 계수 예.
+ * @see adc_driver_config_t 보드별 ADC 매핑 예.
  * @see adc_driver_t 소유권과 동시 실행 조건.
  * @{
  */
@@ -62,7 +61,7 @@
 typedef enum {
     ADC_DRIVER_STATUS_OK = 0,           /**< 요청한 처리를 완료함. */
     ADC_DRIVER_STATUS_INVALID_ARGUMENT, /**< 잘못된 인자. 함수별 상세 조건은 각 API 참조. */
-    ADC_DRIVER_STATUS_INVALID_CONFIG,   /**< ADC 매핑/환산 계수가 유효하지 않거나 CubeMX 설정과 불일치함. */
+    ADC_DRIVER_STATUS_INVALID_CONFIG,   /**< ADC 매핑이 유효하지 않거나 CubeMX 설정과 불일치함. */
     ADC_DRIVER_STATUS_INVALID_STATE,    /**< 초기화/실행/정지 상태가 요청한 동작에 적합하지 않음. */
     ADC_DRIVER_STATUS_NOT_READY,        /**< 전류 묶음 또는 읽지 않은 전압 결과가 없음. */
     ADC_DRIVER_STATUS_SYNC_ERROR,       /**< 수집 동기 오류가 유지되고 있어 재동기화가 필요함. */
@@ -72,32 +71,26 @@ typedef enum {
 } adc_driver_status_t;
 
 /**
- * @brief 논리적 한 상의 ADC 입력과 전류 환산 설정.
- * @details 전류 [A]는 `(code - offset_counts) * gain_a_per_count`로 계산한다.
- *          Channel과 rank는 CubeMX 설정을 검증하는 값이며, driver가 재설정하지 않는다.
+ * @brief 논리적 한 상의 ADC 입력 설정.
+ * @details Channel과 rank는 CubeMX 설정을 검증하는 값이며, driver가 재설정하지 않는다.
  */
 typedef struct {
     ADC_HandleTypeDef *adc;     /**< CubeMX 초기화가 끝난 handle. Driver 사용 기간 동안 유효해야 함. */
     uint32_t channel;           /**< 해당 ADC의 ADC_CHANNEL_* 값. 실제 injected rank 1과 대조함. */
     uint32_t injected_rank;     /**< 현재 지원 값은 ADC_INJECTED_RANK_1만 해당함. */
-    float offset_counts;       /**< 0 A의 ADC code [count]. 유한한 [0, 4095], 소수점 영점 허용. */
-    float gain_a_per_count;    /**< 환산 이득 [A/count]. 유한한 0 이외 값. 음수로 극성 반전 가능. */
 } adc_driver_phase_config_t;
 
 /**
- * @brief DC-link 전압의 regular 입력과 전압 환산 설정.
- * @details 전압 [V]는 `(code - offset_counts) * gain_v_per_count`로 계산한다.
- *          Regular scan/DMA 없이 단일 channel의 DR을 직접 읽는다.
+ * @brief DC-link 전압의 regular ADC 입력 설정.
+ * @details Regular scan/DMA 없이 단일 channel의 DR을 직접 읽는다.
  */
 typedef struct {
     ADC_HandleTypeDef *adc;     /**< 전압 ADC handle. 전류와 같은 ADC이면 동일한 handle을 사용함. */
     uint32_t channel;           /**< 해당 ADC의 ADC_CHANNEL_* 값. 실제 regular rank 1과 대조함. */
-    float offset_counts;       /**< 0 V의 ADC code [count]. 유한한 [0, 4095], 소수점 영점 허용. */
-    float gain_v_per_count;    /**< 환산 이득 [V/count]. 유한한 0 이외 값. */
 } adc_driver_voltage_config_t;
 
 /**
- * @brief 보드별 3상 전류/DC 전압 매핑과 센서 환산 계수.
+ * @brief 보드별 3상 전류/DC 전압 ADC 매핑.
  *
  * 설정값은 adc_driver_init()에서 복사한다. ADC handle은 복제하지 않으므로
  * 원본 handle의 수명은 driver 사용 기간을 포함해야 한다.
@@ -105,27 +98,26 @@ typedef struct {
  *
  * @par 현재 보드의 설정 예
  *
- * | 필드 | ADC / channel | 변환 그룹 | offset_counts | 이득 |
- * | --- | --- | --- | --- | --- |
- * | phase_a | ADC2 / CH12 | injected rank 1 | 2048.0f | 1.0f / 163.8f [A/count] |
- * | phase_b | ADC3 / CH1 | injected rank 1 | 2048.0f | 1.0f / 163.8f [A/count] |
- * | phase_c | ADC1 / CH15 | injected rank 1 | 2048.0f | 1.0f / 163.8f [A/count] |
- * | dc_link | ADC1 / CH6 | regular rank 1 | 2048.0f | 0.06448461162677f [V/count] |
+ * | 필드 | ADC / channel | 변환 그룹 |
+ * | --- | --- | --- |
+ * | phase_a | ADC2 / CH12 | injected rank 1 |
+ * | phase_b | ADC3 / CH1 | injected rank 1 |
+ * | phase_c | ADC1 / CH15 | injected rank 1 |
+ * | dc_link | ADC1 / CH6 | regular rank 1 |
  *
  * @note 위 값은 사용 예이며 driver 내부 기본값이 아니다. 새 PCB에서는 CubeMX 설정과
- *       매핑을 함께 맞추고, 센서 회로에 맞는 영점/이득을 지정한다.
- * @see adc_driver_convert()
+ *       매핑을 함께 맞춘다. 센서 영점과 환산 계수는 sensor module에서 관리한다.
  */
 typedef struct {
-    adc_driver_phase_config_t phase_a;     /**< 논리적 a상의 전류 입력/환산 설정. */
-    adc_driver_phase_config_t phase_b;     /**< 논리적 b상의 전류 입력/환산 설정. */
-    adc_driver_phase_config_t phase_c;     /**< 논리적 c상의 전류 입력/환산 설정. */
-    adc_driver_voltage_config_t dc_link;    /**< DC-link 전압 입력/환산 설정. */
+    adc_driver_phase_config_t phase_a;     /**< 논리적 a상의 ADC 입력 매핑. */
+    adc_driver_phase_config_t phase_b;     /**< 논리적 b상의 ADC 입력 매핑. */
+    adc_driver_phase_config_t phase_c;     /**< 논리적 c상의 ADC 입력 매핑. */
+    adc_driver_voltage_config_t dc_link;   /**< DC-link 전압 ADC 입력 매핑. */
 } adc_driver_config_t;
 
 /**
  * @brief 한 제어 계산에서 사용하는 3상 전류/DC 전압의 원본 ADC code.
- * @note 모든 필드의 범위는 [0, 4095]이다. 물리량 환산은 adc_driver_convert()가 수행한다.
+ * @note 모든 필드의 범위는 [0, 4095]이다. 물리량 환산은 sensor module이 수행한다.
  * @note 전류 세 개는 완료 묶음에서 복사하며, 전압은 adc_driver_read_raw() 호출 시 읽는다.
  *       전압과 전류의 sampling 시점이 같다는 의미는 아니다.
  */
@@ -150,7 +142,7 @@ typedef struct {
  * 이 구조체는 자체적인 lock이나 여러 실행 문맥 간 snapshot 보호를 제공하지 않는다.
  */
 typedef struct {
-    adc_driver_config_t config; /**< 초기화 시 복사한 매핑/환산 설정. */
+    adc_driver_config_t config; /**< 초기화 시 복사한 ADC 매핑 설정. */
     uint16_t current_raw[3];   /**< 수집 중인 a/b/c상 전류 code [count], index 0/1/2 순서. */
     uint32_t complete_mask;    /**< 이번 전류 묶음의 완료 bit. Bit 0/1/2는 a/b/c상. */
     uint32_t active_mask;      /**< 정리 대상 변환 그룹. Bit 0/1/2는 a/b/c상, bit 3은 전압. */
@@ -164,7 +156,7 @@ typedef struct {
  * @brief 매핑을 검증하고 사용 중인 ADC/입력 모드별 자체 calibration을 수행한다.
  *
  * @param[in,out] self 최초에는 0으로 초기화된 instance. 재초기화 시 완전 정지 상태여야 함.
- * @param[in] config CubeMX 설정과 일치하는 매핑 및 센서 환산 계수.
+ * @param[in] config CubeMX 설정과 일치하는 ADC 매핑.
  *
  * @pre CubeMX ADC 초기화가 끝났고 모든 대상 ADC의 regular/injected 변환이 정지되어 있어야 한다.
  * @pre ISR 밖에서 호출하며, 다른 driver API와 동시에 실행하지 않는다.
@@ -172,13 +164,13 @@ typedef struct {
  *
  * @details 같은 ADC의 같은 입력 모드는 한 번만 보정한다. Single-ended와 differential을
  *          함께 사용하는 ADC는 두 모드를 각각 보정한 뒤 start 단계로 넘어간다.
- *          센서의 무전류 영점 측정은 수행하지 않는다.
+ *          센서의 영점 측정이나 SI 단위 환산은 수행하지 않는다.
  * @note 인자/설정/상태 검증 실패 시 기존 instance를 보존한다. Calibration 단계에서
  *       실패하면 새 설정은 복사된 상태이며 is_initialized는 false이다. 변환은 시작하지 않는다.
  *
  * @retval ADC_DRIVER_STATUS_OK 매핑 검증과 calibration 완료.
  * @retval ADC_DRIVER_STATUS_INVALID_ARGUMENT self 또는 config가 NULL임.
- * @retval ADC_DRIVER_STATUS_INVALID_CONFIG 매핑/계수가 유효하지 않거나 지원 구성과 불일치함.
+ * @retval ADC_DRIVER_STATUS_INVALID_CONFIG 매핑이 유효하지 않거나 지원 구성과 불일치함.
  * @retval ADC_DRIVER_STATUS_INVALID_STATE Driver가 실행 중이거나 정리할 그룹/진행 중인 ADC 변환이 있음.
  * @retval ADC_DRIVER_STATUS_HAL_ERROR Calibration HAL 호출 실패.
  * @see adc_driver_start()
@@ -300,36 +292,10 @@ adc_driver_status_t adc_driver_handle_injected_complete(
  * @retval ADC_DRIVER_STATUS_NOT_READY 세 전류가 준비되지 않았거나 전압 EOC가 없음.
  * @retval ADC_DRIVER_STATUS_OVERRUN 전압 읽기 전/직후에 OVR을 검출함. 해당 묶음은 폐기됨.
  * @retval ADC_DRIVER_STATUS_INVALID_SAMPLE 전압 code가 [0, 4095]를 벗어남. 해당 묶음은 폐기됨.
- * @see adc_driver_convert()
  */
 adc_driver_status_t adc_driver_read_raw(
     adc_driver_t *self,
     adc_driver_raw_sample_t *sample
-);
-
-/**
- * @brief Raw ADC code를 3상 전류 [A]와 DC-link 전압 [V]로 환산한다.
- *
- * @param[in] self 초기화된 instance. 실행 중일 필요는 없으며 환산 계수만 참조함.
- * @param[in] sample 각 필드가 [0, 4095]인 ADC code 묶음.
- * @param[out] i_abc 환산된 a/b/c상 전류 [A]. 오류 시 변경하지 않음.
- * @param[out] v_dc 환산된 DC-link 전압 [V]. 오류 시 변경하지 않음.
- *
- * @details 각 신호에 `(float(code) - offset_counts) * gain_per_count`를 적용한다.
- *          음의 결과도 그대로 반환하며 filtering, clamp, 센서 이상 판정은 수행하지 않는다.
- *          Hardware 접근, 대기, 내부 feedback 저장이 없어 ISR에서도 사용할 수 있다.
- * @note ADC 자체 calibration과 센서 영점은 별개다. 실제 무전류/기준 전압에서 측정한
- *       영점을 설정에 반영할 수 있다. App은 환산 결과를 Control의 feedback으로 전달한다.
- *
- * @retval ADC_DRIVER_STATUS_OK 전류와 전압 환산 완료.
- * @retval ADC_DRIVER_STATUS_INVALID_ARGUMENT NULL 인자, 초기화되지 않은 instance 또는 범위 밖 raw code.
- * @see adc_driver_config_t
- */
-adc_driver_status_t adc_driver_convert(
-    const adc_driver_t *self,
-    const adc_driver_raw_sample_t *sample,
-    abc_t *i_abc,
-    float *v_dc
 );
 
 /** @} */

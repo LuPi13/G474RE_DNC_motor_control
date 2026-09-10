@@ -24,10 +24,12 @@
 #include "adc_driver.h"
 #include "app.h"
 #include "cordic_driver.h"
+#include "current_sensor.h"
 #include "fault_manager.h"
 #include "hall_driver.h"
 #include "hall_estimator.h"
 #include "pwm_driver.h"
+#include "voltage_sensor.h"
 /* USER CODE END Includes */
 
 /* Private typedef -----------------------------------------------------------*/
@@ -43,6 +45,8 @@
 #define APP_PHASE_CURRENT_CLEAR_ABS_A (1.0f)
 #define APP_DC_LINK_OVERVOLTAGE_TRIP_V  (79.2f)
 #define APP_DC_LINK_OVERVOLTAGE_CLEAR_V (75.0f)
+#define CURRENT_SENSOR_OFFSET_TIMEOUT_MS  10U
+#define ACS725_10AB_GAIN_A_PER_COUNT  ((3.3f / 4096.0f) / 0.132f)
 
 /* USER CODE END PD */
 
@@ -69,6 +73,8 @@ PCD_HandleTypeDef hpcd_USB_FS;
 /* USER CODE BEGIN PV */
 static pwm_driver_t pwm_driver;
 static adc_driver_t adc_driver;
+static current_sensor_t current_sensor;
+static voltage_sensor_t voltage_sensor;
 static hall_driver_t hall_driver;
 static hall_estimator_t hall_estimator;
 static fault_manager_t fault_manager;
@@ -89,11 +95,14 @@ static volatile pwm_driver_status_t pwm_test_status;
 
 /* ADC Live Expressions 확인용. 오류는 이후 수집에 성공해도 지우지 않는다. */
 static volatile adc_driver_status_t adc_test_last_error;
+static volatile current_sensor_status_t current_sensor_test_status;
+static volatile voltage_sensor_status_t voltage_sensor_test_status;
 static volatile uint32_t adc_test_sample_count;
 static volatile uint32_t adc_test_not_ready_count;
 static volatile adc_driver_raw_sample_t adc_test_raw;
 static volatile abc_t adc_test_i_abc;
 static volatile float adc_test_v_dc;
+static volatile bool adc_test_has_valid_phase_current;
 
 /* Open-loop App Live Expressions 확인용. last_error는 정상 주기에도 유지한다. */
 static volatile app_status_t app_test_status;
@@ -274,28 +283,20 @@ int main(void)
           .adc = &hadc2,
           .channel = ADC_CHANNEL_12,
           .injected_rank = ADC_INJECTED_RANK_1,
-          .offset_counts = 2048.0f,
-          .gain_a_per_count = 1.0f / 163.8f,
       },
       .phase_b = {
           .adc = &hadc3,
           .channel = ADC_CHANNEL_1,
           .injected_rank = ADC_INJECTED_RANK_1,
-          .offset_counts = 2048.0f,
-          .gain_a_per_count = 1.0f / 163.8f,
       },
       .phase_c = {
           .adc = &hadc1,
           .channel = ADC_CHANNEL_15,
           .injected_rank = ADC_INJECTED_RANK_1,
-          .offset_counts = 2048.0f,
-          .gain_a_per_count = 1.0f / 163.8f,
       },
       .dc_link = {
           .adc = &hadc1,
           .channel = ADC_CHANNEL_6,
-          .offset_counts = 2048.0f,
-          .gain_v_per_count = 0.06448461162677f,
       },
   };
 
@@ -306,6 +307,42 @@ int main(void)
 
   adc_test_last_error = adc_driver_start(&adc_driver);
   if (adc_test_last_error != ADC_DRIVER_STATUS_OK) {
+      Error_Handler();
+  }
+
+  const current_sensor_config_t current_sensor_config = {
+      /* ACS725LLCTR-10AB-T typ. 132 mV/A와 nominal ADC Vref 3.3 V 기준. */
+      .gain_a_per_count = {
+          .a = ACS725_10AB_GAIN_A_PER_COUNT,
+          .b = ACS725_10AB_GAIN_A_PER_COUNT,
+          .c = ACS725_10AB_GAIN_A_PER_COUNT,
+      },
+      .settling_sample_count = 128U,
+      .averaging_sample_count = 2048U,
+
+      /* Bring-up 중 rail/단선 수준의 비정상만 거르는 넓은 허용 범위. */
+      .minimum_offset_counts = 1536.0f,
+      .maximum_offset_counts = 2560.0f,
+  };
+
+  current_sensor_test_status = current_sensor_init(
+      &current_sensor,
+      &current_sensor_config
+  );
+  if (current_sensor_test_status != CURRENT_SENSOR_STATUS_OK) {
+      Error_Handler();
+  }
+
+  const voltage_sensor_config_t voltage_sensor_config = {
+      .offset_counts = 2048.0f,
+      .gain_v_per_count = 0.06448461162677f,
+  };
+
+  voltage_sensor_test_status = voltage_sensor_init(
+      &voltage_sensor,
+      &voltage_sensor_config
+  );
+  if (voltage_sensor_test_status != VOLTAGE_SENSOR_STATUS_OK) {
       Error_Handler();
   }
 
@@ -327,6 +364,8 @@ int main(void)
   /* PWM counter가 시작되기 전에 App의 ADC/PWM 연결과 안전한 0 V command를 준비한다. */
   const app_config_t app_config = {
       .adc_driver = &adc_driver,
+      .current_sensor = &current_sensor,
+      .voltage_sensor = &voltage_sensor,
       .pwm_driver = &pwm_driver,
       .fault_manager = &fault_manager,
       .sampling_period_s = 1.0f / (float)APP_FAST_LOOP_FREQUENCY_HZ,
@@ -334,6 +373,13 @@ int main(void)
   };
 
   app_test_status = app_init(&app, &app_config);
+  if (app_test_status != APP_STATUS_OK) {
+      app_test_last_error = app_test_status;
+      Error_Handler();
+  }
+
+  /* PWM counter가 ADC trigger를 시작하기 전에 무전류 평균 수집을 요청한다. */
+  app_test_status = app_start_current_offset_calibration(&app);
   if (app_test_status != APP_STATUS_OK) {
       app_test_last_error = app_test_status;
       Error_Handler();
@@ -360,6 +406,41 @@ int main(void)
     if (pwm_test_status != PWM_DRIVER_STATUS_OK) {
         Error_Handler();
     }
+
+    /* Output은 끈 채 ADC trigger만 실행하여 각 상의 0 A 영점을 구한다. */
+    const uint32_t current_offset_start_ms = HAL_GetTick();
+    do {
+        current_sensor_offset_calibration_state_t calibration_state;
+
+        current_sensor_test_status =
+            current_sensor_get_offset_calibration_state(
+                &current_sensor,
+                &calibration_state
+            );
+        if (current_sensor_test_status != CURRENT_SENSOR_STATUS_OK) {
+            Error_Handler();
+        }
+
+        if (calibration_state ==
+            CURRENT_SENSOR_OFFSET_CALIBRATION_COMPLETE) {
+            break;
+        }
+        if (calibration_state == CURRENT_SENSOR_OFFSET_CALIBRATION_FAILED) {
+            Error_Handler();
+        }
+        if ((HAL_GetTick() - current_offset_start_ms) >=
+            CURRENT_SENSOR_OFFSET_TIMEOUT_MS) {
+            app_test_status =
+                app_handle_current_offset_calibration_timeout(&app);
+            if (app_test_status == APP_STATUS_OK) {
+                continue;
+            }
+            app_test_last_error = app_test_status;
+            Error_Handler();
+        }
+
+        HAL_Delay(1U);
+    } while (true);
 
     /* Output을 켜기 전에 초기 duty를 먼저 기록한다. */
     pwm_test_status = pwm_driver_set_duty(&pwm_driver, &duty_abc);
@@ -1197,6 +1278,7 @@ static void app_fast_loop_test_update(void)
     adc_test_raw = output.raw;
     adc_test_i_abc = output.i_abc;
     adc_test_v_dc = output.v_dc;
+    adc_test_has_valid_phase_current = output.has_valid_phase_current;
     ++adc_test_sample_count;
 
     hall_estimator_test_update();

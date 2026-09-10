@@ -1,6 +1,6 @@
 /**
  * @file adc_driver.c
- * @brief ADC 초기화/정지, 3상 완료 수집, DC 전압 읽기와 SI 단위 환산 구현.
+ * @brief ADC 초기화/정지와 3상 전류/DC-link 전압 raw 수집을 구현한다.
  * @ingroup platform_adc_driver
  *
  * 보드 매핑은 설정으로 받고, 상위 제어 실행은 완료 결과를 받은 App이 결정한다.
@@ -9,8 +9,6 @@
  */
 
 #include "adc_driver.h"
-
-#include <math.h>
 
 #include "stm32g4xx_ll_adc.h"
 
@@ -40,19 +38,6 @@ static const adc_driver_phase_config_t *adc_driver_get_phase(
     default:
         return &config->phase_c;
     }
-}
-
-/**
- * @brief 센서 영점과 환산 이득의 설정 범위를 확인한다.
- * @param[in] offset_counts 0 A 또는 0 V의 ADC code [count].
- * @param[in] gain 전류 [A/count] 또는 전압 [V/count] 이득.
- * @return 영점이 유한한 [0, 4095]이고 이득이 유한한 0 이외 값이면 true.
- */
-static bool adc_driver_is_valid_scale(float offset_counts, float gain)
-{
-    return isfinite(offset_counts) && (offset_counts >= 0.0f) &&
-           (offset_counts <= (float)ADC_DRIVER_MAX_CODE) &&
-           isfinite(gain) && (gain != 0.0f);
 }
 
 /**
@@ -99,7 +84,6 @@ static bool adc_driver_is_valid_config(const adc_driver_config_t *config)
     for (uint32_t i = 0U; i < ADC_DRIVER_PHASE_COUNT; ++i) {
         const adc_driver_phase_config_t *phase = adc_driver_get_phase(config, i);
         if (!adc_driver_is_valid_input(phase->adc, phase->channel) ||
-            !adc_driver_is_valid_scale(phase->offset_counts, phase->gain_a_per_count) ||
             (phase->injected_rank != ADC_INJECTED_RANK_1)) {
             return false;
         }
@@ -121,8 +105,7 @@ static bool adc_driver_is_valid_config(const adc_driver_config_t *config)
     }
 
     const adc_driver_voltage_config_t *voltage = &config->dc_link;
-    if (!adc_driver_is_valid_input(voltage->adc, voltage->channel) ||
-        !adc_driver_is_valid_scale(voltage->offset_counts, voltage->gain_v_per_count)) {
+    if (!adc_driver_is_valid_input(voltage->adc, voltage->channel)) {
         return false;
     }
 
@@ -369,34 +352,5 @@ adc_driver_status_t adc_driver_read_raw(
         .phase_c = self->current_raw[2],
         .dc_link = (uint16_t)voltage,
     };
-    return ADC_DRIVER_STATUS_OK;
-}
-
-adc_driver_status_t adc_driver_convert(
-    const adc_driver_t *self,
-    const adc_driver_raw_sample_t *sample,
-    abc_t *i_abc,
-    float *v_dc
-)
-{
-    if ((self == NULL) || (sample == NULL) || (i_abc == NULL) || (v_dc == NULL) ||
-        !self->is_initialized || (sample->phase_a > ADC_DRIVER_MAX_CODE) ||
-        (sample->phase_b > ADC_DRIVER_MAX_CODE) || (sample->phase_c > ADC_DRIVER_MAX_CODE) ||
-        (sample->dc_link > ADC_DRIVER_MAX_CODE)) {
-        return ADC_DRIVER_STATUS_INVALID_ARGUMENT;
-    }
-
-    const adc_driver_config_t *config = &self->config;
-    *i_abc = (abc_t){
-        .a = ((float)sample->phase_a - config->phase_a.offset_counts)
-           * config->phase_a.gain_a_per_count,
-        .b = ((float)sample->phase_b - config->phase_b.offset_counts)
-           * config->phase_b.gain_a_per_count,
-        .c = ((float)sample->phase_c - config->phase_c.offset_counts)
-           * config->phase_c.gain_a_per_count,
-    };
-    /* 제공된 전압식의 절편은 gain * 2048과 반올림 오차 범위에서 같다. */
-    *v_dc = ((float)sample->dc_link - config->dc_link.offset_counts)
-          * config->dc_link.gain_v_per_count;
     return ADC_DRIVER_STATUS_OK;
 }

@@ -70,7 +70,24 @@ static fault_manager_fault_mask_t app_adc_fault_mask(
 
 static app_status_t app_disable_for_fault(app_t *self, app_status_t status)
 {
+    current_sensor_offset_calibration_state_t calibration_state;
+    current_sensor_status_t current_sensor_status;
+
     self->is_open_loop_active = false;
+    current_sensor_status = current_sensor_get_offset_calibration_state(
+        self->config.current_sensor,
+        &calibration_state
+    );
+    if ((current_sensor_status == CURRENT_SENSOR_STATUS_OK) &&
+        (calibration_state ==
+            CURRENT_SENSOR_OFFSET_CALIBRATION_RUNNING)) {
+        current_sensor_status = current_sensor_abort_offset_calibration(
+            self->config.current_sensor
+        );
+    }
+    if (current_sensor_status != CURRENT_SENSOR_STATUS_OK) {
+        self->last_current_sensor_status = current_sensor_status;
+    }
     __DMB();
 
     if ((!self->config.pwm_driver->is_initialized) ||
@@ -140,11 +157,100 @@ static void app_process_fault_clear_request(
     }
 }
 
+static app_status_t app_update_current_sensor(
+    app_t *self,
+    const adc_driver_raw_sample_t *raw,
+    abc_t *i_abc,
+    bool *has_valid_phase_current
+)
+{
+    current_sensor_offset_calibration_state_t calibration_state;
+
+    *has_valid_phase_current = false;
+    self->last_current_sensor_status =
+        current_sensor_get_offset_calibration_state(
+            self->config.current_sensor,
+            &calibration_state
+        );
+    if (self->last_current_sensor_status != CURRENT_SENSOR_STATUS_OK) {
+        return app_latch_and_stop(
+            self,
+            APP_STATUS_CURRENT_SENSOR_ERROR,
+            FAULT_MANAGER_FAULT_CURRENT_SENSOR
+        );
+    }
+
+    if (calibration_state == CURRENT_SENSOR_OFFSET_CALIBRATION_RUNNING) {
+        if (self->is_open_loop_active || self->config.pwm_driver->is_enabled) {
+            return app_latch_and_stop(
+                self,
+                APP_STATUS_CURRENT_SENSOR_ERROR,
+                FAULT_MANAGER_FAULT_CURRENT_SENSOR
+            );
+        }
+
+        self->last_current_sensor_status =
+            current_sensor_process_offset_sample(
+                self->config.current_sensor,
+                raw
+            );
+        if (self->last_current_sensor_status != CURRENT_SENSOR_STATUS_OK) {
+            return app_latch_and_stop(
+                self,
+                APP_STATUS_CURRENT_SENSOR_ERROR,
+                FAULT_MANAGER_FAULT_CURRENT_SENSOR
+            );
+        }
+
+        self->last_current_sensor_status =
+            current_sensor_get_offset_calibration_state(
+                self->config.current_sensor,
+                &calibration_state
+            );
+        if (self->last_current_sensor_status != CURRENT_SENSOR_STATUS_OK) {
+            return app_latch_and_stop(
+                self,
+                APP_STATUS_CURRENT_SENSOR_ERROR,
+                FAULT_MANAGER_FAULT_CURRENT_SENSOR
+            );
+        }
+    }
+
+    if (calibration_state == CURRENT_SENSOR_OFFSET_CALIBRATION_RUNNING) {
+        return APP_STATUS_OK;
+    }
+    if (calibration_state != CURRENT_SENSOR_OFFSET_CALIBRATION_COMPLETE) {
+        return app_latch_and_stop(
+            self,
+            APP_STATUS_CURRENT_SENSOR_ERROR,
+            FAULT_MANAGER_FAULT_CURRENT_SENSOR
+        );
+    }
+
+    self->last_current_sensor_status = current_sensor_convert(
+        self->config.current_sensor,
+        raw,
+        i_abc
+    );
+    if (self->last_current_sensor_status != CURRENT_SENSOR_STATUS_OK) {
+        return app_latch_and_stop(
+            self,
+            APP_STATUS_CURRENT_SENSOR_ERROR,
+            FAULT_MANAGER_FAULT_CURRENT_SENSOR
+        );
+    }
+
+    *has_valid_phase_current = true;
+    return APP_STATUS_OK;
+}
+
 app_status_t app_init(app_t *self, const app_config_t *config)
 {
     if ((self == NULL) ||
         (config == NULL) ||
         (config->adc_driver == NULL) ||
+        (config->current_sensor == NULL) ||
+        (config->voltage_sensor == NULL) ||
         (config->pwm_driver == NULL) ||
         (config->fault_manager == NULL) ||
         (!app_float_is_finite(config->sampling_period_s)) ||
@@ -155,7 +261,10 @@ app_status_t app_init(app_t *self, const app_config_t *config)
         return APP_STATUS_INVALID_ARGUMENT;
     }
 
-    if (!config->fault_manager->is_initialized) {
+    if ((!config->adc_driver->is_initialized) ||
+        (!config->current_sensor->is_initialized) ||
+        (!config->voltage_sensor->is_initialized) ||
+        (!config->fault_manager->is_initialized)) {
         return APP_STATUS_INVALID_STATE;
     }
 
@@ -172,6 +281,8 @@ app_status_t app_init(app_t *self, const app_config_t *config)
         .last_v_alpha_beta = {0.0f, 0.0f},
         .last_duty = neutral_duty,
         .last_adc_status = ADC_DRIVER_STATUS_OK,
+        .last_current_sensor_status = CURRENT_SENSOR_STATUS_OK,
+        .last_voltage_sensor_status = VOLTAGE_SENSOR_STATUS_OK,
         .last_cordic_status = CORDIC_DRIVER_STATUS_OK,
         .last_svpwm_status = SVPWM_STATUS_OK,
         .last_pwm_status = PWM_DRIVER_STATUS_OK,
@@ -231,8 +342,95 @@ app_status_t app_set_open_loop_command(
     return APP_STATUS_OK;
 }
 
+app_status_t app_start_current_offset_calibration(app_t *self)
+{
+    if (self == NULL) {
+        return APP_STATUS_INVALID_ARGUMENT;
+    }
+
+    if ((!self->is_initialized) ||
+        (!self->config.adc_driver->is_initialized) ||
+        (!self->config.adc_driver->is_running) ||
+        self->is_open_loop_active ||
+        self->config.pwm_driver->is_enabled) {
+        return APP_STATUS_INVALID_STATE;
+    }
+
+    if (fault_manager_is_faulted(self->config.fault_manager)) {
+        self->last_status = APP_STATUS_FAULT_ACTIVE;
+        return APP_STATUS_FAULT_ACTIVE;
+    }
+
+    self->last_current_sensor_status =
+        current_sensor_start_offset_calibration(
+            self->config.current_sensor
+        );
+    if (self->last_current_sensor_status != CURRENT_SENSOR_STATUS_OK) {
+        self->last_status = APP_STATUS_CURRENT_SENSOR_ERROR;
+        return APP_STATUS_CURRENT_SENSOR_ERROR;
+    }
+
+    self->last_status = APP_STATUS_OK;
+    return APP_STATUS_OK;
+}
+
+app_status_t app_handle_current_offset_calibration_timeout(app_t *self)
+{
+    current_sensor_offset_calibration_state_t calibration_state;
+
+    if (self == NULL) {
+        return APP_STATUS_INVALID_ARGUMENT;
+    }
+    if (!self->is_initialized) {
+        return APP_STATUS_INVALID_STATE;
+    }
+
+    self->last_current_sensor_status =
+        current_sensor_get_offset_calibration_state(
+            self->config.current_sensor,
+            &calibration_state
+        );
+    if (self->last_current_sensor_status != CURRENT_SENSOR_STATUS_OK) {
+        return APP_STATUS_INVALID_STATE;
+    }
+    if (calibration_state == CURRENT_SENSOR_OFFSET_CALIBRATION_COMPLETE) {
+        self->last_status = APP_STATUS_OK;
+        return APP_STATUS_OK;
+    }
+    if (calibration_state != CURRENT_SENSOR_OFFSET_CALIBRATION_RUNNING) {
+        return APP_STATUS_INVALID_STATE;
+    }
+
+    self->last_current_sensor_status =
+        current_sensor_abort_offset_calibration(
+            self->config.current_sensor
+        );
+    if (self->last_current_sensor_status != CURRENT_SENSOR_STATUS_OK) {
+        self->last_current_sensor_status =
+            current_sensor_get_offset_calibration_state(
+                self->config.current_sensor,
+                &calibration_state
+            );
+        if ((self->last_current_sensor_status == CURRENT_SENSOR_STATUS_OK) &&
+            (calibration_state ==
+                CURRENT_SENSOR_OFFSET_CALIBRATION_COMPLETE)) {
+            self->last_status = APP_STATUS_OK;
+            return APP_STATUS_OK;
+        }
+        return APP_STATUS_INVALID_STATE;
+    }
+
+    return app_latch_and_stop(
+        self,
+        APP_STATUS_CURRENT_OFFSET_CALIBRATION_TIMEOUT,
+        FAULT_MANAGER_FAULT_CURRENT_SENSOR
+    );
+}
+
 app_status_t app_start_open_loop(app_t *self)
 {
+    current_sensor_offset_calibration_state_t calibration_state;
+
     if (self == NULL) {
         return APP_STATUS_INVALID_ARGUMENT;
     }
@@ -245,6 +443,18 @@ app_status_t app_start_open_loop(app_t *self)
     if (fault_manager_is_faulted(self->config.fault_manager)) {
         self->last_status = APP_STATUS_FAULT_ACTIVE;
         return APP_STATUS_FAULT_ACTIVE;
+    }
+
+    self->last_current_sensor_status =
+        current_sensor_get_offset_calibration_state(
+            self->config.current_sensor,
+            &calibration_state
+        );
+    if ((self->last_current_sensor_status != CURRENT_SENSOR_STATUS_OK) ||
+        (calibration_state !=
+            CURRENT_SENSOR_OFFSET_CALIBRATION_COMPLETE)) {
+        self->last_status = APP_STATUS_INVALID_STATE;
+        return APP_STATUS_INVALID_STATE;
     }
 
     __DMB();
@@ -364,18 +574,29 @@ app_status_t app_motor_fast_loop(app_t *self, app_fast_loop_output_t *output)
         );
     }
 
-    self->last_adc_status = adc_driver_convert(
-        self->config.adc_driver,
-        &calculated_output.raw,
-        &calculated_output.i_abc,
+    calculated_output.i_abc = (abc_t){0.0f, 0.0f, 0.0f};
+    calculated_output.has_valid_phase_current = false;
+    self->last_voltage_sensor_status = voltage_sensor_convert(
+        self->config.voltage_sensor,
+        calculated_output.raw.dc_link,
         &calculated_output.v_dc
     );
-    if (self->last_adc_status != ADC_DRIVER_STATUS_OK) {
+    if (self->last_voltage_sensor_status != VOLTAGE_SENSOR_STATUS_OK) {
         return app_latch_and_stop(
             self,
-            APP_STATUS_ADC_ERROR,
-            app_adc_fault_mask(self->last_adc_status)
+            APP_STATUS_VOLTAGE_SENSOR_ERROR,
+            FAULT_MANAGER_FAULT_INVALID_MEASUREMENT
         );
+    }
+
+    const app_status_t current_sensor_status = app_update_current_sensor(
+        self,
+        &calculated_output.raw,
+        &calculated_output.i_abc,
+        &calculated_output.has_valid_phase_current
+    );
+    if (current_sensor_status != APP_STATUS_OK) {
+        return current_sensor_status;
     }
 
     ++self->fast_loop_count;
@@ -386,11 +607,19 @@ app_status_t app_motor_fast_loop(app_t *self, app_fast_loop_output_t *output)
     calculated_output.has_applied_duty = false;
 
     was_faulted = fault_manager_is_faulted(self->config.fault_manager);
-    self->last_fault_manager_status = fault_manager_update_measurements(
-        self->config.fault_manager,
-        &calculated_output.i_abc,
-        calculated_output.v_dc
-    );
+    if (calculated_output.has_valid_phase_current) {
+        self->last_fault_manager_status = fault_manager_update_measurements(
+            self->config.fault_manager,
+            &calculated_output.i_abc,
+            calculated_output.v_dc
+        );
+    } else {
+        self->last_fault_manager_status =
+            fault_manager_update_dc_link_voltage(
+                self->config.fault_manager,
+                calculated_output.v_dc
+            );
+    }
     if (self->last_fault_manager_status != FAULT_MANAGER_STATUS_OK) {
         return app_latch_and_stop(
             self,
@@ -418,7 +647,8 @@ app_status_t app_motor_fast_loop(app_t *self, app_fast_loop_output_t *output)
         }
     }
 
-    if (!self->is_open_loop_active) {
+    if (!calculated_output.has_valid_phase_current ||
+        !self->is_open_loop_active) {
         self->last_status = APP_STATUS_OK;
         *output = calculated_output;
         return APP_STATUS_OK;
