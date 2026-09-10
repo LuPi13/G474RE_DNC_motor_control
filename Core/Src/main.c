@@ -24,6 +24,7 @@
 #include "adc_driver.h"
 #include "app.h"
 #include "cordic_driver.h"
+#include "fault_manager.h"
 #include "hall_driver.h"
 #include "hall_estimator.h"
 #include "pwm_driver.h"
@@ -38,6 +39,10 @@
 /* USER CODE BEGIN PD */
 
 #define APP_FAST_LOOP_FREQUENCY_HZ  40000U
+#define APP_PHASE_CURRENT_TRIP_ABS_A  (10.0f)
+#define APP_PHASE_CURRENT_CLEAR_ABS_A (1.0f)
+#define APP_DC_LINK_OVERVOLTAGE_TRIP_V  (79.2f)
+#define APP_DC_LINK_OVERVOLTAGE_CLEAR_V (75.0f)
 
 /* USER CODE END PD */
 
@@ -66,6 +71,7 @@ static pwm_driver_t pwm_driver;
 static adc_driver_t adc_driver;
 static hall_driver_t hall_driver;
 static hall_estimator_t hall_estimator;
+static fault_manager_t fault_manager;
 static app_t app;
 
 /* HRTIM Timer C reset과 동기화된 현재 40 kHz fast-loop 주기 [s]. */
@@ -92,6 +98,7 @@ static volatile float adc_test_v_dc;
 /* Open-loop App Live Expressions 확인용. last_error는 정상 주기에도 유지한다. */
 static volatile app_status_t app_test_status;
 static volatile app_status_t app_test_last_error;
+static volatile fault_manager_status_t fault_test_init_status;
 
 /* ADC IRQ 후처리와 fast-loop 실행시간 확인용 */
 static volatile bool adc_fast_loop_pending;
@@ -302,10 +309,26 @@ int main(void)
       Error_Handler();
   }
 
+  const fault_manager_config_t fault_config = {
+      .phase_current_trip_abs_a = APP_PHASE_CURRENT_TRIP_ABS_A,
+      .phase_current_clear_abs_a = APP_PHASE_CURRENT_CLEAR_ABS_A,
+      .dc_link_overvoltage_trip_v = APP_DC_LINK_OVERVOLTAGE_TRIP_V,
+      .dc_link_overvoltage_clear_v = APP_DC_LINK_OVERVOLTAGE_CLEAR_V,
+  };
+
+  fault_test_init_status = fault_manager_init(
+      &fault_manager,
+      &fault_config
+  );
+  if (fault_test_init_status != FAULT_MANAGER_STATUS_OK) {
+      Error_Handler();
+  }
+
   /* PWM counter가 시작되기 전에 App의 ADC/PWM 연결과 안전한 0 V command를 준비한다. */
   const app_config_t app_config = {
       .adc_driver = &adc_driver,
       .pwm_driver = &pwm_driver,
+      .fault_manager = &fault_manager,
       .sampling_period_s = 1.0f / (float)APP_FAST_LOOP_FREQUENCY_HZ,
       .initial_voltage_angle_rad = 0.0f,
   };
@@ -353,6 +376,12 @@ int main(void)
 
     pwm_test_status = pwm_driver_enable(&pwm_driver);
     if (pwm_test_status != PWM_DRIVER_STATUS_OK) {
+        Error_Handler();
+    }
+
+    /* Enable 직전/도중 ADC ISR에서 fault가 발생한 경우 output을 다시 즉시 차단한다. */
+    if ((!app.is_open_loop_active) || fault_manager_is_faulted(&fault_manager)) {
+        (void)pwm_driver_disable(&pwm_driver);
         Error_Handler();
     }
   /* USER CODE END 2 */

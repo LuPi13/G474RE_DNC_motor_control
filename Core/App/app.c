@@ -47,25 +47,97 @@ static app_open_loop_command_t app_get_open_loop_command(const app_t *self)
     return self->command_buffer[active_index];
 }
 
-static app_status_t app_fail_stop(app_t *self, app_status_t status)
+static bool app_command_is_zero(const app_open_loop_command_t *command)
 {
-    ++self->error_count;
-    self->last_status = status;
+    return (command->voltage_magnitude == 0.0f) &&
+        (command->omega_e_rad_s == 0.0f);
+}
 
-    if (!self->is_open_loop_active) {
-        return status;
+static fault_manager_fault_mask_t app_adc_fault_mask(
+    adc_driver_status_t adc_status
+)
+{
+    if (adc_status == ADC_DRIVER_STATUS_SYNC_ERROR) {
+        return FAULT_MANAGER_FAULT_ADC_SYNC;
     }
 
+    if (adc_status == ADC_DRIVER_STATUS_OVERRUN) {
+        return FAULT_MANAGER_FAULT_ADC_OVERRUN;
+    }
+
+    return FAULT_MANAGER_FAULT_ADC;
+}
+
+static app_status_t app_disable_for_fault(app_t *self, app_status_t status)
+{
     self->is_open_loop_active = false;
     __DMB();
 
+    if ((!self->config.pwm_driver->is_initialized) ||
+        (!self->config.pwm_driver->is_enabled)) {
+        self->last_status = status;
+        return status;
+    }
+
     self->last_pwm_status = pwm_driver_disable(self->config.pwm_driver);
     if (self->last_pwm_status != PWM_DRIVER_STATUS_OK) {
+        self->last_fault_manager_status = fault_manager_latch(
+            self->config.fault_manager,
+            FAULT_MANAGER_FAULT_PWM
+        );
         self->last_status = APP_STATUS_PWM_ERROR;
         return APP_STATUS_PWM_ERROR;
     }
 
+    self->last_status = status;
     return status;
+}
+
+static app_status_t app_latch_and_stop(
+    app_t *self,
+    app_status_t status,
+    fault_manager_fault_mask_t fault_mask
+)
+{
+    ++self->error_count;
+    self->last_fault_manager_status = fault_manager_latch(
+        self->config.fault_manager,
+        fault_mask
+    );
+    if (self->last_fault_manager_status != FAULT_MANAGER_STATUS_OK) {
+        return app_disable_for_fault(
+            self,
+            APP_STATUS_FAULT_MANAGER_ERROR
+        );
+    }
+
+    return app_disable_for_fault(self, status);
+}
+
+static void app_process_fault_clear_request(
+    app_t *self,
+    const app_open_loop_command_t *command
+)
+{
+    if (!self->is_fault_clear_requested) {
+        return;
+    }
+
+    /* 요청 하나는 성공/실패와 관계없이 한 번만 소비한다. */
+    self->is_fault_clear_requested = false;
+    __DMB();
+
+    self->last_fault_clear_status = fault_manager_clear(
+        self->config.fault_manager,
+        !self->config.pwm_driver->is_enabled,
+        app_command_is_zero(command)
+    );
+
+    if (self->last_fault_clear_status == FAULT_MANAGER_STATUS_OK) {
+        ++self->fault_clear_success_count;
+    } else {
+        ++self->fault_clear_blocked_count;
+    }
 }
 
 app_status_t app_init(app_t *self, const app_config_t *config)
@@ -74,12 +146,17 @@ app_status_t app_init(app_t *self, const app_config_t *config)
         (config == NULL) ||
         (config->adc_driver == NULL) ||
         (config->pwm_driver == NULL) ||
+        (config->fault_manager == NULL) ||
         (!app_float_is_finite(config->sampling_period_s)) ||
         (config->sampling_period_s <= 0.0f) ||
         (!app_float_is_finite(config->initial_voltage_angle_rad)) ||
         (config->initial_voltage_angle_rad < 0.0f) ||
         (config->initial_voltage_angle_rad >= APP_TWO_PI_RAD)) {
         return APP_STATUS_INVALID_ARGUMENT;
+    }
+
+    if (!config->fault_manager->is_initialized) {
+        return APP_STATUS_INVALID_STATE;
     }
 
     const app_open_loop_command_t zero_command = {
@@ -98,13 +175,19 @@ app_status_t app_init(app_t *self, const app_config_t *config)
         .last_cordic_status = CORDIC_DRIVER_STATUS_OK,
         .last_svpwm_status = SVPWM_STATUS_OK,
         .last_pwm_status = PWM_DRIVER_STATUS_OK,
+        .last_fault_manager_status = FAULT_MANAGER_STATUS_OK,
+        .last_fault_clear_status = FAULT_MANAGER_STATUS_OK,
         .last_status = APP_STATUS_OK,
         .fast_loop_count = 0U,
         .duty_update_count = 0U,
         .not_ready_count = 0U,
         .error_count = 0U,
+        .fault_clear_request_count = 0U,
+        .fault_clear_success_count = 0U,
+        .fault_clear_blocked_count = 0U,
         .is_initialized = true,
         .is_open_loop_active = false,
+        .is_fault_clear_requested = false,
     };
 
     *self = initialized;
@@ -159,8 +242,31 @@ app_status_t app_start_open_loop(app_t *self)
         return APP_STATUS_INVALID_STATE;
     }
 
+    if (fault_manager_is_faulted(self->config.fault_manager)) {
+        self->last_status = APP_STATUS_FAULT_ACTIVE;
+        return APP_STATUS_FAULT_ACTIVE;
+    }
+
     __DMB();
     self->is_open_loop_active = true;
+    self->last_status = APP_STATUS_OK;
+    return APP_STATUS_OK;
+}
+
+app_status_t app_request_fault_clear(app_t *self)
+{
+    if (self == NULL) {
+        return APP_STATUS_INVALID_ARGUMENT;
+    }
+
+    if ((!self->is_initialized) ||
+        (!fault_manager_is_faulted(self->config.fault_manager))) {
+        return APP_STATUS_INVALID_STATE;
+    }
+
+    __DMB();
+    self->is_fault_clear_requested = true;
+    ++self->fault_clear_request_count;
     self->last_status = APP_STATUS_OK;
     return APP_STATUS_OK;
 }
@@ -187,10 +293,11 @@ app_status_t app_stop_open_loop(app_t *self)
         &neutral_duty
     );
     if (self->last_pwm_status != PWM_DRIVER_STATUS_OK) {
-        ++self->error_count;
-        self->last_status = APP_STATUS_PWM_ERROR;
-        (void)pwm_driver_disable(self->config.pwm_driver);
-        return APP_STATUS_PWM_ERROR;
+        return app_latch_and_stop(
+            self,
+            APP_STATUS_PWM_ERROR,
+            FAULT_MANAGER_FAULT_PWM
+        );
     }
 
     self->last_v_alpha_beta.alpha = 0.0f;
@@ -216,13 +323,18 @@ app_status_t app_handle_adc_error(
     }
 
     self->last_adc_status = adc_status;
-    return app_fail_stop(self, APP_STATUS_ADC_ERROR);
+    return app_latch_and_stop(
+        self,
+        APP_STATUS_ADC_ERROR,
+        app_adc_fault_mask(adc_status)
+    );
 }
 
 app_status_t app_motor_fast_loop(app_t *self, app_fast_loop_output_t *output)
 {
     app_fast_loop_output_t calculated_output;
     app_open_loop_command_t command;
+    bool was_faulted;
     float sin_theta;
     float cos_theta;
     float next_angle_rad;
@@ -245,7 +357,11 @@ app_status_t app_motor_fast_loop(app_t *self, app_fast_loop_output_t *output)
         return APP_STATUS_ADC_NOT_READY;
     }
     if (self->last_adc_status != ADC_DRIVER_STATUS_OK) {
-        return app_fail_stop(self, APP_STATUS_ADC_ERROR);
+        return app_latch_and_stop(
+            self,
+            APP_STATUS_ADC_ERROR,
+            app_adc_fault_mask(self->last_adc_status)
+        );
     }
 
     self->last_adc_status = adc_driver_convert(
@@ -255,7 +371,11 @@ app_status_t app_motor_fast_loop(app_t *self, app_fast_loop_output_t *output)
         &calculated_output.v_dc
     );
     if (self->last_adc_status != ADC_DRIVER_STATUS_OK) {
-        return app_fail_stop(self, APP_STATUS_ADC_ERROR);
+        return app_latch_and_stop(
+            self,
+            APP_STATUS_ADC_ERROR,
+            app_adc_fault_mask(self->last_adc_status)
+        );
     }
 
     ++self->fast_loop_count;
@@ -264,6 +384,39 @@ app_status_t app_motor_fast_loop(app_t *self, app_fast_loop_output_t *output)
     calculated_output.v_alpha_beta.beta = 0.0f;
     calculated_output.duty = app_neutral_duty();
     calculated_output.has_applied_duty = false;
+
+    was_faulted = fault_manager_is_faulted(self->config.fault_manager);
+    self->last_fault_manager_status = fault_manager_update_measurements(
+        self->config.fault_manager,
+        &calculated_output.i_abc,
+        calculated_output.v_dc
+    );
+    if (self->last_fault_manager_status != FAULT_MANAGER_STATUS_OK) {
+        return app_latch_and_stop(
+            self,
+            APP_STATUS_FAULT_MANAGER_ERROR,
+            FAULT_MANAGER_FAULT_INVALID_MEASUREMENT
+        );
+    }
+
+    if (fault_manager_is_faulted(self->config.fault_manager)) {
+        if (!was_faulted) {
+            ++self->error_count;
+        }
+
+        if (app_disable_for_fault(
+                self,
+                APP_STATUS_FAULT_ACTIVE) == APP_STATUS_PWM_ERROR) {
+            return APP_STATUS_PWM_ERROR;
+        }
+        command = app_get_open_loop_command(self);
+        app_process_fault_clear_request(self, &command);
+
+        if (fault_manager_is_faulted(self->config.fault_manager)) {
+            self->last_status = APP_STATUS_FAULT_ACTIVE;
+            return APP_STATUS_FAULT_ACTIVE;
+        }
+    }
 
     if (!self->is_open_loop_active) {
         self->last_status = APP_STATUS_OK;
@@ -279,7 +432,11 @@ app_status_t app_motor_fast_loop(app_t *self, app_fast_loop_output_t *output)
             &cos_theta
         );
         if (self->last_cordic_status != CORDIC_DRIVER_STATUS_OK) {
-            return app_fail_stop(self, APP_STATUS_CORDIC_ERROR);
+            return app_latch_and_stop(
+                self,
+                APP_STATUS_CORDIC_ERROR,
+                FAULT_MANAGER_FAULT_CORDIC
+            );
         }
 
         calculated_output.v_alpha_beta.alpha =
@@ -293,7 +450,11 @@ app_status_t app_motor_fast_loop(app_t *self, app_fast_loop_output_t *output)
             &calculated_output.duty
         );
         if (self->last_svpwm_status != SVPWM_STATUS_OK) {
-            return app_fail_stop(self, APP_STATUS_SVPWM_ERROR);
+            return app_latch_and_stop(
+                self,
+                APP_STATUS_SVPWM_ERROR,
+                FAULT_MANAGER_FAULT_SVPWM
+            );
         }
     } else {
         /* 0 V에서는 v_dc가 0이어도 정의되는 neutral duty를 직접 사용한다. */
@@ -306,7 +467,11 @@ app_status_t app_motor_fast_loop(app_t *self, app_fast_loop_output_t *output)
         &calculated_output.duty
     );
     if (self->last_pwm_status != PWM_DRIVER_STATUS_OK) {
-        return app_fail_stop(self, APP_STATUS_PWM_ERROR);
+        return app_latch_and_stop(
+            self,
+            APP_STATUS_PWM_ERROR,
+            FAULT_MANAGER_FAULT_PWM
+        );
     }
 
     next_angle_rad = self->voltage_angle_rad +

@@ -13,25 +13,27 @@
 
 #include "adc_driver.h"
 #include "cordic_driver.h"
+#include "fault_manager.h"
 #include "pwm_driver.h"
 #include "svpwm.h"
 
 /**
  * @defgroup app_open_loop Open-loop inverter App
- * @brief ADC, CORDIC, SVPWM, PWM driver를 연결하는 bring-up용 fast-loop orchestration.
+ * @brief ADC, software fault 보호, CORDIC, SVPWM, PWM driver를 연결하는 fast-loop orchestration.
  *
  * @par 책임
  * 이 module은 준비된 ADC 전류 묶음과 DC-link 전압을 소비하고, open-loop 회전 전압
  * vector를 만들어 SVPWM duty를 PWM driver에 기록한다. HAL callback 자체와 IRQ 후처리
  * 진입점, peripheral 초기화 순서, PWM output enable은 main/CubeMX 영역에 남긴다.
- * Hall rotor feedback은 현재 open-loop vector 생성에 사용하지 않는다.
+ * Hall rotor feedback은 현재 open-loop vector 생성에 사용하지 않는다. Fault manager는
+ * 별도 instance로 유지하며 App이 측정/계산 오류와 PWM disable 순서를 조정한다.
  *
  * @par 시작 순서
  *
  * 1. ADC driver를 초기화하고 시작한다.
- * 2. app_init()으로 driver 연결과 fast-loop 주기를 설정한다.
+ * 2. Fault manager를 초기화한 뒤 app_init()으로 driver 연결과 fast-loop 주기를 설정한다.
  * 3. PWM driver를 초기화하고 0.5 duty를 준비한다.
- * 4. app_start_open_loop()을 호출한 뒤 PWM output을 활성화한다.
+ * 4. app_start_open_loop() 성공 뒤 PWM output을 활성화하고 fault 상태를 다시 확인한다.
  * 5. 세 ADC 완료 판정 뒤 HAL IRQ 후처리에서 app_motor_fast_loop()을 한 번 호출한다.
  *
  * PWM counter 시작 중 발생할 수 있는 ADC event를 안전하게 소비할 수 있도록 app_init()은
@@ -56,10 +58,14 @@
  * preemption priority에서 실행해야 하며, 동일 instance에 대한 복수 writer의 동시 호출은
  * 지원하지 않는다.
  *
- * @par 오류 처리
- * ADC NOT_READY는 해당 주기만 건너뛴다. 실행 중 ADC/CORDIC/SVPWM/PWM 오류가 발생하면
- * open-loop 실행을 중지하고 pwm_driver_disable()을 시도한다. 이는 bring-up 단계의
- * fail-stop이며 hardware fault latch나 완전한 fault manager를 대신하지 않는다.
+ * @par Fault 처리와 명령 해제
+ * ADC NOT_READY는 해당 주기만 건너뛴다. 실행 중 threshold 위반이나
+ * ADC/CORDIC/SVPWM/PWM 오류가 발생하면 fault manager에 원인을 latch하고 open-loop를
+ * 중지한 뒤 pwm_driver_disable()을 시도한다. 외부 명령은 먼저 0 V, 0 rad/s를 publish한
+ * 다음 app_request_fault_clear()로 일회성 해제를 요청한다. 다음 유효 ADC sample에서
+ * 안전 조건을 검사하며, 성공해도 PWM과 open-loop는 자동으로 재시작하지 않는다.
+ *
+ * Software fault 경로는 현재 PCB에 없는 HRTIM fault/COMP hardware 긴급 차단을 대신하지 않는다.
  * @{
  */
 
@@ -74,7 +80,9 @@ typedef enum {
     APP_STATUS_ADC_ERROR,          /**< ADC raw 읽기 또는 SI 환산 실패. */
     APP_STATUS_CORDIC_ERROR,       /**< Open-loop phase의 sine/cosine 계산 실패. */
     APP_STATUS_SVPWM_ERROR,        /**< Duty 계산 실패 또는 overmodulation. */
-    APP_STATUS_PWM_ERROR           /**< PWM duty 기록 또는 fail-stop disable 실패. */
+    APP_STATUS_PWM_ERROR,          /**< PWM duty 기록 또는 fail-stop disable 실패. */
+    APP_STATUS_FAULT_ACTIVE,       /**< 하나 이상의 fault가 latch되어 PWM이 비활성 상태임. */
+    APP_STATUS_FAULT_MANAGER_ERROR /**< Fault manager API 실행 또는 상태 연결 오류. */
 } app_status_t;
 
 /**
@@ -83,6 +91,7 @@ typedef enum {
 typedef struct {
     adc_driver_t *adc_driver;       /**< 초기화/시작되는 ADC driver instance. */
     pwm_driver_t *pwm_driver;       /**< 초기화될 PWM driver instance. */
+    fault_manager_t *fault_manager; /**< 초기화된 software fault manager instance. */
     float sampling_period_s;        /**< 고정 fast-loop 호출 주기 [s], 양의 유한값. */
     float initial_voltage_angle_rad; /**< 초기 전압 vector phase [0, 2*pi) [rad]. */
 } app_config_t;
@@ -113,8 +122,9 @@ typedef struct {
  *
  * 한 instance의 app_motor_fast_loop()은 ADC IRQ 후처리 한 곳에서만 호출한다.
  * Public API를 통하지 않고 command buffer, active index 및 상태 필드를 수정하지 않는다.
- * 이 구조체는 현재 Stage 8 vertical slice에 필요한 상태만 소유하며 Hall, FOC, 통신,
- * state machine 또는 fault latch를 소유하지 않는다.
+ * Fault latch와 보호 threshold의 owner는 config로 연결한 fault_manager_t 이다.
+ * App은 비동기 clear request와 open-loop 실행 상태를 소유하며 Hall, FOC, 통신 또는
+ * 완전한 drive state machine은 아직 소유하지 않는다.
  */
 typedef struct {
     app_config_t config; /**< 초기화 시 복사한 driver/timing 설정. */
@@ -130,22 +140,28 @@ typedef struct {
     cordic_driver_status_t last_cordic_status; /**< 마지막 CORDIC 하위 호출 결과. */
     svpwm_status_t last_svpwm_status;           /**< 마지막 SVPWM 하위 호출 결과. */
     pwm_driver_status_t last_pwm_status;        /**< 마지막 PWM 하위 호출 결과. */
+    fault_manager_status_t last_fault_manager_status; /**< 마지막 fault manager 하위 호출 결과. */
+    fault_manager_status_t last_fault_clear_status; /**< 마지막 비동기 clear 요청 처리 결과. */
     app_status_t last_status;                   /**< 마지막 App API 실행 결과. */
 
     uint32_t fast_loop_count;   /**< ADC 환산까지 성공한 fast-loop 횟수. */
     uint32_t duty_update_count; /**< PWM duty 기록까지 성공한 횟수. */
     uint32_t not_ready_count;   /**< ADC NOT_READY로 건너뛴 횟수. */
     uint32_t error_count;       /**< NOT_READY를 제외한 runtime 오류 횟수. */
+    uint32_t fault_clear_request_count; /**< 외부에서 접수한 fault clear 요청 횟수. */
+    uint32_t fault_clear_success_count; /**< 안전 조건을 만족하여 latch를 해제한 횟수. */
+    uint32_t fault_clear_blocked_count; /**< 요청을 소비했지만 latch를 유지한 횟수. */
 
     bool is_initialized;              /**< app_init() 정상 완료 여부. */
     volatile bool is_open_loop_active; /**< Open-loop duty 갱신 활성 상태. */
+    volatile bool is_fault_clear_requested; /**< 다음 유효 fast loop에서 소비할 clear 요청. */
 } app_t;
 
 /**
  * @brief Open-loop App의 driver 연결과 초기 상태를 설정한다.
  *
  * @param[out] self 초기화할 App instance.
- * @param[in] config Driver pointer, fast-loop 주기와 초기 전압 vector phase.
+ * @param[in] config Driver/fault manager pointer, fast-loop 주기와 초기 전압 vector phase.
  *
  * @pre ISR 밖에서 호출한다.
  * @pre @p config 의 driver instance storage는 App 사용 기간 동안 유효해야 한다.
@@ -153,7 +169,8 @@ typedef struct {
  * @note Driver hardware를 조작하지 않으므로 pwm_driver_init() 전에 호출할 수 있다.
  *
  * @retval APP_STATUS_OK 초기화 완료.
- * @retval APP_STATUS_INVALID_ARGUMENT NULL driver, 유효하지 않은 주기 또는 초기각.
+ * @retval APP_STATUS_INVALID_ARGUMENT NULL 연결, 유효하지 않은 주기 또는 초기각.
+ * @retval APP_STATUS_INVALID_STATE Fault manager가 초기화되지 않음.
  */
 app_status_t app_init(app_t *self, const app_config_t *config);
 
@@ -190,6 +207,7 @@ app_status_t app_set_open_loop_command(
  * @retval APP_STATUS_OK Open-loop 갱신 활성화 또는 이미 활성 상태.
  * @retval APP_STATUS_INVALID_ARGUMENT self가 NULL임.
  * @retval APP_STATUS_INVALID_STATE App 또는 PWM driver가 초기화되지 않음.
+ * @retval APP_STATUS_FAULT_ACTIVE Fault가 latch되어 시작을 거부함.
  */
 app_status_t app_start_open_loop(app_t *self);
 
@@ -204,8 +222,29 @@ app_status_t app_start_open_loop(app_t *self);
  * @retval APP_STATUS_INVALID_ARGUMENT self가 NULL임.
  * @retval APP_STATUS_INVALID_STATE App 또는 PWM driver가 초기화되지 않음.
  * @retval APP_STATUS_PWM_ERROR Neutral duty 기록 실패.
+ * @retval APP_STATUS_FAULT_MANAGER_ERROR PWM 오류를 fault manager에 기록하지 못함.
  */
 app_status_t app_stop_open_loop(app_t *self);
+
+/**
+ * @brief 외부 명령 경로에서 fault latch 해제를 일회성으로 요청한다.
+ *
+ * @param[in,out] self 초기화된 App instance.
+ *
+ * @details 이 함수는 요청만 publish한다. 다음 유효 ADC fast loop가 최신 측정값을
+ *          반영한 뒤 PWM 비활성, 0 V/0 rad/s command, active fault 없음 조건을 검사한다.
+ *          조건이 맞지 않으면 요청을 소비하고 latch를 유지하므로 다시 요청해야 한다.
+ * @pre app_set_open_loop_command()로 0 V, 0 rad/s를 먼저 publish한다.
+ * @note 성공적으로 해제되어도 open-loop와 PWM output은 비활성 상태다. 호출자는 이후
+ *       별도의 새 운전 명령, app_start_open_loop(), pwm_driver_enable() 순서를 수행한다.
+ * @warning ADC 동기 오류처럼 유효 sample 갱신이 재개되지 않는 fault는 이 요청만으로
+ *          해제할 수 없으며 ADC stop/start 재동기화 또는 MCU reset이 필요하다.
+ *
+ * @retval APP_STATUS_OK Clear 요청 publish 완료.
+ * @retval APP_STATUS_INVALID_ARGUMENT self가 NULL임.
+ * @retval APP_STATUS_INVALID_STATE App이 초기화되지 않았거나 latch된 fault가 없음.
+ */
+app_status_t app_request_fault_clear(app_t *self);
 
 /**
  * @brief ADC callback/IRQ 단계에서 검출한 오류를 App fail-stop 경로에 전달한다.
@@ -214,11 +253,13 @@ app_status_t app_stop_open_loop(app_t *self);
  * @param[in] adc_status ADC driver가 반환한 NOT_READY 이외의 오류 status.
  *
  * @details Fast loop가 시작되지 못한 수집 동기 오류에서도 이전 nonzero duty가 계속
- *          유지되지 않도록 open-loop 갱신을 중지하고 pwm_driver_disable()을 시도한다.
+ *          유지되지 않도록 ADC fault를 latch하고 open-loop 갱신을 중지한 뒤
+ *          pwm_driver_disable()을 시도한다.
  * @note ADC callback에서는 오류 기록과 이 함수 호출만 수행하고 제어 계산은 실행하지 않는다.
  *
  * @retval APP_STATUS_ADC_ERROR ADC 오류를 기록했고 PWM disable도 성공했거나 불필요함.
  * @retval APP_STATUS_PWM_ERROR PWM disable 시도가 실패함.
+ * @retval APP_STATUS_FAULT_MANAGER_ERROR ADC fault를 fault manager에 기록하지 못함.
  * @retval APP_STATUS_INVALID_ARGUMENT self가 NULL이거나 adc_status가 오류가 아님.
  * @retval APP_STATUS_INVALID_STATE App이 초기화되지 않음.
  */
@@ -237,6 +278,8 @@ app_status_t app_handle_adc_error(
  * @pre ADC driver와 PWM driver를 다른 실행 문맥에서 동시에 사용하지 않는다.
  * @post Open-loop가 활성화되었으면 성공할 때만 다음 duty와 voltage angle을 갱신한다.
  * @note 비활성 상태에서도 ADC 묶음은 소비/환산하며 @p output 의 has_applied_duty는 false다.
+ * @note 각 유효 sample에서 3상 과전류와 DC-link 과전압을 먼저 검사한다. Fault가 latch된
+ *       동안에도 sample을 소비하여 active fault와 명령 기반 해제 조건을 갱신한다.
  * @note 0 V command는 CORDIC/SVPWM을 생략하고 정확한 0.5 duty를 사용한다.
  * @warning 실제 전력 인가 전 hardware fault/break 및 emergency shutdown을 별도로 검증한다.
  *
@@ -246,6 +289,8 @@ app_status_t app_handle_adc_error(
  * @retval APP_STATUS_CORDIC_ERROR Sine/cosine 계산 실패.
  * @retval APP_STATUS_SVPWM_ERROR Vdc 오류, 수치 오류 또는 overmodulation.
  * @retval APP_STATUS_PWM_ERROR Duty 기록 또는 fail-stop disable 실패.
+ * @retval APP_STATUS_FAULT_ACTIVE Software fault가 latch되어 duty 갱신을 중단함.
+ * @retval APP_STATUS_FAULT_MANAGER_ERROR Fault manager 연결 또는 상태 갱신 실패.
  * @retval APP_STATUS_INVALID_ARGUMENT self 또는 output이 NULL임.
  * @retval APP_STATUS_INVALID_STATE App이 초기화되지 않음.
  */
