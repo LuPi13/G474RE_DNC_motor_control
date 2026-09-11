@@ -732,10 +732,18 @@ Digital current filter는 Clarke/Park 뒤의 `i_d`, `i_q` feedback에 적용한�
 구현되어 있다. 이 module은 cutoff 기본값이나 d/q 의미를 소유하지 않는다. FOC 통합 시
 FOC가 `i_d`, `i_q`용 instance를 각각 소유하고 첫 유효 feedback으로 초기화한다.
 
-현재 repository에는 실제 PCB의 analog RC R/C 값과 cutoff frequency, 제어에 사용할 digital
-IIR cutoff가 확정값으로 기록되어 있지 않다. FOC 통합 전에 schematic/BOM의 R/C 값을 확인해
-analog cutoff를 기록하고, 측정 noise와 목표 current-loop bandwidth를 기준으로 digital cutoff를
-정한 뒤 제품별 config에서 전달한다. 임의 cutoff를 Algorithm 구현 내부 기본값으로 숨기지 않는다.
+`Core/Control/foc.c/.h`는 위 current-control 계산을 hardware-independent subsystem으로
+구현한다. d/q filter/PI state, 선택적 motor-model decoupling, 원형 전압 제한과 external
+anti-windup tracking을 소유하며 출력은 `v_alpha_beta_ref`까지다. 40 kHz 실행, 500 Hz/1 kHz
+current-loop bandwidth, motor parameter ±30%, 2-sample voltage delay 및 3 A 포화 후 복귀를
+포함한 standalone 수치 검증을 완료했다. 아직 `motor_control` 또는 App fast loop,
+SVPWM/PWM 경로에는 연결하지 않았다.
+
+현재 PCB의 ACS725 VIOUT와 MCU ADC 사이에는 47 Ω series resistor와 ADC 입력의 1 nF
+capacitor가 있으며 계산상 RC cutoff는 약 3.39 MHz다. 이 RC는 40 kHz sampling의 주된
+anti-alias filter가 아니라 ADC sampling kickback과 고주파 EMI를 줄이는 hardware 경계로
+취급한다. 제어에 사용할 digital IIR cutoff는 측정 noise와 목표 current-loop bandwidth를
+기준으로 정한 뒤 제품별 config에서 전달하며 Algorithm/FOC 내부 기본값으로 숨기지 않는다.
 
 그 다음:
 
