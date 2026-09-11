@@ -695,9 +695,11 @@ d/q rate limiter
 i_dq_ref
 ```
 
-현재 `motor_control` vertical slice는 이 reference conditioning부터 구현한다. 전류 지령
-상한은 software 과전류 trip보다 작게 설정하며, 정상 stop은 0 A target으로 ramp할 수 있다.
-Fault/emergency stop은 reference ramp를 기다리지 않고 즉시 PWM을 차단한다.
+현재 `motor_control` vertical slice는 이 reference conditioning을 구현했고 보드 실행환경의
+독립 입력/출력 시험을 완료했다. 아직 App fast loop나 FOC에는 연결하지 않았으며 FOC vertical
+slice를 통합할 때 최종 `i_dq_ref` 전달 경로를 추가한다. 전류 지령 상한은 software 과전류
+trip보다 작게 설정하며, 정상 stop은 0 A target으로 ramp할 수 있다. Fault/emergency stop은
+reference ramp를 기다리지 않고 즉시 PWM을 차단한다.
 
 ```text
 i_abc
@@ -725,6 +727,11 @@ Digital current filter는 Clarke/Park 뒤의 `i_d`, `i_q` feedback에 적용한�
 과전류 보호는 지연된 filter 출력이 아니라 offset 보정만 끝난 unfiltered `i_abc`를 사용한다.
 센서 출력과 MCU ADC 사이의 analog RC filter는 anti-alias/noise 제한용 hardware 경계로
 취급하며, digital IIR의 상태나 coefficient를 `current_sensor` 또는 `adc_driver`가 소유하지 않는다.
+
+현재 repository에는 실제 PCB의 analog RC R/C 값과 cutoff frequency, 제어에 사용할 digital
+IIR cutoff가 확정값으로 기록되어 있지 않다. FOC 통합 전에 schematic/BOM의 R/C 값을 확인해
+analog cutoff를 기록하고, 측정 noise와 목표 current-loop bandwidth를 기준으로 digital cutoff를
+정한 뒤 제품별 config에서 전달한다. 임의 cutoff를 Algorithm 구현 내부 기본값으로 숨기지 않는다.
 
 그 다음:
 

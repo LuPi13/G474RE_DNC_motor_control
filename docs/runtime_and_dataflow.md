@@ -158,7 +158,7 @@ HAL callback에는 로직을 길게 작성하지 않는다.
 fast loop를 실행하지 않고, driver가 세 상의 완료를 취합한 뒤 pending을
 한 번만 표시한다. Callback은 즉시 반환하고 fast loop는 HAL IRQ 처리 후에 실행한다.
 
-향후 App 연결 예 (`adc_driver`는 초기화/시작된 instance):
+현재 App 연결의 축약 예 (`adc_driver`는 초기화/시작된 instance):
 
 ```c
 void HAL_ADCEx_InjectedConvCpltCallback(ADC_HandleTypeDef *hadc)
@@ -193,8 +193,8 @@ void ADC3_IRQHandler(void)
 }
 ```
 
-위 예시는 연결 구조이며 오류 처리 구현까지 포함하지 않는다. HAL 오류 callback도
-App의 오류 처리 경로에 연결해야 한다.
+위 예시는 연결 구조를 줄여 쓴 것이며 실제 `main.c`는 ADC 수집 오류와 HAL 오류 callback도
+App의 `app_handle_adc_error()` 경로에 연결한다.
 
 HAL callback 정의는 `Core/Src/main.c`의 CubeMX USER CODE 영역에 두고,
 실제 orchestration은 `Core/App/app.c`에 둔다. 현재 open-loop bring-up에서는
@@ -204,6 +204,10 @@ App이 성공한 해당 주기 결과를 debugger에서 보기 위한 복사본�
 `app_adc_irq_epilogue()`는 `ADC1_2_IRQHandler()`와 `ADC3_IRQHandler()`의 HAL 호출 뒤
 CubeMX USER CODE 영역에서 호출한다. App 함수로 분리해도 실행 문맥은
 같은 ADC ISR이며, main loop로 실행이 이동하지 않는다.
+
+Hall estimator 호출은 현재 `main.c`의 bring-up/test helper에 남아 있다. FOC를 통합할 때는
+Hall snapshot 취득과 estimator 실행을 App orchestration으로 옮기고, `main.c`에는 IRQ 경계와
+debugger용 결과 복사만 유지한다.
 
 STM32 HAL은 `HAL_ADCEx_InjectedConvCpltCallback()`이 반환된 뒤 현재
 JEOC/JEOS flag를 정리한다. Callback 안에서 다음 PWM 주기까지 걸릴 수 있는
@@ -456,7 +460,7 @@ PWM driver
  -> HRTIM compare register
 ```
 
-FOC는 현재 v_dc와 voltage margin에 맞게 d/q 전압 vector를 제한하고 실제 적용 가능한
+FOC 구현 시 v_dc와 voltage margin에 맞게 d/q 전압 vector를 제한하고 실제 적용 가능한
 각 축 성분을 PI back-calculation에 tracking한 뒤 v_alpha_beta_ref를 만든다. SVPWM은
 입력 vector의 방향을 바꾸는 별도 overmodulation을 수행하지 않으며, 선형 modulation
 범위를 벗어난 입력은 오류로 반환한다. PWM driver의 최종 duty clamp는 register 보호를
