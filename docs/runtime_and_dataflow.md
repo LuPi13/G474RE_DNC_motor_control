@@ -58,6 +58,24 @@ reference를 소비하는 scheduler의 고정 주기에서 실행한다. Runtime
 instance를 통신/ISR 양쪽에서 직접 수정하지 않고 같은 scheduler 문맥에서 적용한다.
 정상 stop ramp와 달리 fault/emergency shutdown은 rate limiter를 우회해 즉시 안전 출력을 적용한다.
 
+Current mode의 d/q 전류 지령은 `motor_control`이 다음 순서로 처리한다.
+
+```text
+requested i_dq
+  -> d/q axis clamp
+  -> current magnitude saturation
+  -> d/q rate limiter
+  -> final current magnitude saturation
+  -> FOC i_dq_ref
+```
+
+두 scalar rate limiter가 서로 다른 비율로 이동하면 중간 d/q vector가 원형 제한을 벗어날
+수 있으므로 마지막 saturation을 방어선으로 둔다. 이때 원점 방향으로 단순 축소하지 않고
+직전 적용 지령에서 중간 지령으로 향하는 이동량을 원 경계까지만 허용한다. 그러면 축별
+rate limit도 보존된다. 이 제한이 개입하면 limiter state도 실제 적용한 `i_dq_ref`로
+동기화한다. 외부 target은 command source가 소유하고,
+`motor_control.i_dq_ref`가 FOC에 전달되는 최종 reference의 source of truth다.
+
 ---
 
 ## 2. Single source of truth

@@ -133,6 +133,7 @@ MCU/peripheral 세부 구현:
   Config가 커지면 제품별 정의를 `Core/Config`로 분리할 수 있다.
 - Driver config: 물리 채널과 논리적 a/b/c상 매핑 등 peripheral 사용 조건을 전달한다.
   ADC config의 channel/rank는 CubeMX 설정과 대조하는 값이지 하드웨어 재설정 명령이 아니다.
+  센서 영점, gain과 SI 단위 환산 설정은 `current_sensor`/`voltage_sensor`가 소유한다.
   Hall config도 TIM/GPIO mapping, 정방향 state sequence, timer kernel clock 및 electrical
   angle offset을 전달하며 CubeMX의 TIM mode나 GPIO alternate function을 다시 설정하지 않는다.
 - Driver 구현: 지원 구성 안의 매핑/계수 변경만으로 재사용 가능하면 수정하지 않는다.
@@ -240,6 +241,10 @@ position_controller -> speed_controller -> foc
 ```
 
 `motor_control.c`가 각 controller를 호출하고 중간 reference를 전달한다.
+
+d/q 전류 지령의 axis/magnitude 제한과 고정 주기 rate limit도 mode별 target을 FOC에
+전달하는 `motor_control`이 소유한다. `foc`는 최종 적용 가능한 `i_dq_ref`를 입력으로 받고,
+상위 command 범위나 정상 stop ramp 정책을 직접 소유하지 않는다.
 
 ---
 

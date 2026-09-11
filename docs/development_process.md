@@ -681,6 +681,24 @@ software 실행과 무관하게 PWM이 safe state로 들어가는 것도 별도�
 
 FOC는 current-control subsystem으로 구현한다.
 
+FOC에 전달할 d/q 전류 지령은 `motor_control`에서 먼저 조정한다.
+
+```text
+Current command 또는 Speed PI output
+  ↓
+d/q axis 및 magnitude saturation
+  ↓
+d/q rate limiter
+  ↓
+이전 지령 기준 최종 magnitude saturation과 limiter state 동기화
+  ↓
+i_dq_ref
+```
+
+현재 `motor_control` vertical slice는 이 reference conditioning부터 구현한다. 전류 지령
+상한은 software 과전류 trip보다 작게 설정하며, 정상 stop은 0 A target으로 ramp할 수 있다.
+Fault/emergency stop은 reference ramp를 기다리지 않고 즉시 PWM을 차단한다.
+
 ```text
 i_abc
   ↓
