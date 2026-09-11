@@ -728,6 +728,10 @@ Digital current filter는 Clarke/Park 뒤의 `i_d`, `i_q` feedback에 적용한�
 센서 출력과 MCU ADC 사이의 analog RC filter는 anti-alias/noise 제한용 hardware 경계로
 취급하며, digital IIR의 상태나 coefficient를 `current_sensor` 또는 `adc_driver`가 소유하지 않는다.
 
+`Core/Algorithm/filter.c/.h`에는 fixed-step scalar 1차 저역통과 IIR 계산과 상태 관리가
+구현되어 있다. 이 module은 cutoff 기본값이나 d/q 의미를 소유하지 않는다. FOC 통합 시
+FOC가 `i_d`, `i_q`용 instance를 각각 소유하고 첫 유효 feedback으로 초기화한다.
+
 현재 repository에는 실제 PCB의 analog RC R/C 값과 cutoff frequency, 제어에 사용할 digital
 IIR cutoff가 확정값으로 기록되어 있지 않다. FOC 통합 전에 schematic/BOM의 R/C 값을 확인해
 analog cutoff를 기록하고, 측정 noise와 목표 current-loop bandwidth를 기준으로 digital cutoff를
