@@ -131,7 +131,7 @@ MCU/peripheral 세부 구현:
 - CubeMX: pin, peripheral channel, trigger, sampling time, PWM preload/update 등 하드웨어 설정.
 - main/App 통합 코드: driver instance와 config를 준비하고 초기화/시작/정지 순서를 관리한다.
   Config가 커지면 제품별 정의를 `Core/Config`로 분리할 수 있다.
-- Driver config: 물리 채널과 논리적 a/b/c상 매핑, ADC 센서 영점/환산 계수 등을 전달한다.
+- Driver config: 물리 채널과 논리적 a/b/c상 매핑 등 peripheral 사용 조건을 전달한다.
   ADC config의 channel/rank는 CubeMX 설정과 대조하는 값이지 하드웨어 재설정 명령이 아니다.
   Hall config도 TIM/GPIO mapping, 정방향 state sequence, timer kernel clock 및 electrical
   angle offset을 전달하며 CubeMX의 TIM mode나 GPIO alternate function을 다시 설정하지 않는다.
