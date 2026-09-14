@@ -68,12 +68,12 @@ CubeMX 생성 영역인 `Core/Src`, `Core/Inc`와 사용자 소유 계층 디렉
 - Control과 Platform 사이 wiring
 
 현재 `app.c/.h`는 ADC raw sample을 sensor module에 전달하고 SI feedback을 소비하며,
-software fault 보호, open-loop 전압 vector,
+software fault 보호, Hall rotor estimation, open-loop 전압 vector와 FOC current mode,
 CORDIC, SVPWM, PWM 갱신을 연결한다. Fault threshold, active/latch 상태와 최초 진단
-snapshot은 별도 `fault_manager.c/.h`가 소유하고 App은 측정/오류 전달과 PWM disable,
-명령 기반 clear 순서를 조정한다. Hall/FOC/통신/완전한 state machine까지 하나의 구조체에
-미리 모으지 않으며, 이후 기능은 책임에 맞는 module을 추가해 App이 호출 순서와
-data flow만 조정한다.
+snapshot은 별도 `fault_manager.c/.h`가 소유하고 App은 측정/오류 전달, control reset,
+PWM disable과 명령 기반 clear 순서를 조정한다. FOC runtime state와 최종 `i_dq_ref`는
+`motor_control`이 소유하며 App은 중복 저장하지 않는다. 통신/완전한 state machine까지
+App 구조체에 미리 모으지 않고 이후 기능은 책임에 맞는 module을 추가한다.
 
 ### Control
 
@@ -133,6 +133,8 @@ MCU/peripheral 세부 구현:
   Config가 커지면 제품별 정의를 `Core/Config`로 분리할 수 있다.
 - Driver config: 물리 채널과 논리적 a/b/c상 매핑 등 peripheral 사용 조건을 전달한다.
   ADC config의 channel/rank는 CubeMX 설정과 대조하는 값이지 하드웨어 재설정 명령이 아니다.
+  세 전류 ADC가 같은 변환 timing을 사용할 때 completion interrupt 하나를 지정해 세 JDR을
+  일괄 수집할 수 있으며, driver가 init에서 이 timing 계약을 검증한다.
   센서 영점, gain과 SI 단위 환산 설정은 `current_sensor`/`voltage_sensor`가 소유한다.
   Hall config도 TIM/GPIO mapping, 정방향 state sequence, timer kernel clock 및 electrical
   angle offset을 전달하며 CubeMX의 TIM mode나 GPIO alternate function을 다시 설정하지 않는다.
@@ -262,6 +264,14 @@ omega_ref -> speed -> i_q_ref -> FOC
 Current mode:
 i_d_ref/i_q_ref -> FOC
 ```
+
+현재 `motor_control`은 current command의 axis/vector/rate 제한을 적용한 뒤 자신이 소유한
+`foc_t`를 호출한다. App command publish 경로는
+`motor_control_prepare_current_reference_target()`으로 변하지 않는 axis/vector 제한을 한 번
+계산하고, 40 kHz 경로는 검증된 target에 rate 제한과 최종 vector 제한만 적용한다. App은
+phase current, rotor sine/cosine, electrical speed와 DC-link 전압을
+`motor_control_update_fast()` 입력으로 묶고 결과 `v_alpha_beta_ref`만 SVPWM에 전달한다.
+일반 호출과 수치 reference test에서는 checked `motor_control_update()`를 유지한다.
 
 `position_controller.c`는 speed controller를 직접 include하지 않는다.
 

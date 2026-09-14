@@ -21,6 +21,9 @@
 - [`runtime_and_dataflow.md`](runtime_and_dataflow.md)  
   fast loop, ISR, multi-rate scheduling, command/reference/feedback 흐름.
 
+- [`real_time_execution_budget.md`](real_time_execution_budget.md)
+  40 kHz fast-loop 실행시간 예산, hot path 규칙, cycle 계측과 회귀 방지 기준.
+
 - [`development_process.md`](development_process.md)  
   실제 하드웨어 bring-up부터 FOC/속도/위치 제어까지의 권장 개발 순서.
 
@@ -43,6 +46,7 @@
 6. module 이름은 실제 책임을 반영한다.
 7. 유지보수성과 검증 가능성을 우선하고, 성능 최적화는 profiling 결과로 정당화한다.
 8. 구조를 변경했다면 코드뿐 아니라 관련 문서도 함께 갱신한다.
+9. Fast-loop 변경은 `real_time_execution_budget.md`의 cycle budget과 검증 gate를 통과해야 한다.
 
 ## 규칙 강도
 

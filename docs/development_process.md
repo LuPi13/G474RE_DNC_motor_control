@@ -284,6 +284,17 @@ open-loop와 PWM output을 활성화하지 않는다. 범위 오류나 timeout�
 latch한다. 운전 중 재보정이 필요하면 PWM 차단만으로 충분하다고 가정하지 말고 실제 상전류
 감쇠와 rotor 정지를 확인한 뒤 같은 절차를 수행한다.
 
+Offset calibration timeout은 임의의 고정값으로 두지 않는다. 최소 필요시간은
+
+```text
+(settling_sample_count + averaging_sample_count) / actual_sample_rate
+```
+
+이며 timeout은 이 값보다 반드시 커야 한다. Integer ms로 계산할 때는 올림하고 startup
+scheduling과 일시적인 sample 누락을 위한 명시적 margin을 더한다. Sample 수나 ADC rate를
+변경하면 timeout도 같은 설정에서 다시 계산되도록 한다. 현재 128 settling + 2048 averaging,
+40 kHz 조건의 이상적인 최소시간은 54.4 ms이므로 10 ms timeout은 유효하지 않다.
+
 센서 보정과 환산이 ADC peripheral 수집과 독립적으로 바뀌므로 현재 구현은 다음처럼 분리한다.
 
 ```text
@@ -654,16 +665,20 @@ hardware emergency path는 software state machine보다 빠르게 동작할 수 
 현재 PCB에는 별도의 gate-driver fault/HRTIM fault 입력이 연결되어 있지 않다. 따라서 현재
 vertical slice는 App 계층 `fault_manager`에서 다음 software 보호를 먼저 제공한다.
 
-- 각 상 `|i_phase| >= 10.0 A`에서 과전류 latch
+- 각 상 `|i_phase| >= 3.0 A`에서 과전류 latch
 - `v_dc >= 79.2 V`에서 DC-link 과전압 latch
-- ADC/CORDIC/SVPWM/PWM 오류 원인 latch
-- Fault 발생 시 open-loop 중지와 `pwm_driver_disable()`
+- ADC/rotor/motor-control/CORDIC/SVPWM/PWM 오류 원인 latch
+- Fault 발생 시 active mode 중지와 `pwm_driver_disable()`
 - PWM 비활성, 0 command, 정상 측정 조건을 확인한 명령 기반 latch 해제
 - 해제 뒤 자동 재시작 금지
 
 상전류 `1.0 A`, DC-link `75.0 V`를 현재 clear hysteresis 기준으로 사용한다. 이 값들은
 제품/보드 설정이며 향후 Config 계층으로 이동할 수 있다. ADC 동기 오류처럼 정상 sample이
 재개되지 않는 경우에는 명령 clear보다 먼저 ADC 재동기화나 MCU reset이 필요하다.
+
+현재 fault manager에는 DC-link 저전압 trip이 없다. 따라서 10 V 저전압 차단값도 아직
+적용하지 않으며, gate-driver 동작 범위와 brownout/회생 조건을 포함한 별도 보호 정책으로
+추가할 때 trip/clear hysteresis와 mode start 조건을 함께 정의한다.
 
 이 software 보호를 hardware 과전류 보호로 간주하지 않는다. 향후 PCB revision에서는
 gate-driver fault 또는 COMP 출력에서 HRTIM fault까지 이어지는 CPU 독립 경로를 추가하고
@@ -695,10 +710,10 @@ d/q rate limiter
 i_dq_ref
 ```
 
-현재 `motor_control` vertical slice는 이 reference conditioning을 구현했고 보드 실행환경의
-독립 입력/출력 시험을 완료했다. 아직 App fast loop나 FOC에는 연결하지 않았으며 FOC vertical
-slice를 통합할 때 최종 `i_dq_ref` 전달 경로를 추가한다. 전류 지령 상한은 software 과전류
-trip보다 작게 설정하며, 정상 stop은 0 A target으로 ramp할 수 있다. Fault/emergency stop은
+현재 `motor_control`은 reference conditioning 뒤 자신이 소유한 FOC를 실행하며 App fast loop가
+Hall estimator의 rotor feedback, `i_abc`, `v_dc`를 전달한다. 최종 `v_alpha_beta_ref`는 App에서
+SVPWM과 PWM driver로 이어진다. 초기 제품 설정은 d/q vector 지령 상한 2 A, 변화율 100 A/s,
+software 상전류 trip 3 A다. 정상 stop은 0 A target으로 ramp할 수 있고 Fault/emergency stop은
 reference ramp를 기다리지 않고 즉시 PWM을 차단한다.
 
 ```text
@@ -736,8 +751,9 @@ FOC가 `i_d`, `i_q`용 instance를 각각 소유하고 첫 유효 feedback으로
 구현한다. d/q filter/PI state, 선택적 motor-model decoupling, 원형 전압 제한과 external
 anti-windup tracking을 소유하며 출력은 `v_alpha_beta_ref`까지다. 40 kHz 실행, 500 Hz/1 kHz
 current-loop bandwidth, motor parameter ±30%, 2-sample voltage delay 및 3 A 포화 후 복귀를
-포함한 standalone 수치 검증을 완료했다. 아직 `motor_control` 또는 App fast loop,
-SVPWM/PWM 경로에는 연결하지 않았다.
+포함한 standalone 수치 검증을 완료했다. `motor_control`과 App fast loop, SVPWM/PWM 경로의
+software 통합은 완료했지만 실제 current mode는 Hall offset과 전류 극성 확인 전까지 자동
+시작하지 않으며 board 폐루프 검증은 아직 수행하지 않았다.
 
 현재 PCB의 ACS725 VIOUT와 MCU ADC 사이에는 47 Ω series resistor와 ADC 입력의 1 nF
 capacitor가 있으며 계산상 RC cutoff는 약 3.39 MHz다. 이 RC는 40 kHz sampling의 주된
@@ -921,3 +937,13 @@ PWM
 - 의미 있는 Git commit 생성
 
 까지를 하나의 개발 단위로 본다.
+
+PWM 동기 fast loop에 영향을 주는 변경은 위 항목에 더해 다음을 모두 만족해야 한다.
+
+- `real_time_execution_budget.md`에 정의된 변경 전후 cycle 측정
+- 정상 및 worst-case 전체 maximum 기준 통과
+- deadline miss 0 확인
+- linked image disassembly와 stack usage 검토
+
+이 timing gate를 통과하기 전에는 current-loop 실구동이나 speed/position loop 추가로
+진행하지 않는다.

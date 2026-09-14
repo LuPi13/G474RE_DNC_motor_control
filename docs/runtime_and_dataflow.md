@@ -129,7 +129,9 @@ ADC sampling
    ->
 ISR/callback
    ->
-ADC driver가 3상 injected 완료 취합
+지정된 completion ADC의 injected 완료 IRQ
+   ->
+ADC driver가 같은 trigger의 3상 JDR을 일괄 수집
    ->
 fast-loop pending 표시
    ->
@@ -154,9 +156,12 @@ PWM duty write
 
 HAL callback에는 로직을 길게 작성하지 않는다.
 
-현재 전류는 서로 다른 세 ADC의 injected 변환으로 수집한다. 따라서 callback마다
-fast loop를 실행하지 않고, driver가 세 상의 완료를 취합한 뒤 pending을
-한 번만 표시한다. Callback은 즉시 반환하고 fast loop는 HAL IRQ 처리 후에 실행한다.
+현재 전류는 서로 다른 세 ADC의 injected 변환으로 수집하지만, 세 변환은 같은 trigger,
+sampling time과 oversampling 설정을 사용한다. 세 ADC에서 각각 완료 interrupt를 발생시키지
+않고 `adc_driver_config_t::injected_completion_adc` 하나만 완료 interrupt를 발생시킨다.
+정상 JEOC 경로에서 App IRQ entry는 driver를 통해 세 ADC의 JEOC를 확인하고 rank 1 JDR을
+일괄 수집한다. 현재 JEOC/JEOS를 정리하고 pending을 표시한 뒤 fast loop를 실행한다. 그 외
+비정상 interrupt source는 `HAL_ADC_IRQHandler()` fallback으로 넘긴다.
 
 현재 App 연결의 축약 예 (`adc_driver`는 초기화/시작된 instance):
 
@@ -179,45 +184,48 @@ void HAL_ADCEx_InjectedConvCpltCallback(ADC_HandleTypeDef *hadc)
 
 void ADC1_2_IRQHandler(void)
 {
-    app_adc_irq_prologue();
     HAL_ADC_IRQHandler(&hadc1);
     HAL_ADC_IRQHandler(&hadc2);
-    app_adc_irq_epilogue();
 }
 
 void ADC3_IRQHandler(void)
 {
     app_adc_irq_prologue();
+    if (app_adc_injected_irq_try_handle_fast(&hadc3)) {
+        app_adc_irq_epilogue();
+        return;
+    }
     HAL_ADC_IRQHandler(&hadc3);
     app_adc_irq_epilogue();
 }
 ```
 
-위 예시는 연결 구조를 줄여 쓴 것이며 실제 `main.c`는 ADC 수집 오류와 HAL 오류 callback도
+현재 보드에서는 ADC3를 completion ADC로 사용한다. ADC1/ADC2 injected 완료 interrupt는
+driver start에서 활성화하지 않으므로 정상 경로에서는 shared `ADC1_2_IRQHandler()`에
+진입하지 않는다. 위 예시는 연결 구조를 줄여 쓴 것이며 실제 `main.c`는 ADC 수집 오류와 HAL 오류 callback도
 App의 `app_handle_adc_error()` 경로에 연결한다.
 
 HAL callback 정의는 `Core/Src/main.c`의 CubeMX USER CODE 영역에 두고,
 실제 orchestration은 `Core/App/app.c`에 둔다. 현재 open-loop bring-up에서는
-`main.c`의 IRQ 후처리 helper가 `app_motor_fast_loop()`을 호출하며, App이 raw sample
+`main.c`의 IRQ 후처리 helper가 ISR 전용 `app_motor_fast_loop_fast()`를 호출하며, App이 raw sample
 소비와 SI 환산부터 CORDIC/SVPWM/PWM duty 갱신까지 수행한다. Main의 `adc_test_*` 변수는
 App이 성공한 해당 주기 결과를 debugger에서 보기 위한 복사본일 뿐 canonical feedback이 아니다.
-`app_adc_irq_epilogue()`는 `ADC1_2_IRQHandler()`와 `ADC3_IRQHandler()`의 HAL 호출 뒤
-CubeMX USER CODE 영역에서 호출한다. App 함수로 분리해도 실행 문맥은
-같은 ADC ISR이며, main loop로 실행이 이동하지 않는다.
+`app_adc_irq_epilogue()`는 completion ADC인 `ADC3_IRQHandler()`의 JEOC 정리 뒤 CubeMX USER
+CODE 영역에서 호출한다. App 함수로 분리해도 실행 문맥은 같은 ADC ISR이며, main loop로
+실행이 이동하지 않는다.
 
 Hall estimator 호출은 현재 `main.c`의 bring-up/test helper에 남아 있다. FOC를 통합할 때는
 Hall snapshot 취득과 estimator 실행을 App orchestration으로 옮기고, `main.c`에는 IRQ 경계와
 debugger용 결과 복사만 유지한다.
 
-STM32 HAL은 `HAL_ADCEx_InjectedConvCpltCallback()`이 반환된 뒤 현재
-JEOC/JEOS flag를 정리한다. Callback 안에서 다음 PWM 주기까지 걸릴 수 있는
-계산을 실행하면, 계산 중 새로 설정된 완료 flag까지 HAL의 후속 clear에
-손실될 수 있다. 이 위험을 피하기 위해 callback은 driver 취합과 pending 표시만
-수행하고, fast loop는 HAL이 현재 flag를 정리한 뒤 IRQ 후처리에서 실행한다.
+정상 fast IRQ는 세 JDR을 읽은 직후 현재 JEOC/JEOS를 직접 정리하고 pending을 표시한다.
+HAL fallback을 탄 경우에는 `HAL_ADCEx_InjectedConvCpltCallback()`이 pending만 표시하고,
+HAL이 현재 flag를 정리한 뒤 fast loop를 실행한다. 어느 경로에서도 callback 안에서 제어
+계산을 실행하지 않는다.
 
 ### Sample 소비와 실행 조건
 
-- App fast loop는 완료 판정 직후 같은 ADC ISR의 HAL 처리 후에서
+- App fast loop는 완료 판정 직후 같은 ADC ISR의 JEOC 정리 후에서
   `adc_driver_read_raw()`로 묶음을 한 번 소비한다.
 - Vdc는 외부 trigger에 의한 단일 regular 변환 결과를 DMA 없이 읽는다.
   읽을 때 새 변환을 시작하거나 완료를 polling하지 않는다.
@@ -228,8 +236,9 @@ JEOC/JEOS flag를 정리한다. Callback 안에서 다음 PWM 주기까지 걸�
   중에는 `current_sensor_process_offset_sample()`로 raw sample을 소비하고 DC-link 전압 보호만
   갱신한다. NOT_READY나 오류가 발생한 묶음으로 제어를 진행하지 않으며 보호 동작은 App이 결정한다.
 - 해당 전압 DR은 driver만 읽는다. 다른 코드에서 먼저 읽으면 EOC 등 상태 판정에 영향을 준다.
-- 전류 ADC ISR끼리는 서로 선점하지 않도록 구성하고, 묶음 소비를 다음 수집 주기 전에 끝낸다.
-  완료 bitmask는 PWM 주기 번호를 증명하지 않으므로 trigger 누락과 실행 deadline은 App에서 별도로 감시한다.
+- Completion callback에서 follower ADC의 JEOC가 모두 설정되지 않았거나 이전 묶음이 미소비된
+  경우 동기 오류로 처리한다. 묶음 소비를 다음 수집 주기 전에 끝내며 trigger 누락과 실행
+  deadline은 App에서 별도로 감시한다.
 
 지원 ADC 구성, sample 폐기 조건 및 동기 오류 복구 절차의 상세 계약은
 [`adc_driver.h`](../Core/Platform/adc_driver.h)를 따른다.
@@ -252,7 +261,8 @@ TIM2 counter overflow
  -> hall_driver_handle_timeout()
  -> 정지/0 rad/s 상태 publish
 
-세 ADC injected 변환 완료
+completion ADC injected 변환 완료
+ -> 세 ADC JDR 일괄 수집
  -> fast-loop pending 표시
  -> HAL ADC flag 정리
  -> ADC IRQ 후처리
@@ -346,11 +356,20 @@ ISR/callback은:
 - HAL callback에서 global variable를 여기저기 갱신
 - controller 간 실행 순서를 callback 파일에 분산
 - blocking communication
+- fast loop에서 큰 controller/output 구조체 전체를 transactional snapshot으로 반복 복사
+
+정상 fast path에서는 filter, PI, limiter runtime state도 매번 snapshot/rollback하지 않는다.
+초기화와 command 경로에서 입력을 검증하고 fast path는 검증된 precondition 아래 필요한
+runtime state만 직접 갱신한다. 진단 output의 scalar 복사로 library call만 피하는 것도 충분한
+최적화가 아니며, hot path가 생성·전달하는 데이터 자체를 최소화한다.
+
+40 kHz 실행시간 예산, checked/fast path 경계와 필수 검증 절차는
+[`real_time_execution_budget.md`](real_time_execution_budget.md)를 따른다.
 
 현재 HAL TIM callback은 `main.c`의 CubeMX USER CODE 영역에서 event source를 확인하고
-대응하는 Hall handler만 호출한다. 향후 App 통합 후에도 Hall callback 안에 motor-control
-stack을 직접 넣지 않고, 세 ADC 완료 callback이 pending을 표시한 뒤
-HAL 처리 후 ADC IRQ 후처리에서 fast-loop entry point를 실행하는 구조를 유지한다.
+대응하는 Hall handler만 호출한다. Hall callback 안에는 motor-control stack을 직접 넣지 않는다.
+Completion ADC IRQ가 세 JDR을 수집하고 현재 flag를 정리한 뒤, 같은 IRQ 후처리에서 fast-loop
+entry point를 실행하는 구조를 유지한다.
 
 ---
 
@@ -493,17 +512,23 @@ CPU 170 MHz, fast loop 40 kHz의 한 주기는
 interrupt 복귀 비용은 포함되지 않으므로 interrupt jitter와 duty write deadline을
 위한 margin을 남겨야 한다.
 
-### 현재 open-loop App 연결
+현재 170 MHz/40 kHz timing contract의 hard deadline은 4250 cycles이며, 통합 통과 목표는
+전체 worst-case 3200 cycles 이하와 deadline miss 0이다. Body, 정상 경로 또는 평균값만으로
+통과시키지 않는다. 세부 구간과 시험 조건은
+[`real_time_execution_budget.md`](real_time_execution_budget.md)를 따른다.
 
-Stage 8의 `app_motor_fast_loop()`은 다음 경로를 한 ADC 주기에서 실행한다.
+### 현재 App drive-mode 연결
+
+`app_motor_fast_loop()`은 공통 feedback/fault 경로 뒤 active mode에 맞는 계산을 실행한다.
 
 ```text
 adc_driver_read_raw / convert
- -> voltage_angle의 CORDIC sin/cos
- -> v_alpha_beta
- -> svpwm_calculate
- -> pwm_driver_set_duty
- -> 다음 주기 voltage_angle 적분
+ -> unfiltered i_abc / v_dc software fault 검사
+ -> Hall feedback snapshot / hall_estimator_update
+ -> open-loop: voltage angle -> CORDIC -> v_alpha_beta
+    current: current command -> motor_control -> FOC -> v_alpha_beta_ref
+ -> SVPWM
+ -> PWM duty write
 ```
 
 Open-loop command는 전압 vector 크기 [V]와 signed electrical angular velocity [rad/s]이며,
@@ -512,15 +537,24 @@ rotor electrical angle과 별개의 값이다. 0 V command는 DC-link가 0 V인 
 사이에는 App이 소유한 double buffer를 사용한다. Writer는 하나이고 ADC ISR보다 낮은
 preemption priority에서 실행해야 한다.
 
-App은 PWM counter 시작 중 발생할 수 있는 ADC event를 소비하되 `app_start_open_loop()` 전에는
-PWM compare를 갱신하지 않는다. 각 유효 sample에서 `fault_manager`가 3상 과전류와 DC-link
-과전압을 먼저 검사한다. 실행 중 threshold 위반이나 ADC/CORDIC/SVPWM/PWM 오류가 발생하면
-원인을 latch하고 open-loop 갱신을 중지한 뒤 software PWM disable을 시도한다. 이 경로는
+Current command는 App writer가 `motor_control`의 checked prepare API로 axis/vector 2 A 제한을
+먼저 적용한 뒤 별도 double buffer에 publish한다. 40 kHz fast loop는 준비된 target에
+100 A/s rate limit과 이동 중 최종 vector 제한만 적용한다. FOC와 하위 PI/filter는 App의
+measurement/fault/rotor/CORDIC 검증을 precondition으로 하는 fast API를 사용하며 최종
+alpha-beta 전압의 유한성 검사는 유지한다. 초기 board bring-up FOC 설정은 500 Hz current-loop
+bandwidth, 5 kHz d/q IIR, 0.9 voltage utilization과 decoupling OFF다. Current mode start는
+0 A command, current offset calibration 완료와 유효 Hall electrical angle을 요구한다.
+Hall electrical offset 검증 전에는 current mode를 자동 시작하지 않는다.
+
+App은 PWM counter 시작 중 발생할 수 있는 ADC event를 소비하되 mode start 전에는 PWM
+compare를 갱신하지 않는다. 각 유효 sample에서 `fault_manager`가 3상 과전류와 DC-link
+과전압을 먼저 검사한다. 실행 중 threshold 위반이나 ADC/rotor/control/CORDIC/SVPWM/PWM
+오류가 발생하면 원인을 latch하고 active mode를 중지한 뒤 software PWM disable을 시도한다. 이 경로는
 현재 PCB에 없는 HRTIM break/fault나 COMP 기반 hardware 긴급 차단을 대신하지 않는다.
 
 Injected 완료 취합 단계의 동기 오류나 HAL ADC 오류는 fast loop가 실행되지 않을 수 있으므로
 `main.c` callback이 `app_handle_adc_error()`에 전달한다. Callback 안에서는 ADC fault latch,
-open-loop 중지와 software PWM disable만 수행하며 CORDIC/SVPWM 계산은 실행하지 않는다.
+active mode 중지와 software PWM disable만 수행하며 control/SVPWM 계산은 실행하지 않는다.
 
 ---
 
@@ -560,27 +594,33 @@ low-level driver가 임의로 system state를 변경하지 않는다. 단, hardw
 - 유효하지 않은 측정값
 - a/b/c상 각각의 과전류
 - DC-link 과전압
+- Hall feedback, rotor estimator, motor control 오류
 - CORDIC, SVPWM, PWM 오류
 
-현재 보드의 초기 설정은 상전류 절댓값 `10.0 A`와 DC-link `79.2 V`에서 trip한다.
+현재 보드의 초기 설정은 상전류 절댓값 `3.0 A`와 DC-link `79.2 V`에서 trip한다.
 Latch 해제를 위한 hysteresis는 상전류 절댓값 `1.0 A` 이하, DC-link `75.0 V` 이하로
 설정한다. Threshold는 보드/제품 설정이므로 `main.c`의 App 통합 config에서 전달하며
 fault manager 구현에 숨은 기본값을 두지 않는다.
 
-Fault가 latch되면 App은 PWM output을 disable하고 open-loop 실행 상태를 해제한다.
+현재 fault manager에는 DC-link 저전압 보호가 없다. 따라서 `10 V` 저전압 차단
+threshold도 아직 적용하지 않는다. 저전압 보호를 추가할 때는 ADC 측정 유효 범위,
+기동/정지 상태와 회생 중 DC-link 거동을 함께 정의한 뒤 별도 fault로 구현한다.
+
+Fault가 latch되면 App은 PWM output을 disable하고 활성 drive mode를 해제한다.
 ADC trigger와 counter는 계속 동작하므로 ADC가 정상인 fault에서는 측정값을 계속 갱신해
-active 원인이 사라졌는지 판단할 수 있다. 외부 명령은 0 V, 0 rad/s command를 먼저
-publish하고 `app_request_fault_clear()`로 일회성 해제를 요청한다. 다음 유효 fast loop에서
+active 원인이 사라졌는지 판단할 수 있다. 외부에서는 open-loop와 current command를 모두
+0으로 먼저 publish하고 `app_request_fault_clear()`로 일회성 해제를 요청한다. 다음 유효 fast loop에서
 다음 조건을 모두 만족할 때만 latch를 해제한다.
 
 ```text
 PWM output disabled
-command = 0 V, 0 rad/s
+open-loop command = 0 V, 0 rad/s
+current command = 0 A
 latest measurement valid
 active measurement fault 없음
 ```
 
-요청은 성공/실패와 관계없이 한 번만 소비한다. 해제 성공 후에도 open-loop와 PWM은
+요청은 성공/실패와 관계없이 한 번만 소비한다. 해제 성공 후에도 drive mode와 PWM은
 비활성 상태이며 별도의 새 command와 시작 절차가 필요하다. 따라서 이전 nonzero command로
 자동 재시작하지 않는다. ADC 동기 오류처럼 유효 sample 자체가 재개되지 않는 fault는
 명령 해제만으로 처리하지 않고 trigger 차단, ADC stop/start 재동기화 또는 MCU reset이 필요하다.
