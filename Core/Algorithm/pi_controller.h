@@ -156,6 +156,20 @@ pi_controller_status_t pi_controller_update(
 );
 
 /**
+ * @brief 검증이 끝난 fast-loop 오차로 PI를 최소 연산만 수행해 갱신한다.
+ *
+ * @param[in,out] self 초기화된 PI instance.
+ * @param[in] error 상위 fast path에서 유한성이 보장된 제어 오차.
+ * @return 내부 scalar saturation이 적용된 PI 출력.
+ *
+ * @pre self는 NULL이 아니고 초기화되어 있어야 한다.
+ * @pre error와 모든 중간 계산 결과가 유한해야 한다.
+ * @pre 실제 호출 간격은 config의 sampling_period_s와 일치해야 한다.
+ * @warning 인자와 계산 결과를 검사하지 않는다. 일반 경로에서는 pi_controller_update()를 사용한다.
+ */
+float pi_controller_update_fast(pi_controller_t *self, float error);
+
+/**
  * @brief 외부 제한 뒤 실제 적용 가능한 출력을 추가 back-calculation에 반영한다.
  *
  * @param[in,out] self 현재 제어 주기에 pi_controller_update()가 성공한 PI instance.
@@ -174,6 +188,21 @@ pi_controller_status_t pi_controller_update(
  * @retval PI_CONTROLLER_STATUS_NUMERIC_ERROR Tracking correction 또는 적분 계산이 유한 범위를 벗어남.
  */
 pi_controller_status_t pi_controller_apply_tracking(
+    pi_controller_t *self,
+    float applied_output
+);
+
+/**
+ * @brief 검증된 외부 제한 출력을 fast-loop PI tracking에 반영한다.
+ *
+ * @param[in,out] self 같은 주기에 fast update를 완료한 PI instance.
+ * @param[in] applied_output 상위 fast path에서 유한성이 보장된 실제 적용 출력.
+ *
+ * @pre self는 NULL이 아니고 초기화되어 있어야 한다.
+ * @pre applied_output과 계산 결과가 유한해야 한다.
+ * @warning 인자와 결과를 검사하지 않는다. 일반 경로에서는 pi_controller_apply_tracking()을 사용한다.
+ */
+void pi_controller_apply_tracking_fast(
     pi_controller_t *self,
     float applied_output
 );

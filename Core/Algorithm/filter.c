@@ -98,6 +98,11 @@ filter_status_t filter_low_pass_reset(filter_low_pass_t *self, float output)
     return FILTER_STATUS_OK;
 }
 
+void filter_low_pass_reset_fast(filter_low_pass_t *self, float output)
+{
+    self->output = output;
+}
+
 filter_status_t filter_low_pass_update(
     filter_low_pass_t *self,
     float input,
@@ -133,3 +138,8 @@ filter_status_t filter_low_pass_update(
     return FILTER_STATUS_OK;
 }
 
+float filter_low_pass_update_fast(filter_low_pass_t *self, float input)
+{
+    self->output += self->coefficient * (input - self->output);
+    return self->output;
+}

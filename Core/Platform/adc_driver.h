@@ -29,7 +29,8 @@
  * - DC 전압은 regular rank 1 한 채널에서 읽으며, 전류 ADC와 공유할 수 있다.
  * - ADC는 independent mode, 12-bit, right-aligned로 설정한다.
  * - Oversampling을 사용해도 최종 결과가 [0, 4095]에 들어오도록 설정한다.
- * - 전류는 같은 PWM 이벤트에서 한 번씩 변환한다. 각 callback은 다음 주기 전에 처리한다.
+ * - 전류는 같은 PWM 이벤트, sampling time과 oversampling 설정으로 한 번씩 변환한다.
+ * - 세 ADC 중 지정한 completion ADC만 injected 완료 interrupt를 발생시킨다.
  * - 전압은 외부 trigger로 변환하며 DMA, continuous conversion, auto-wait,
  *   regular EOC/EOS/OVR interrupt를 사용하지 않는다.
  *
@@ -38,10 +39,10 @@
  * 1. CubeMX 초기화 후 adc_driver_init()으로 매핑을 검증하고 ADC를 보정한다.
  * 2. Trigger가 발생하지 않는 상태에서 adc_driver_start()를 호출한다.
  * 3. 모든 ADC가 준비되면 PWM time base를 시작한다.
- * 4. Injected callback에서 adc_driver_handle_injected_complete()를 호출한다.
- * 5. 세 전류가 준비되면 pending을 표시하고 callback을 즉시 종료한다.
- * 6. HAL IRQ handler가 현재 injected 완료 flag를 정리한 뒤, 같은 ADC IRQ의
- *    후처리에서 adc_driver_read_raw()를 호출한다.
+ * 4. Completion ADC의 정상 JEOC IRQ 또는 HAL callback에서
+ *    adc_driver_handle_injected_complete()를 호출한다.
+ * 5. Driver가 세 JDR을 일괄 수집하면 현재 completion flag를 정리하고 pending을 표시한다.
+ * 6. 같은 ADC IRQ의 후처리에서 adc_driver_read_raw()를 호출한다.
  *
  * @par 정지와 오류 복구
  * Trigger를 막고 진행 중인 ISR 처리가 끝난 뒤 adc_driver_stop()을 호출한다.
@@ -103,6 +104,7 @@ typedef struct {
  * | phase_a | ADC2 / CH12 | injected rank 1 |
  * | phase_b | ADC3 / CH1 | injected rank 1 |
  * | phase_c | ADC1 / CH15 | injected rank 1 |
+ * | injected_completion_adc | ADC3 | 세 상 일괄 수집을 시작하는 완료 interrupt |
  * | dc_link | ADC1 / CH6 | regular rank 1 |
  *
  * @note 위 값은 사용 예이며 driver 내부 기본값이 아니다. 새 PCB에서는 CubeMX 설정과
@@ -112,6 +114,7 @@ typedef struct {
     adc_driver_phase_config_t phase_a;     /**< 논리적 a상의 ADC 입력 매핑. */
     adc_driver_phase_config_t phase_b;     /**< 논리적 b상의 ADC 입력 매핑. */
     adc_driver_phase_config_t phase_c;     /**< 논리적 c상의 ADC 입력 매핑. */
+    ADC_HandleTypeDef *injected_completion_adc; /**< 세 상 중 완료 interrupt를 사용할 ADC handle. */
     adc_driver_voltage_config_t dc_link;   /**< DC-link 전압 ADC 입력 매핑. */
 } adc_driver_config_t;
 
@@ -137,14 +140,13 @@ typedef struct {
  * 환산된 물리량은 이 구조체에 저장하지 않고 App의 feedback으로 전달한다.
  *
  * @par 실행 문맥
- * ADC ISR끼리 서로 선점하지 않도록 같은 preemption priority를 사용한다.
- * init/start/stop과 수집 API의 동시 실행은 호출자가 방지한다.
+ * Completion ADC ISR 하나가 세 상을 일괄 수집한다. init/start/stop과 수집 API의 동시 실행은
+ * 호출자가 방지한다.
  * 이 구조체는 자체적인 lock이나 여러 실행 문맥 간 snapshot 보호를 제공하지 않는다.
  */
 typedef struct {
     adc_driver_config_t config; /**< 초기화 시 복사한 ADC 매핑 설정. */
     uint16_t current_raw[3];   /**< 수집 중인 a/b/c상 전류 code [count], index 0/1/2 순서. */
-    uint32_t complete_mask;    /**< 이번 전류 묶음의 완료 bit. Bit 0/1/2는 a/b/c상. */
     uint32_t active_mask;      /**< 정리 대상 변환 그룹. Bit 0/1/2는 a/b/c상, bit 3은 전압. */
     bool is_initialized;      /**< 매핑 검증과 ADC calibration의 정상 완료 여부. */
     bool is_running;          /**< 모든 변환 그룹의 시작이 완료된 논리적 실행 상태. */
@@ -206,7 +208,7 @@ adc_driver_status_t adc_driver_start(adc_driver_t *self);
  *
  * @param[in,out] self 초기화된 instance. 시작 실패 후 정리가 필요한 경우도 허용함.
  * @pre 외부 trigger를 먼저 막고 ADC ISR 처리가 끝난 뒤 ISR 밖에서 호출한다.
- * @post 유효한 instance에서는 is_running과 is_sample_ready가 false, complete_mask가 0이 된다.
+ * @post 유효한 instance에서는 is_running과 is_sample_ready가 false가 된다.
  *       모든 그룹을 정지하면 active_mask가 0이 되고 has_sync_error도 해제된다.
  *
  * @details Injected 전류를 먼저 정지하고 regular 전압을 정지한다. 일부 HAL 호출이
@@ -222,22 +224,22 @@ adc_driver_status_t adc_driver_start(adc_driver_t *self);
 adc_driver_status_t adc_driver_stop(adc_driver_t *self);
 
 /**
- * @brief Injected 완료 이벤트 하나를 수집하고 3상 전류의 준비 여부를 반환한다.
+ * @brief Completion ADC의 완료 이벤트에서 세 상 전류를 일괄 수집한다.
  *
  * @param[in,out] self 실행 중인 instance.
- * @param[in] hadc HAL callback에서 전달받은 ADC handle. 설정의 전류 handle과 같아야 함.
- * @param[out] is_complete 세 전류가 새로 모이면 true. 유효한 포인터에는 나머지 경로에서 false를 기록함.
+ * @param[in] hadc HAL callback에서 전달받은 ADC handle. injected_completion_adc와 같아야 함.
+ * @param[out] is_complete 세 전류를 새로 수집하면 true. 유효한 포인터에는 나머지 경로에서 false를 기록함.
  *
- * @pre 각 ADC의 HAL_ADCEx_InjectedConvCpltCallback()에서 한 번씩 호출한다.
- *      ADC ISR끼리는 서로 선점하지 않아야 하며, 다음 수집 주기 전에 처리를 끝낸다.
- * @post 완료 시 complete_mask는 0, is_sample_ready는 true가 된다.
+ * @pre Completion ADC의 정상 JEOC IRQ 경로 또는 HAL_ADCEx_InjectedConvCpltCallback()에서 한 번 호출한다.
+ *      세 ADC는 같은 trigger, sampling time과 oversampling 설정을 사용해야 한다.
+ * @post 완료 시 is_sample_ready는 true가 된다.
  *       App은 같은 ADC IRQ의 HAL 처리 후 adc_driver_read_raw()로 이 묶음을
  *       소비해야 한다.
  *
- * @details 중복 완료 또는 이전 묶음 미소비를 검출하면 묶음을 폐기하고 동기 오류를 유지한다.
- *          범위 밖 전류도 동기 오류를 유지하며, 이후 호출은 SYNC_ERROR를 반환한다.
- * @warning Bitmask는 PWM 주기 번호를 증명하지 않는다. 모든 ADC의 이벤트가 함께 누락되는 경우
- *          등을 검출하려면 App에서 trigger와 실행 deadline을 별도로 감시해야 한다.
+ * @details Callback 시점에 follower ADC의 JEOC가 없거나 이전 묶음이 미소비 상태이면 동기
+ *          오류를 유지한다. 범위 밖 전류도 동기 오류를 유지하며 이후 호출은 SYNC_ERROR를 반환한다.
+ * @warning 모든 ADC의 이벤트가 함께 누락되는 경우는 이 함수로 검출할 수 없다. App에서
+ *          trigger와 실행 deadline을 별도로 감시해야 한다.
  *
  * @par Callback 연결 예
  *
@@ -251,15 +253,14 @@ adc_driver_status_t adc_driver_stop(adc_driver_t *self);
  * // status 오류와 HAL 오류 callback은 App의 오류 처리 경로에 전달한다.
  * @endcode
  *
- * @note HAL_ADC_IRQHandler()는 injected callback이 반환된 뒤 현재 JEOC/JEOS flag를
- *       정리한다. Callback 안에서 긴 fast-loop를 실행하면 그 사이 발생한
- *       다음 변환 flag까지 손실될 수 있으므로 callback은 pending만 표시한다.
- *       Fast-loop는 ADC IRQ handler의 HAL 호출 뒤 USER CODE 후처리에서 실행한다.
+ * @note 직접 IRQ 경로는 이 함수 반환 직후 현재 JEOC/JEOS를 정리한다. HAL callback 경로는
+ *       HAL_ADC_IRQHandler()가 callback 반환 뒤 정리한다. 어느 경로에서도 flag 정리 전에
+ *       긴 fast-loop를 실행하지 않는다.
  *
- * @retval ADC_DRIVER_STATUS_OK 해당 상을 수집함. 세 상의 완료 여부는 is_complete로 확인.
- * @retval ADC_DRIVER_STATUS_INVALID_ARGUMENT NULL 인자, 초기화되지 않은 instance 또는 등록되지 않은 handle.
+ * @retval ADC_DRIVER_STATUS_OK 세 상을 수집함. 완료 여부는 is_complete로 확인.
+ * @retval ADC_DRIVER_STATUS_INVALID_ARGUMENT NULL 인자, 초기화되지 않은 instance 또는 completion ADC가 아닌 handle.
  * @retval ADC_DRIVER_STATUS_INVALID_STATE Driver가 실행 중이 아님.
- * @retval ADC_DRIVER_STATUS_SYNC_ERROR 중복/미소비 이벤트를 검출했거나 기존 동기 오류가 유지됨.
+ * @retval ADC_DRIVER_STATUS_SYNC_ERROR follower 미완료/이전 묶음 미소비를 검출했거나 기존 동기 오류가 유지됨.
  * @retval ADC_DRIVER_STATUS_INVALID_SAMPLE 전류 code가 [0, 4095]를 벗어남. 동기 오류도 설정됨.
  * @see adc_driver_read_raw()
  */

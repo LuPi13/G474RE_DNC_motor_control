@@ -141,6 +141,26 @@ static bool pwm_driver_is_valid_compare_unit(uint32_t compare_unit)
 }
 
 /**
+ * @brief 검증된 timer/compare mapping의 실제 compare register 주소를 반환한다.
+ */
+static volatile uint32_t *pwm_driver_get_compare_register(
+    HRTIM_HandleTypeDef *hrtim,
+    const pwm_driver_phase_config_t *phase
+)
+{
+    switch (phase->compare_unit) {
+    case HRTIM_COMPAREUNIT_1:
+        return &hrtim->Instance->sTimerxRegs[phase->timer_index].CMP1xR;
+    case HRTIM_COMPAREUNIT_2:
+        return &hrtim->Instance->sTimerxRegs[phase->timer_index].CMP2xR;
+    case HRTIM_COMPAREUNIT_3:
+        return &hrtim->Instance->sTimerxRegs[phase->timer_index].CMP3xR;
+    default:
+        return &hrtim->Instance->sTimerxRegs[phase->timer_index].CMP4xR;
+    }
+}
+
+/**
  * @brief 정규화된 duty를 해당 phase의 HRTIM compare 값으로 변환한다.
  *
  * @param self 초기화된 PWM driver instance.
@@ -176,6 +196,12 @@ pwm_driver_status_t pwm_driver_init(
 
     self->is_initialized = false;
     self->is_enabled = false;
+    self->compare_register[0] = NULL;
+    self->compare_register[1] = NULL;
+    self->compare_register[2] = NULL;
+    self->period[0] = 0U;
+    self->period[1] = 0U;
+    self->period[2] = 0U;
     self->timer_mask = 0U;
     self->output_mask = 0U;
 
@@ -222,6 +248,35 @@ pwm_driver_status_t pwm_driver_init(
     }
 
     self->config = *config;
+    self->compare_register[0] = pwm_driver_get_compare_register(
+        config->hrtim,
+        phase_a
+    );
+    self->compare_register[1] = pwm_driver_get_compare_register(
+        config->hrtim,
+        phase_b
+    );
+    self->compare_register[2] = pwm_driver_get_compare_register(
+        config->hrtim,
+        phase_c
+    );
+    self->period[0] = __HAL_HRTIM_GETPERIOD(
+        config->hrtim,
+        phase_a->timer_index
+    );
+    self->period[1] = __HAL_HRTIM_GETPERIOD(
+        config->hrtim,
+        phase_b->timer_index
+    );
+    self->period[2] = __HAL_HRTIM_GETPERIOD(
+        config->hrtim,
+        phase_c->timer_index
+    );
+    if ((self->period[0] == 0U) ||
+        (self->period[1] == 0U) ||
+        (self->period[2] == 0U)) {
+        return PWM_DRIVER_STATUS_INVALID_TIMER;
+    }
     self->timer_mask = timer_a | timer_b | timer_c;
     self->output_mask = output_a | output_b | output_c;
 
@@ -355,4 +410,17 @@ pwm_driver_status_t pwm_driver_set_duty(
     );
 
     return PWM_DRIVER_STATUS_OK;
+}
+
+void pwm_driver_set_duty_fast(
+    const pwm_driver_t *self,
+    const abc_t *duty
+)
+{
+    *self->compare_register[0] =
+        (uint32_t)((float)self->period[0] * duty->a);
+    *self->compare_register[1] =
+        (uint32_t)((float)self->period[1] * duty->b);
+    *self->compare_register[2] =
+        (uint32_t)((float)self->period[2] * duty->c);
 }

@@ -83,6 +83,23 @@ svpwm_status_t svpwm_calculate(
     abc_t *duty
 );
 
+/**
+ * @brief 검증된 current-control ISR 입력으로 SVPWM duty를 계산한다.
+ * @param[in] v_alpha_beta FOC가 유한성을 확인한 정지좌표계 전압 지령 [V].
+ * @param[in] v_dc App이 확인한 양의 유한 DC-link 전압 [V].
+ * @param[out] duty 계산된 a/b/c상 duty [무차원], 각 성분 범위 [0, 1].
+ * @pre 모든 pointer가 유효하고 서로 겹치지 않아야 한다.
+ * @pre 입력 유한성 및 양의 v_dc 조건은 호출자가 보장한다.
+ * @note Overmodulation 경계 검사와 최종 duty clamp는 유지한다.
+ * @retval SVPWM_STATUS_OK Duty 계산 완료.
+ * @retval SVPWM_STATUS_OVERMODULATION 상전압 span이 허용 범위를 초과함.
+ */
+svpwm_status_t svpwm_calculate_fast(
+    const alpha_beta_t *v_alpha_beta,
+    float v_dc,
+    abc_t *duty
+);
+
 /** @} */
 
 #endif /* ALGORITHM_SVPWM_H */

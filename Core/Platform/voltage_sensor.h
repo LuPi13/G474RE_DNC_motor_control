@@ -72,6 +72,18 @@ voltage_sensor_status_t voltage_sensor_convert(
     float *v_dc
 );
 
+/**
+ * @brief 검증된 ISR raw code를 DC-link 전압 [V]로 즉시 환산한다.
+ * @param[in] self 초기화된 voltage sensor instance.
+ * @param[in] raw_counts ADC driver가 검증한 12-bit raw code [count].
+ * @return 환산된 DC-link 전압 [V].
+ * @pre self와 설정 유효성은 App init이 보장해야 한다.
+ */
+float voltage_sensor_convert_fast(
+    const voltage_sensor_t *self,
+    uint16_t raw_counts
+);
+
 /** @} */
 
 #endif /* PLATFORM_VOLTAGE_SENSOR_H */

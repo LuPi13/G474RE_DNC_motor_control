@@ -153,6 +153,28 @@ cordic_driver_status_t cordic_driver_sin_cos(
     return CORDIC_DRIVER_STATUS_OK;
 }
 
+void cordic_driver_sin_cos_fast(
+    float theta_rad,
+    float *sin_theta,
+    float *cos_theta
+)
+{
+    if (theta_rad >= CORDIC_DRIVER_PI_RAD) {
+        theta_rad -= CORDIC_DRIVER_TWO_PI_RAD;
+    }
+
+    const int32_t angle_q31 = cordic_driver_float_to_q31(
+        theta_rad * CORDIC_DRIVER_INV_PI
+    );
+    LL_CORDIC_WriteData(CORDIC, (uint32_t)angle_q31);
+    LL_CORDIC_WriteData(CORDIC, (uint32_t)INT32_MAX);
+
+    const int32_t sin_q31 = (int32_t)LL_CORDIC_ReadData(CORDIC);
+    const int32_t cos_q31 = (int32_t)LL_CORDIC_ReadData(CORDIC);
+    *sin_theta = cordic_driver_q31_to_float(sin_q31);
+    *cos_theta = cordic_driver_q31_to_float(cos_q31);
+}
+
 cordic_driver_status_t cordic_driver_cartesian_to_polar(
     float x,
     float y,

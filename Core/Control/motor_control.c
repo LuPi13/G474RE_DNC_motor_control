@@ -1,6 +1,6 @@
 /**
  * @file motor_control.c
- * @brief d/q 전류 지령의 axis/vector 제한과 고정 주기 rate limit을 구현한다.
+ * @brief d/q 전류 지령 제한과 FOC current-control 실행을 구현한다.
  * @ingroup control_motor_control
  */
 
@@ -12,9 +12,49 @@
 
 #include "limiter.h"
 
+static inline uint32_t motor_control_profile_begin(
+    motor_control_profile_t *profile,
+    motor_control_cycle_counter_reader_t cycle_counter_reader
+)
+{
+    if (profile == NULL) {
+        return 0U;
+    }
+
+    profile->is_last_sample_complete = false;
+    return cycle_counter_reader();
+}
+
+static inline uint32_t motor_control_profile_end_segment(
+    motor_control_profile_segment_t *segment,
+    uint32_t start_cycles,
+    motor_control_cycle_counter_reader_t cycle_counter_reader
+)
+{
+    const uint32_t end_cycles = cycle_counter_reader();
+    const uint32_t elapsed_cycles = end_cycles - start_cycles;
+
+    segment->last_cycles = elapsed_cycles;
+    if (elapsed_cycles > segment->max_cycles) {
+        segment->max_cycles = elapsed_cycles;
+    }
+
+    return end_cycles;
+}
+
 static bool motor_control_is_finite_dq(const dq_t *value)
 {
     return (value != NULL) && isfinite(value->d) && isfinite(value->q);
+}
+
+static float motor_control_minimum(float first, float second)
+{
+    return (first < second) ? first : second;
+}
+
+static float motor_control_maximum(float first, float second)
+{
+    return (first > second) ? first : second;
 }
 
 static bool motor_control_is_valid_config(
@@ -48,7 +88,13 @@ static bool motor_control_is_valid_config(
         (config->current_reference_fall_rate_per_s.d < 0.0f) ||
         (config->current_reference_fall_rate_per_s.q < 0.0f) ||
         (config->current_reference_magnitude_limit <= 0.0f) ||
-        (config->sampling_period_s <= 0.0f)) {
+        (config->sampling_period_s <= 0.0f) ||
+        (config->sampling_period_s !=
+            config->foc.d_axis_pi.sampling_period_s) ||
+        (config->sampling_period_s !=
+            config->foc.q_axis_pi.sampling_period_s) ||
+        (config->sampling_period_s !=
+            config->foc.current_filter.sampling_period_s)) {
         return false;
     }
 
@@ -57,10 +103,6 @@ static bool motor_control_is_valid_config(
 
 /**
  * @brief Axis 범위와 d/q vector magnitude 제한을 순서대로 적용한다.
- * @param[in] config 전류 지령 제한 설정.
- * @param[in] input 제한할 d/q 전류 [A].
- * @param[out] output 제한된 d/q 전류 [A].
- * @return 하나 이상의 제한이 입력을 변경했으면 true.
  */
 static bool motor_control_limit_current_reference(
     const motor_control_config_t *config,
@@ -69,45 +111,36 @@ static bool motor_control_limit_current_reference(
 )
 {
     const float magnitude_limit = config->current_reference_magnitude_limit;
-    const float minimum_d = fmaxf(
+    const float minimum_d = motor_control_maximum(
         config->current_reference_min.d,
         -magnitude_limit
     );
-    const float maximum_d = fminf(
+    const float maximum_d = motor_control_minimum(
         config->current_reference_max.d,
         magnitude_limit
     );
-    const float minimum_q = fmaxf(
+    const float minimum_q = motor_control_maximum(
         config->current_reference_min.q,
         -magnitude_limit
     );
-    const float maximum_q = fminf(
+    const float maximum_q = motor_control_minimum(
         config->current_reference_max.q,
         magnitude_limit
     );
+    float magnitude_squared;
 
     output->d = limiter_clamp(input->d, minimum_d, maximum_d);
     output->q = limiter_clamp(input->q, minimum_q, maximum_q);
+    magnitude_squared = (output->d * output->d) +
+        (output->q * output->q);
 
-    const float absolute_d = fabsf(output->d);
-    const float absolute_q = fabsf(output->q);
-    const float maximum_absolute = fmaxf(absolute_d, absolute_q);
-    const float minimum_absolute = fminf(absolute_d, absolute_q);
+    if (magnitude_squared > (magnitude_limit * magnitude_limit)) {
+        float scale = magnitude_limit / sqrtf(magnitude_squared);
 
-    if (maximum_absolute > 0.0f) {
-        const float ratio = minimum_absolute / maximum_absolute;
-        const float normalized_magnitude = sqrtf(1.0f + (ratio * ratio));
-
-        if (maximum_absolute > (magnitude_limit / normalized_magnitude)) {
-            float scale =
-                (magnitude_limit / maximum_absolute) /
-                normalized_magnitude;
-
-            /* 후속 normalized 비교가 반올림으로 경계 밖을 판정하지 않도록 여유를 둔다. */
-            scale *= 1.0f - (4.0f * FLT_EPSILON);
-            output->d *= scale;
-            output->q *= scale;
-        }
+        /* 반올림으로 원 경계를 넘지 않도록 아주 작은 여유를 둔다. */
+        scale *= 1.0f - (4.0f * FLT_EPSILON);
+        output->d *= scale;
+        output->q *= scale;
     }
 
     return (output->d != input->d) || (output->q != input->q);
@@ -115,15 +148,6 @@ static bool motor_control_limit_current_reference(
 
 /**
  * @brief Rate-limited 이동 선분을 따라 current magnitude 제한을 적용한다.
- * @param[in] config 전류 지령 제한 설정.
- * @param[in] current 직전 적용 전류 지령 [A].
- * @param[in] candidate d/q scalar rate limiter가 만든 후보 전류 지령 [A].
- * @param[out] output magnitude 제한까지 적용한 전류 지령 [A].
- * @return 후보가 magnitude 제한을 벗어나 이동 거리를 줄였다면 true.
- *
- * @details 후보를 원점 방향으로 축소하면 한 update의 d/q 변화량이 scalar rate limiter의
- *          step보다 커질 수 있다. 대신 @p current 에서 @p candidate 로 향하는 선분과
- *          magnitude 원의 교점을 사용하여 두 축의 변화량을 늘리지 않는다.
  */
 static bool motor_control_limit_current_reference_step(
     const motor_control_config_t *config,
@@ -133,16 +157,17 @@ static bool motor_control_limit_current_reference_step(
 )
 {
     const float magnitude_limit = config->current_reference_magnitude_limit;
-    const float candidate_d = candidate->d / magnitude_limit;
-    const float candidate_q = candidate->q / magnitude_limit;
     const float candidate_magnitude_squared =
-        (candidate_d * candidate_d) + (candidate_q * candidate_q);
+        (candidate->d * candidate->d) + (candidate->q * candidate->q);
 
-    if (candidate_magnitude_squared <= 1.0f) {
-        *output = *candidate;
+    if (candidate_magnitude_squared <= (magnitude_limit * magnitude_limit)) {
+        output->d = candidate->d;
+        output->q = candidate->q;
         return false;
     }
 
+    const float candidate_d = candidate->d / magnitude_limit;
+    const float candidate_q = candidate->q / magnitude_limit;
     const float current_d = current->d / magnitude_limit;
     const float current_q = current->q / magnitude_limit;
     const float delta_d = candidate_d - current_d;
@@ -150,7 +175,8 @@ static bool motor_control_limit_current_reference_step(
     const float quadratic_a = (delta_d * delta_d) + (delta_q * delta_q);
 
     if (quadratic_a <= FLT_MIN) {
-        *output = *current;
+        output->d = current->d;
+        output->q = current->q;
         return true;
     }
 
@@ -158,17 +184,17 @@ static bool motor_control_limit_current_reference_step(
         2.0f * ((current_d * delta_d) + (current_q * delta_q));
     const float quadratic_c =
         (current_d * current_d) + (current_q * current_q) - 1.0f;
-    const float discriminant = fmaxf(
-        0.0f,
+    const float raw_discriminant =
         (quadratic_b * quadratic_b) -
-            (4.0f * quadratic_a * quadratic_c)
+        (4.0f * quadratic_a * quadratic_c);
+    const float discriminant = motor_control_maximum(
+        0.0f,
+        raw_discriminant
     );
     float step_scale =
         (-quadratic_b + sqrtf(discriminant)) / (2.0f * quadratic_a);
 
     step_scale = limiter_clamp(step_scale, 0.0f, 1.0f);
-
-    /* 반올림으로 원 경계를 넘지 않도록 이동량만 아주 작게 줄인다. */
     step_scale *= 1.0f - (4.0f * FLT_EPSILON);
     output->d = current->d +
         (step_scale * (candidate->d - current->d));
@@ -176,6 +202,40 @@ static bool motor_control_limit_current_reference_step(
         (step_scale * (candidate->q - current->q));
 
     return true;
+}
+
+/**
+ * @brief Hot path에서 libc 구조체 복사를 만들지 않고 결과를 전달한다.
+ */
+static void motor_control_copy_output(
+    motor_control_output_t *destination,
+    const motor_control_output_t *source
+)
+{
+    destination->i_dq_ref.d = source->i_dq_ref.d;
+    destination->i_dq_ref.q = source->i_dq_ref.q;
+    destination->foc.i_dq_unfiltered.d = source->foc.i_dq_unfiltered.d;
+    destination->foc.i_dq_unfiltered.q = source->foc.i_dq_unfiltered.q;
+    destination->foc.i_dq_feedback.d = source->foc.i_dq_feedback.d;
+    destination->foc.i_dq_feedback.q = source->foc.i_dq_feedback.q;
+    destination->foc.i_dq_error.d = source->foc.i_dq_error.d;
+    destination->foc.i_dq_error.q = source->foc.i_dq_error.q;
+    destination->foc.v_dq_pi.d = source->foc.v_dq_pi.d;
+    destination->foc.v_dq_pi.q = source->foc.v_dq_pi.q;
+    destination->foc.v_dq_feedforward.d = source->foc.v_dq_feedforward.d;
+    destination->foc.v_dq_feedforward.q = source->foc.v_dq_feedforward.q;
+    destination->foc.v_dq_applied.d = source->foc.v_dq_applied.d;
+    destination->foc.v_dq_applied.q = source->foc.v_dq_applied.q;
+    destination->foc.v_alpha_beta_ref.alpha =
+        source->foc.v_alpha_beta_ref.alpha;
+    destination->foc.v_alpha_beta_ref.beta =
+        source->foc.v_alpha_beta_ref.beta;
+    destination->foc.is_voltage_saturated =
+        source->foc.is_voltage_saturated;
+    destination->is_current_reference_rate_limited =
+        source->is_current_reference_rate_limited;
+    destination->is_current_reference_saturated =
+        source->is_current_reference_saturated;
 }
 
 motor_control_status_t motor_control_init(
@@ -225,6 +285,10 @@ motor_control_status_t motor_control_init(
         return MOTOR_CONTROL_STATUS_RATE_LIMITER_ERROR;
     }
 
+    if (foc_init(&initialized.foc, &config->foc) != FOC_STATUS_OK) {
+        return MOTOR_CONTROL_STATUS_INVALID_CONFIG;
+    }
+
     initialized.is_initialized = true;
     *self = initialized;
     return MOTOR_CONTROL_STATUS_OK;
@@ -272,17 +336,71 @@ motor_control_status_t motor_control_reset_current_reference(
     return MOTOR_CONTROL_STATUS_OK;
 }
 
+motor_control_status_t motor_control_prepare_current_reference_target(
+    const motor_control_t *self,
+    const dq_t *requested_i_dq_ref,
+    motor_control_current_reference_target_t *target
+)
+{
+    motor_control_current_reference_target_t prepared_target;
+
+    if ((self == NULL) || (target == NULL) ||
+        !motor_control_is_finite_dq(requested_i_dq_ref)) {
+        return MOTOR_CONTROL_STATUS_INVALID_ARGUMENT;
+    }
+    if (!self->is_initialized) {
+        return MOTOR_CONTROL_STATUS_INVALID_STATE;
+    }
+
+    prepared_target.was_saturated = motor_control_limit_current_reference(
+        &self->config,
+        requested_i_dq_ref,
+        &prepared_target.i_dq_ref
+    );
+    *target = prepared_target;
+    return MOTOR_CONTROL_STATUS_OK;
+}
+
+motor_control_status_t motor_control_reset(motor_control_t *self)
+{
+    if (self == NULL) {
+        return MOTOR_CONTROL_STATUS_INVALID_ARGUMENT;
+    }
+    if (!self->is_initialized) {
+        return MOTOR_CONTROL_STATUS_INVALID_STATE;
+    }
+    if ((!self->i_d_rate_limiter.is_initialized) ||
+        (!self->i_q_rate_limiter.is_initialized)) {
+        return MOTOR_CONTROL_STATUS_RATE_LIMITER_ERROR;
+    }
+    if (!self->foc.is_initialized) {
+        return MOTOR_CONTROL_STATUS_FOC_ERROR;
+    }
+
+    if (foc_reset(&self->foc) != FOC_STATUS_OK) {
+        return MOTOR_CONTROL_STATUS_FOC_ERROR;
+    }
+
+    self->i_d_rate_limiter.output = 0.0f;
+    self->i_q_rate_limiter.output = 0.0f;
+    self->i_dq_ref.d = 0.0f;
+    self->i_dq_ref.q = 0.0f;
+    self->is_current_reference_rate_limited = false;
+    self->is_current_reference_saturated = false;
+    return MOTOR_CONTROL_STATUS_OK;
+}
+
 motor_control_status_t motor_control_update_current_reference(
     motor_control_t *self,
     const dq_t *requested_i_dq_ref,
     dq_t *applied_i_dq_ref
 )
 {
-    rate_limiter_t i_d_rate_limiter;
-    rate_limiter_t i_q_rate_limiter;
     dq_t limited_target;
     dq_t rate_limited_reference;
     dq_t final_reference;
+    float previous_i_d_output;
+    float previous_i_q_output;
     bool is_target_saturated;
     bool is_rate_limited;
     bool is_final_saturated;
@@ -301,16 +419,21 @@ motor_control_status_t motor_control_update_current_reference(
         &limited_target
     );
 
-    i_d_rate_limiter = self->i_d_rate_limiter;
-    i_q_rate_limiter = self->i_q_rate_limiter;
-    if ((rate_limiter_update(
-            &i_d_rate_limiter,
+    previous_i_d_output = self->i_d_rate_limiter.output;
+    previous_i_q_output = self->i_q_rate_limiter.output;
+    if (rate_limiter_update(
+            &self->i_d_rate_limiter,
             limited_target.d,
-            &rate_limited_reference.d) != RATE_LIMITER_STATUS_OK) ||
-        (rate_limiter_update(
-            &i_q_rate_limiter,
+            &rate_limited_reference.d) != RATE_LIMITER_STATUS_OK) {
+        self->i_d_rate_limiter.output = previous_i_d_output;
+        return MOTOR_CONTROL_STATUS_RATE_LIMITER_ERROR;
+    }
+    if (rate_limiter_update(
+            &self->i_q_rate_limiter,
             limited_target.q,
-            &rate_limited_reference.q) != RATE_LIMITER_STATUS_OK)) {
+            &rate_limited_reference.q) != RATE_LIMITER_STATUS_OK) {
+        self->i_d_rate_limiter.output = previous_i_d_output;
+        self->i_q_rate_limiter.output = previous_i_q_output;
         return MOTOR_CONTROL_STATUS_RATE_LIMITER_ERROR;
     }
 
@@ -324,23 +447,334 @@ motor_control_status_t motor_control_update_current_reference(
         &final_reference
     );
 
-    if (is_final_saturated) {
-        if ((rate_limiter_reset(
-                &i_d_rate_limiter,
-                final_reference.d) != RATE_LIMITER_STATUS_OK) ||
-            (rate_limiter_reset(
-                &i_q_rate_limiter,
-                final_reference.q) != RATE_LIMITER_STATUS_OK)) {
-            return MOTOR_CONTROL_STATUS_RATE_LIMITER_ERROR;
-        }
+    if (is_final_saturated &&
+        ((rate_limiter_reset(
+            &self->i_d_rate_limiter,
+            final_reference.d) != RATE_LIMITER_STATUS_OK) ||
+         (rate_limiter_reset(
+            &self->i_q_rate_limiter,
+            final_reference.q) != RATE_LIMITER_STATUS_OK))) {
+        self->i_d_rate_limiter.output = previous_i_d_output;
+        self->i_q_rate_limiter.output = previous_i_q_output;
+        return MOTOR_CONTROL_STATUS_RATE_LIMITER_ERROR;
     }
 
-    self->i_d_rate_limiter = i_d_rate_limiter;
-    self->i_q_rate_limiter = i_q_rate_limiter;
-    self->i_dq_ref = final_reference;
+    self->i_dq_ref.d = final_reference.d;
+    self->i_dq_ref.q = final_reference.q;
     self->is_current_reference_rate_limited = is_rate_limited;
     self->is_current_reference_saturated =
         is_target_saturated || is_final_saturated;
-    *applied_i_dq_ref = final_reference;
+    applied_i_dq_ref->d = final_reference.d;
+    applied_i_dq_ref->q = final_reference.q;
     return MOTOR_CONTROL_STATUS_OK;
+}
+
+static void motor_control_update_current_reference_fast(
+    motor_control_t *self,
+    const motor_control_current_reference_target_t *target,
+    dq_t *applied_i_dq_ref
+)
+{
+    dq_t rate_limited_reference;
+    dq_t final_reference;
+    bool is_rate_limited;
+    bool is_final_saturated;
+
+    rate_limited_reference.d = rate_limiter_update_fast(
+        &self->i_d_rate_limiter,
+        target->i_dq_ref.d
+    );
+    rate_limited_reference.q = rate_limiter_update_fast(
+        &self->i_q_rate_limiter,
+        target->i_dq_ref.q
+    );
+
+    is_rate_limited =
+        (rate_limited_reference.d != target->i_dq_ref.d) ||
+        (rate_limited_reference.q != target->i_dq_ref.q);
+    is_final_saturated = motor_control_limit_current_reference_step(
+        &self->config,
+        &self->i_dq_ref,
+        &rate_limited_reference,
+        &final_reference
+    );
+
+    if (is_final_saturated) {
+        rate_limiter_reset_fast(
+            &self->i_d_rate_limiter,
+            final_reference.d
+        );
+        rate_limiter_reset_fast(
+            &self->i_q_rate_limiter,
+            final_reference.q
+        );
+    }
+
+    self->i_dq_ref = final_reference;
+    self->is_current_reference_rate_limited = is_rate_limited;
+    self->is_current_reference_saturated =
+        target->was_saturated || is_final_saturated;
+    *applied_i_dq_ref = final_reference;
+}
+
+static motor_control_status_t motor_control_update_fast_internal(
+    motor_control_t *self,
+    const motor_control_fast_input_t *input,
+    motor_control_output_t *output,
+    motor_control_profile_t *profile,
+    motor_control_cycle_counter_reader_t cycle_counter_reader
+)
+{
+    const foc_input_t foc_input = {
+        .i_abc = input->i_abc,
+        .i_dq_ref = {0.0f, 0.0f},
+        .sin_theta = input->sin_theta,
+        .cos_theta = input->cos_theta,
+        .omega_e_rad_s = input->omega_e_rad_s,
+        .v_dc = input->v_dc,
+    };
+    foc_input_t prepared_foc_input = foc_input;
+    uint32_t profile_segment_start_cycles = motor_control_profile_begin(
+        profile,
+        cycle_counter_reader
+    );
+
+    motor_control_update_current_reference_fast(
+        self,
+        &input->current_reference_target,
+        &output->i_dq_ref
+    );
+
+    if (profile != NULL) {
+        profile_segment_start_cycles = motor_control_profile_end_segment(
+            &profile->reference,
+            profile_segment_start_cycles,
+            cycle_counter_reader
+        );
+    }
+
+    prepared_foc_input.i_dq_ref = output->i_dq_ref;
+    const foc_status_t foc_status = (profile != NULL) ?
+        foc_update_fast_profiled(
+            &self->foc,
+            &prepared_foc_input,
+            &output->foc,
+            &profile->foc_detail,
+            cycle_counter_reader) :
+        foc_update_fast(
+            &self->foc,
+            &prepared_foc_input,
+            &output->foc);
+    if (foc_status != FOC_STATUS_OK) {
+        if (profile != NULL) {
+            (void)motor_control_profile_end_segment(
+                &profile->foc,
+                profile_segment_start_cycles,
+                cycle_counter_reader
+            );
+        }
+        return MOTOR_CONTROL_STATUS_FOC_ERROR;
+    }
+
+    if (profile != NULL) {
+        profile_segment_start_cycles = motor_control_profile_end_segment(
+            &profile->foc,
+            profile_segment_start_cycles,
+            cycle_counter_reader
+        );
+    }
+
+    output->is_current_reference_rate_limited =
+        self->is_current_reference_rate_limited;
+    output->is_current_reference_saturated =
+        self->is_current_reference_saturated;
+
+    if (profile != NULL) {
+        (void)motor_control_profile_end_segment(
+            &profile->output,
+            profile_segment_start_cycles,
+            cycle_counter_reader
+        );
+        ++profile->complete_sample_count;
+        profile->is_last_sample_complete = true;
+    }
+    return MOTOR_CONTROL_STATUS_OK;
+}
+
+static motor_control_status_t motor_control_update_internal(
+    motor_control_t *self,
+    const motor_control_input_t *input,
+    motor_control_output_t *output,
+    motor_control_profile_t *profile,
+    motor_control_cycle_counter_reader_t cycle_counter_reader
+)
+{
+    motor_control_output_t calculated_output;
+    foc_input_t foc_input;
+    dq_t previous_i_dq_ref;
+    float previous_i_d_output;
+    float previous_i_q_output;
+    bool previous_is_rate_limited;
+    bool previous_is_saturated;
+    uint32_t profile_segment_start_cycles;
+
+    if ((self == NULL) || (input == NULL) || (output == NULL)) {
+        return MOTOR_CONTROL_STATUS_INVALID_ARGUMENT;
+    }
+    if (!self->is_initialized) {
+        return MOTOR_CONTROL_STATUS_INVALID_STATE;
+    }
+
+    profile_segment_start_cycles = motor_control_profile_begin(
+        profile,
+        cycle_counter_reader
+    );
+
+    previous_i_d_output = self->i_d_rate_limiter.output;
+    previous_i_q_output = self->i_q_rate_limiter.output;
+    previous_i_dq_ref = self->i_dq_ref;
+    previous_is_rate_limited = self->is_current_reference_rate_limited;
+    previous_is_saturated = self->is_current_reference_saturated;
+
+    if (motor_control_update_current_reference(
+            self,
+            &input->requested_i_dq_ref,
+            &calculated_output.i_dq_ref) != MOTOR_CONTROL_STATUS_OK) {
+        return MOTOR_CONTROL_STATUS_RATE_LIMITER_ERROR;
+    }
+
+    if (profile != NULL) {
+        profile_segment_start_cycles = motor_control_profile_end_segment(
+            &profile->reference,
+            profile_segment_start_cycles,
+            cycle_counter_reader
+        );
+    }
+
+    foc_input = (foc_input_t){
+        .i_abc = input->i_abc,
+        .i_dq_ref = calculated_output.i_dq_ref,
+        .sin_theta = input->sin_theta,
+        .cos_theta = input->cos_theta,
+        .omega_e_rad_s = input->omega_e_rad_s,
+        .v_dc = input->v_dc,
+    };
+    const foc_status_t foc_status = (profile != NULL) ?
+        foc_update_profiled(
+            &self->foc,
+            &foc_input,
+            &calculated_output.foc,
+            &profile->foc_detail,
+            cycle_counter_reader) :
+        foc_update(
+            &self->foc,
+            &foc_input,
+            &calculated_output.foc);
+    if (foc_status != FOC_STATUS_OK) {
+        if (profile != NULL) {
+            (void)motor_control_profile_end_segment(
+                &profile->foc,
+                profile_segment_start_cycles,
+                cycle_counter_reader
+            );
+        }
+        self->i_d_rate_limiter.output = previous_i_d_output;
+        self->i_q_rate_limiter.output = previous_i_q_output;
+        self->i_dq_ref = previous_i_dq_ref;
+        self->is_current_reference_rate_limited =
+            previous_is_rate_limited;
+        self->is_current_reference_saturated = previous_is_saturated;
+        return MOTOR_CONTROL_STATUS_FOC_ERROR;
+    }
+
+    if (profile != NULL) {
+        profile_segment_start_cycles = motor_control_profile_end_segment(
+            &profile->foc,
+            profile_segment_start_cycles,
+            cycle_counter_reader
+        );
+    }
+
+    calculated_output.is_current_reference_rate_limited =
+        self->is_current_reference_rate_limited;
+    calculated_output.is_current_reference_saturated =
+        self->is_current_reference_saturated;
+
+    motor_control_copy_output(output, &calculated_output);
+    if (profile != NULL) {
+        (void)motor_control_profile_end_segment(
+            &profile->output,
+            profile_segment_start_cycles,
+            cycle_counter_reader
+        );
+        ++profile->complete_sample_count;
+        profile->is_last_sample_complete = true;
+    }
+    return MOTOR_CONTROL_STATUS_OK;
+}
+
+motor_control_status_t motor_control_update(
+    motor_control_t *self,
+    const motor_control_input_t *input,
+    motor_control_output_t *output
+)
+{
+    return motor_control_update_internal(self, input, output, NULL, NULL);
+}
+
+motor_control_status_t motor_control_update_profiled(
+    motor_control_t *self,
+    const motor_control_input_t *input,
+    motor_control_output_t *output,
+    motor_control_profile_t *profile,
+    motor_control_cycle_counter_reader_t cycle_counter_reader
+)
+{
+    if ((profile == NULL) || (cycle_counter_reader == NULL)) {
+        return MOTOR_CONTROL_STATUS_INVALID_ARGUMENT;
+    }
+
+    return motor_control_update_internal(
+        self,
+        input,
+        output,
+        profile,
+        cycle_counter_reader
+    );
+}
+
+motor_control_status_t motor_control_update_fast(
+    motor_control_t *self,
+    const motor_control_fast_input_t *input,
+    motor_control_output_t *output
+)
+{
+    return motor_control_update_fast_internal(
+        self,
+        input,
+        output,
+        NULL,
+        NULL
+    );
+}
+
+motor_control_status_t motor_control_update_fast_profiled(
+    motor_control_t *self,
+    const motor_control_fast_input_t *input,
+    motor_control_output_t *output,
+    motor_control_profile_t *profile,
+    motor_control_cycle_counter_reader_t cycle_counter_reader
+)
+{
+    if ((profile == NULL) || (cycle_counter_reader == NULL)) {
+        return MOTOR_CONTROL_STATUS_INVALID_ARGUMENT;
+    }
+
+    return motor_control_update_fast_internal(
+        self,
+        input,
+        output,
+        profile,
+        cycle_counter_reader
+    );
 }

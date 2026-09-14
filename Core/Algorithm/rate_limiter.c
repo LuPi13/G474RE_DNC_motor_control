@@ -93,6 +93,11 @@ rate_limiter_status_t rate_limiter_reset(rate_limiter_t *self, float output)
     return RATE_LIMITER_STATUS_OK;
 }
 
+void rate_limiter_reset_fast(rate_limiter_t *self, float output)
+{
+    self->output = output;
+}
+
 rate_limiter_status_t rate_limiter_set_rates(
     rate_limiter_t *self,
     float rise_rate_per_s,
@@ -168,4 +173,21 @@ rate_limiter_status_t rate_limiter_update(
     *output = next_output;
 
     return RATE_LIMITER_STATUS_OK;
+}
+
+float rate_limiter_update_fast(rate_limiter_t *self, float target)
+{
+    if (target > self->output) {
+        const float remaining = target - self->output;
+
+        self->output = (remaining > self->rise_step) ?
+            self->output + self->rise_step : target;
+    } else if (target < self->output) {
+        const float remaining = self->output - target;
+
+        self->output = (remaining > self->fall_step) ?
+            self->output - self->fall_step : target;
+    }
+
+    return self->output;
 }

@@ -51,3 +51,12 @@ voltage_sensor_status_t voltage_sensor_convert(
         self->config.gain_v_per_count;
     return VOLTAGE_SENSOR_STATUS_OK;
 }
+
+float voltage_sensor_convert_fast(
+    const voltage_sensor_t *self,
+    uint16_t raw_counts
+)
+{
+    return ((float)raw_counts - self->config.offset_counts) *
+        self->config.gain_v_per_count;
+}

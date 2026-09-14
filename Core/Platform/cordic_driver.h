@@ -85,6 +85,21 @@ cordic_driver_status_t cordic_driver_sin_cos(
 );
 
 /**
+ * @brief 검증된 current-mode 전기각의 sine/cosine을 즉시 계산한다.
+ * @param[in] theta_rad Hall estimator가 보장한 `[0, 2*pi)` 전기각 [rad].
+ * @param[out] sin_theta sine 결과.
+ * @param[out] cos_theta cosine 결과.
+ * @pre Driver가 초기화됐고 모든 pointer가 유효하며 출력이 서로 겹치지 않아야 한다.
+ * @pre 다른 실행 문맥이 CORDIC function/configuration을 변경하지 않아야 한다.
+ * @note SINE function 재선택과 입력 검증을 생략하고 wrap/Q31 변환 및 hardware 계산만 수행한다.
+ */
+void cordic_driver_sin_cos_fast(
+    float theta_rad,
+    float *sin_theta,
+    float *cos_theta
+);
+
+/**
  * @brief 직교 좌표를 magnitude와 phase angle로 변환한다.
  *
  * @param[in] x 직교 좌표 x 성분. 유한한 float 값이며 @p y 와 동일한 단위를 사용한다.

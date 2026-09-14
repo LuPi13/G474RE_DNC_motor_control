@@ -141,3 +141,47 @@ svpwm_status_t svpwm_calculate(
 
     return SVPWM_STATUS_OK;
 }
+
+svpwm_status_t svpwm_calculate_fast(
+    const alpha_beta_t *v_alpha_beta,
+    float v_dc,
+    abc_t *duty
+)
+{
+    abc_t phase_voltage;
+    transform_inverse_clarke(v_alpha_beta, &phase_voltage);
+
+    const float voltage_maximum = svpwm_maximum_phase(&phase_voltage);
+    const float voltage_minimum = svpwm_minimum_phase(&phase_voltage);
+    const float voltage_span = voltage_maximum - voltage_minimum;
+    if ((voltage_span > v_dc) &&
+        ((voltage_span - v_dc) >
+            (v_dc * SVPWM_BOUNDARY_TOLERANCE))) {
+        return SVPWM_STATUS_OVERMODULATION;
+    }
+
+    const float voltage_offset =
+        -voltage_minimum - (voltage_span * SVPWM_HALF);
+    const float inverse_v_dc = 1.0f / v_dc;
+
+    duty->a = limiter_clamp(
+        SVPWM_HALF +
+            ((phase_voltage.a + voltage_offset) * inverse_v_dc),
+        SVPWM_DUTY_MIN,
+        SVPWM_DUTY_MAX
+    );
+    duty->b = limiter_clamp(
+        SVPWM_HALF +
+            ((phase_voltage.b + voltage_offset) * inverse_v_dc),
+        SVPWM_DUTY_MIN,
+        SVPWM_DUTY_MAX
+    );
+    duty->c = limiter_clamp(
+        SVPWM_HALF +
+            ((phase_voltage.c + voltage_offset) * inverse_v_dc),
+        SVPWM_DUTY_MIN,
+        SVPWM_DUTY_MAX
+    );
+
+    return SVPWM_STATUS_OK;
+}

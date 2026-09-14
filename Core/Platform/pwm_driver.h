@@ -95,6 +95,8 @@ typedef struct {
 typedef struct {
     pwm_driver_config_t config;  /**< 초기화 시 복사된 hardware mapping. */
 
+    volatile uint32_t *compare_register[3]; /**< a/b/c상 compare register 주소. */
+    uint32_t period[3]; /**< a/b/c상 period register의 초기화 시 검증값 [tick]. */
     uint32_t timer_mask;   /**< 선택된 counter의 HRTIM_TIMERID_* bit mask. */
     uint32_t output_mask;  /**< 선택된 상의 두 output을 포함하는 bit mask. */
 
@@ -200,6 +202,19 @@ pwm_driver_status_t pwm_driver_disable(
  */
 pwm_driver_status_t pwm_driver_set_duty(
     pwm_driver_t *self,
+    const abc_t *duty
+);
+
+/**
+ * @brief 검증된 ISR duty를 cached period와 register 주소로 즉시 적용한다.
+ * @param[in] self pwm_driver_init()이 성공한 instance.
+ * @param[in] duty 각 성분이 [0, 1]인 유한 a/b/c상 duty [무차원].
+ * @pre 모든 pointer, 초기화 상태와 duty 범위는 호출자가 보장한다.
+ * @pre Init 이후 HRTIM period와 phase mapping을 변경하지 않아야 한다.
+ * @note Clamp, mapping 분기와 HAL macro의 반복 register 선택을 생략한다.
+ */
+void pwm_driver_set_duty_fast(
+    const pwm_driver_t *self,
     const abc_t *duty
 );
 

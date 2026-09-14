@@ -106,6 +106,16 @@ filter_status_t filter_low_pass_init(
 filter_status_t filter_low_pass_reset(filter_low_pass_t *self, float output);
 
 /**
+ * @brief 검증된 값으로 fast-loop filter 출력을 즉시 재설정한다.
+ *
+ * @param[in,out] self 초기화된 filter instance.
+ * @param[in] output 상위 경계에서 유한성이 보장된 새 출력.
+ * @pre self는 NULL이 아니고 초기화되어 있으며 output은 유한해야 한다.
+ * @warning 인자와 state를 검사하지 않는다. 일반 경로에서는 filter_low_pass_reset()을 사용한다.
+ */
+void filter_low_pass_reset_fast(filter_low_pass_t *self, float output);
+
+/**
  * @brief 입력 한 sample로 1차 저역통과 filter 출력을 갱신한다.
  *
  * @param[in,out] self 초기화된 filter instance.
@@ -125,6 +135,20 @@ filter_status_t filter_low_pass_update(
     float input,
     float *output
 );
+
+/**
+ * @brief 검증이 끝난 fast-loop 입력으로 filter를 최소 연산만 수행해 갱신한다.
+ *
+ * @param[in,out] self 초기화된 filter instance.
+ * @param[in] input 상위 fast path에서 유한성이 보장된 입력 sample.
+ * @return 갱신된 filtered output.
+ *
+ * @pre self는 NULL이 아니고 초기화되어 있어야 한다.
+ * @pre input과 기존 output 및 coefficient로 계산한 결과가 유한해야 한다.
+ * @pre 호출 간격은 config의 sampling_period_s와 일치해야 한다.
+ * @warning 인자와 계산 결과를 검사하지 않는다. 일반 경로에서는 filter_low_pass_update()를 사용한다.
+ */
+float filter_low_pass_update_fast(filter_low_pass_t *self, float input);
 
 /** @} */
 

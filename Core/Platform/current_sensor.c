@@ -212,3 +212,17 @@ current_sensor_status_t current_sensor_convert(
     };
     return CURRENT_SENSOR_STATUS_OK;
 }
+
+void current_sensor_convert_fast(
+    const current_sensor_t *self,
+    const adc_driver_raw_sample_t *raw,
+    abc_t *i_abc
+)
+{
+    i_abc->a = ((float)raw->phase_a - self->offset_counts.a) *
+        self->config.gain_a_per_count.a;
+    i_abc->b = ((float)raw->phase_b - self->offset_counts.b) *
+        self->config.gain_a_per_count.b;
+    i_abc->c = ((float)raw->phase_c - self->offset_counts.c) *
+        self->config.gain_a_per_count.c;
+}

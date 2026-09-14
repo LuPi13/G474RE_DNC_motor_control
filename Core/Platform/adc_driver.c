@@ -13,9 +13,10 @@
 #include "stm32g4xx_ll_adc.h"
 
 #define ADC_DRIVER_PHASE_COUNT     3U     /**< 수집할 논리적 전류 상의 개수. */
-#define ADC_DRIVER_CURRENT_MASK    0x07U  /**< a/b/c상 완료 bit 0/1/2가 모두 설정된 값. */
 #define ADC_DRIVER_VOLTAGE_MASK    0x08U  /**< active_mask에서 regular 전압 그룹을 나타내는 bit. */
 #define ADC_DRIVER_MAX_CODE        4095U  /**< 지원하는 12-bit 결과의 최댓값 [count]. */
+#define ADC_DRIVER_INJECTED_TIMING_MASK \
+    (ADC_CFGR2_JOVSE | ADC_CFGR2_OVSR | ADC_CFGR2_OVSS | ADC_CFGR2_TROVS)
 
 /**
  * @brief 논리적 상 index에 해당하는 설정 필드를 반환한다.
@@ -55,6 +56,7 @@ static bool adc_driver_is_valid_input(ADC_HandleTypeDef *adc, uint32_t channel)
     return IS_ADC_CHANNEL(adc, channel) &&
            (adc->Init.Resolution == ADC_RESOLUTION_12B) &&
            (adc->Init.DataAlign == ADC_DATAALIGN_RIGHT) &&
+           (adc->Init.EOCSelection == ADC_EOC_SINGLE_CONV) &&
            (LL_ADC_GetMultimode(__LL_ADC_COMMON_INSTANCE(adc->Instance)) ==
             LL_ADC_MULTI_INDEPENDENT);
 }
@@ -81,6 +83,25 @@ static bool adc_driver_is_same_channel(uint32_t configured, uint32_t expected)
  */
 static bool adc_driver_is_valid_config(const adc_driver_config_t *config)
 {
+    bool has_completion_adc = false;
+    const adc_driver_phase_config_t *reference_phase = &config->phase_a;
+    if (!adc_driver_is_valid_input(reference_phase->adc, reference_phase->channel) ||
+        (reference_phase->injected_rank != ADC_INJECTED_RANK_1)) {
+        return false;
+    }
+    const uint32_t reference_trigger = READ_BIT(
+        reference_phase->adc->Instance->JSQR,
+        ADC_JSQR_JEXTSEL | ADC_JSQR_JEXTEN
+    );
+    const uint32_t reference_oversampling = READ_BIT(
+        reference_phase->adc->Instance->CFGR2,
+        ADC_DRIVER_INJECTED_TIMING_MASK
+    );
+    const uint32_t reference_sampling_time = LL_ADC_GetChannelSamplingTime(
+        reference_phase->adc->Instance,
+        reference_phase->channel
+    );
+
     for (uint32_t i = 0U; i < ADC_DRIVER_PHASE_COUNT; ++i) {
         const adc_driver_phase_config_t *phase = adc_driver_get_phase(config, i);
         if (!adc_driver_is_valid_input(phase->adc, phase->channel) ||
@@ -93,15 +114,24 @@ static bool adc_driver_is_valid_config(const adc_driver_config_t *config)
             !adc_driver_is_same_channel(
                 LL_ADC_INJ_GetSequencerRanks(adc, phase->injected_rank), phase->channel) ||
             (LL_ADC_INJ_GetTriggerSource(adc) == LL_ADC_INJ_TRIG_SOFTWARE) ||
-            (READ_BIT(adc->CFGR, ADC_CFGR_JAUTO | ADC_CFGR_JDISCEN | ADC_CFGR_JQM) != 0U)) {
+            (READ_BIT(adc->CFGR, ADC_CFGR_JAUTO | ADC_CFGR_JDISCEN | ADC_CFGR_JQM) != 0U) ||
+            (phase->adc->Init.ClockPrescaler != reference_phase->adc->Init.ClockPrescaler) ||
+            (READ_BIT(adc->JSQR, ADC_JSQR_JEXTSEL | ADC_JSQR_JEXTEN) != reference_trigger) ||
+            (READ_BIT(adc->CFGR2, ADC_DRIVER_INJECTED_TIMING_MASK) != reference_oversampling) ||
+            (LL_ADC_GetChannelSamplingTime(adc, phase->channel) != reference_sampling_time)) {
             return false;
         }
+
+        has_completion_adc |= phase->adc == config->injected_completion_adc;
 
         for (uint32_t j = 0U; j < i; ++j) {
             if (adc == adc_driver_get_phase(config, j)->adc->Instance) {
                 return false;
             }
         }
+    }
+    if (!has_completion_adc) {
+        return false;
     }
 
     const adc_driver_voltage_config_t *voltage = &config->dc_link;
@@ -201,7 +231,6 @@ adc_driver_status_t adc_driver_start(adc_driver_t *self)
         return ADC_DRIVER_STATUS_INVALID_STATE;
     }
 
-    self->complete_mask = 0U;
     self->is_sample_ready = false;
 
     /* HAL의 중간 실패로 ADC만 활성화된 경우도 정리 대상에 포함한다. */
@@ -212,8 +241,17 @@ adc_driver_status_t adc_driver_start(adc_driver_t *self)
     }
 
     for (uint32_t i = 0U; i < ADC_DRIVER_PHASE_COUNT; ++i) {
+        ADC_HandleTypeDef *phase_adc =
+            adc_driver_get_phase(&self->config, i)->adc;
         self->active_mask |= 1U << i;
-        if (HAL_ADCEx_InjectedStart_IT(adc_driver_get_phase(&self->config, i)->adc) != HAL_OK) {
+        HAL_StatusTypeDef hal_status;
+        if (phase_adc == self->config.injected_completion_adc) {
+            hal_status = HAL_ADCEx_InjectedStart_IT(phase_adc);
+        } else {
+            __HAL_ADC_DISABLE_IT(phase_adc, ADC_IT_JEOC | ADC_IT_JEOS);
+            hal_status = HAL_ADCEx_InjectedStart(phase_adc);
+        }
+        if (hal_status != HAL_OK) {
             (void)adc_driver_stop(self);
             return ADC_DRIVER_STATUS_HAL_ERROR;
         }
@@ -230,7 +268,6 @@ adc_driver_status_t adc_driver_stop(adc_driver_t *self)
     }
 
     self->is_running = false;
-    self->complete_mask = 0U;
     self->is_sample_ready = false;
     adc_driver_status_t status = ADC_DRIVER_STATUS_OK;
 
@@ -238,7 +275,15 @@ adc_driver_status_t adc_driver_stop(adc_driver_t *self)
     for (uint32_t i = 0U; i < ADC_DRIVER_PHASE_COUNT; ++i) {
         const uint32_t bit = 1U << i;
         if ((self->active_mask & bit) != 0U) {
-            if (HAL_ADCEx_InjectedStop_IT(adc_driver_get_phase(&self->config, i)->adc) == HAL_OK) {
+            ADC_HandleTypeDef *phase_adc =
+                adc_driver_get_phase(&self->config, i)->adc;
+            HAL_StatusTypeDef hal_status;
+            if (phase_adc == self->config.injected_completion_adc) {
+                hal_status = HAL_ADCEx_InjectedStop_IT(phase_adc);
+            } else {
+                hal_status = HAL_ADCEx_InjectedStop(phase_adc);
+            }
+            if (hal_status == HAL_OK) {
                 self->active_mask &= ~bit;
             } else {
                 status = ADC_DRIVER_STATUS_HAL_ERROR;
@@ -268,7 +313,8 @@ adc_driver_status_t adc_driver_handle_injected_complete(
         return ADC_DRIVER_STATUS_INVALID_ARGUMENT;
     }
     *is_complete = false;
-    if ((self == NULL) || (hadc == NULL) || !self->is_initialized) {
+    if ((self == NULL) || (hadc == NULL) || !self->is_initialized ||
+        (hadc != self->config.injected_completion_adc)) {
         return ADC_DRIVER_STATUS_INVALID_ARGUMENT;
     }
     if (!self->is_running) {
@@ -278,36 +324,58 @@ adc_driver_status_t adc_driver_handle_injected_complete(
         return ADC_DRIVER_STATUS_SYNC_ERROR;
     }
 
-    for (uint32_t i = 0U; i < ADC_DRIVER_PHASE_COUNT; ++i) {
-        const adc_driver_phase_config_t *phase = adc_driver_get_phase(&self->config, i);
-        if (hadc != phase->adc) {
-            continue;
-        }
-
-        const uint32_t bit = 1U << i;
-        if (((self->complete_mask & bit) != 0U) || self->is_sample_ready) {
-            self->has_sync_error = true;
-            self->is_sample_ready = false;
-            self->complete_mask = 0U;
-            return ADC_DRIVER_STATUS_SYNC_ERROR;
-        }
-
-        const uint32_t code = HAL_ADCEx_InjectedGetValue(hadc, phase->injected_rank);
-        if (code > ADC_DRIVER_MAX_CODE) {
-            self->has_sync_error = true;
-            self->complete_mask = 0U;
-            return ADC_DRIVER_STATUS_INVALID_SAMPLE;
-        }
-        self->current_raw[i] = (uint16_t)code;
-        self->complete_mask |= bit;
-        if (self->complete_mask == ADC_DRIVER_CURRENT_MASK) {
-            self->complete_mask = 0U;
-            self->is_sample_ready = true;
-            *is_complete = true;
-        }
-        return ADC_DRIVER_STATUS_OK;
+    if (self->is_sample_ready) {
+        self->has_sync_error = true;
+        self->is_sample_ready = false;
+        return ADC_DRIVER_STATUS_SYNC_ERROR;
     }
-    return ADC_DRIVER_STATUS_INVALID_ARGUMENT;
+
+    ADC_HandleTypeDef *phase_a_adc = self->config.phase_a.adc;
+    ADC_HandleTypeDef *phase_b_adc = self->config.phase_b.adc;
+    ADC_HandleTypeDef *phase_c_adc = self->config.phase_c.adc;
+    if (!__HAL_ADC_GET_FLAG(phase_a_adc, ADC_FLAG_JEOC) ||
+        !__HAL_ADC_GET_FLAG(phase_b_adc, ADC_FLAG_JEOC) ||
+        !__HAL_ADC_GET_FLAG(phase_c_adc, ADC_FLAG_JEOC)) {
+        self->has_sync_error = true;
+        return ADC_DRIVER_STATUS_SYNC_ERROR;
+    }
+
+    const uint32_t phase_a = LL_ADC_INJ_ReadConversionData12(
+        phase_a_adc->Instance,
+        LL_ADC_INJ_RANK_1
+    );
+    const uint32_t phase_b = LL_ADC_INJ_ReadConversionData12(
+        phase_b_adc->Instance,
+        LL_ADC_INJ_RANK_1
+    );
+    const uint32_t phase_c = LL_ADC_INJ_ReadConversionData12(
+        phase_c_adc->Instance,
+        LL_ADC_INJ_RANK_1
+    );
+    if ((phase_a > ADC_DRIVER_MAX_CODE) ||
+        (phase_b > ADC_DRIVER_MAX_CODE) ||
+        (phase_c > ADC_DRIVER_MAX_CODE)) {
+        self->has_sync_error = true;
+        return ADC_DRIVER_STATUS_INVALID_SAMPLE;
+    }
+
+    self->current_raw[0] = (uint16_t)phase_a;
+    self->current_raw[1] = (uint16_t)phase_b;
+    self->current_raw[2] = (uint16_t)phase_c;
+
+    if (phase_a_adc != hadc) {
+        __HAL_ADC_CLEAR_FLAG(phase_a_adc, ADC_FLAG_JEOC | ADC_FLAG_JEOS);
+    }
+    if (phase_b_adc != hadc) {
+        __HAL_ADC_CLEAR_FLAG(phase_b_adc, ADC_FLAG_JEOC | ADC_FLAG_JEOS);
+    }
+    if (phase_c_adc != hadc) {
+        __HAL_ADC_CLEAR_FLAG(phase_c_adc, ADC_FLAG_JEOC | ADC_FLAG_JEOS);
+    }
+
+    self->is_sample_ready = true;
+    *is_complete = true;
+    return ADC_DRIVER_STATUS_OK;
 }
 
 adc_driver_status_t adc_driver_read_raw(

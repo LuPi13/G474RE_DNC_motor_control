@@ -67,7 +67,10 @@ typedef enum {
     FAULT_MANAGER_FAULT_CORDIC = (1UL << 8),
     FAULT_MANAGER_FAULT_SVPWM = (1UL << 9),
     FAULT_MANAGER_FAULT_PWM = (1UL << 10),
-    FAULT_MANAGER_FAULT_CURRENT_SENSOR = (1UL << 11)
+    FAULT_MANAGER_FAULT_CURRENT_SENSOR = (1UL << 11),
+    FAULT_MANAGER_FAULT_HALL_FEEDBACK = (1UL << 12),
+    FAULT_MANAGER_FAULT_ROTOR_ESTIMATOR = (1UL << 13),
+    FAULT_MANAGER_FAULT_MOTOR_CONTROL = (1UL << 14)
 } fault_manager_fault_t;
 
 /** 모든 public fault bit의 합집합. */
@@ -84,7 +87,10 @@ typedef enum {
         FAULT_MANAGER_FAULT_CORDIC | \
         FAULT_MANAGER_FAULT_SVPWM | \
         FAULT_MANAGER_FAULT_PWM | \
-        FAULT_MANAGER_FAULT_CURRENT_SENSOR))
+        FAULT_MANAGER_FAULT_CURRENT_SENSOR | \
+        FAULT_MANAGER_FAULT_HALL_FEEDBACK | \
+        FAULT_MANAGER_FAULT_ROTOR_ESTIMATOR | \
+        FAULT_MANAGER_FAULT_MOTOR_CONTROL))
 
 /** ADC 측정값으로 매 주기 active 상태를 갱신하는 fault bit의 합집합. */
 #define FAULT_MANAGER_MEASUREMENT_FAULT_MASK \
@@ -177,6 +183,20 @@ fault_manager_status_t fault_manager_init(
  * @retval FAULT_MANAGER_STATUS_INVALID_STATE self가 초기화되지 않음.
  */
 fault_manager_status_t fault_manager_update_measurements(
+    fault_manager_t *self,
+    const abc_t *i_abc,
+    float v_dc
+);
+
+/**
+ * @brief 검증된 current-mode ISR 측정값으로 보호 상태를 즉시 갱신한다.
+ * @param[in,out] self 초기화된 fault manager instance.
+ * @param[in] i_abc 유한한 a/b/c상 전류 [A].
+ * @param[in] v_dc 유한한 DC-link 전압 [V].
+ * @pre Pointer, 초기화와 측정 유한성은 호출자가 보장한다.
+ * @note Trip/clear hysteresis, latch와 first-fault snapshot 동작은 checked API와 동일하다.
+ */
+void fault_manager_update_measurements_fast(
     fault_manager_t *self,
     const abc_t *i_abc,
     float v_dc

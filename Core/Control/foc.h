@@ -8,6 +8,7 @@
 #define CONTROL_FOC_H
 
 #include <stdbool.h>
+#include <stdint.h>
 
 #include "filter.h"
 #include "pi_controller.h"
@@ -116,6 +117,36 @@ typedef struct {
 } foc_output_t;
 
 /**
+ * @brief FOC 구간 계측기의 한 구간 결과.
+ */
+typedef struct {
+    uint32_t last_cycles; /**< 마지막 완성 sample의 구간 실행시간 [cycle]. */
+    uint32_t max_cycles;  /**< Reset 이후 관찰된 구간 최대 실행시간 [cycle]. */
+} foc_profile_segment_t;
+
+/**
+ * @brief FOC update 내부의 선택형 cycle 계측 결과.
+ */
+typedef struct {
+    foc_profile_segment_t validation; /**< Runtime 입력과 instance 검증. */
+    foc_profile_segment_t transform; /**< Clarke/Park 변환과 결과 검증. */
+    foc_profile_segment_t rollback_snapshot; /**< 오류 복구용 runtime state snapshot. */
+    foc_profile_segment_t filter; /**< d/q current low-pass filter. */
+    foc_profile_segment_t pi; /**< d/q error 계산과 PI update. */
+    foc_profile_segment_t voltage_limit; /**< Feedforward 합산과 원형 전압 제한. */
+    foc_profile_segment_t tracking; /**< 포화 시 PI external tracking. */
+    foc_profile_segment_t output; /**< Inverse Park와 output snapshot 전달. */
+    uint32_t complete_sample_count; /**< 모든 구간을 완료한 sample 수. */
+    bool is_last_sample_complete; /**< 마지막 호출이 정상 완료됐으면 true. */
+} foc_profile_t;
+
+/**
+ * @brief Platform이 제공하는 free-running cycle counter reader.
+ * @return Wrap-around 가능한 32-bit cycle counter 현재값.
+ */
+typedef uint32_t (*foc_cycle_counter_reader_t)(void);
+
+/**
  * @brief FOC의 stateful Algorithm instance와 motor-model 설정을 소유하는 상태.
  *
  * 외부에서 field를 직접 변경하지 않고 foc_init(), foc_reset(), foc_update()를 사용한다.
@@ -195,6 +226,77 @@ foc_status_t foc_update(
     foc_t *self,
     const foc_input_t *input,
     foc_output_t *output
+);
+
+/**
+ * @brief FOC 한 주기를 실행하며 내부 구간별 cycle을 계측한다.
+ *
+ * @param[in,out] self 초기화된 FOC instance.
+ * @param[in] input 전류, 지령, rotor 및 DC-link 입력.
+ * @param[out] output 정상 완료 시 계산 결과 snapshot.
+ * @param[in,out] profile 누적할 구간별 cycle 계측 결과.
+ * @param[in] cycle_counter_reader Platform이 제공하는 cycle counter reader.
+ *
+ * @note Timing 병목 분석용 API이며 최종 deadline은 계측을 끈 binary에서 다시 확인한다.
+ *
+ * @retval FOC_STATUS_OK Update와 계측 완료.
+ * @retval FOC_STATUS_INVALID_ARGUMENT NULL 인자 또는 유효하지 않은 runtime 입력.
+ * @retval FOC_STATUS_INVALID_STATE self가 초기화되지 않음.
+ * @retval FOC_STATUS_FILTER_ERROR 내부 filter update/reset 실패.
+ * @retval FOC_STATUS_PI_ERROR 내부 PI update/tracking 실패.
+ * @retval FOC_STATUS_NUMERIC_ERROR 좌표 변환, feedforward 또는 전압 제한 계산 실패.
+ */
+foc_status_t foc_update_profiled(
+    foc_t *self,
+    const foc_input_t *input,
+    foc_output_t *output,
+    foc_profile_t *profile,
+    foc_cycle_counter_reader_t cycle_counter_reader
+);
+
+/**
+ * @brief App fast loop에서 검증 완료된 입력으로 FOC 한 주기를 실행한다.
+ *
+ * @param[in,out] self 초기화된 FOC instance.
+ * @param[in] input 상위 경계에서 검증된 전류, reference, rotor 및 DC-link 입력.
+ * @param[out] output 정상 완료 시 계산 결과 snapshot.
+ *
+ * @pre 모든 pointer와 instance 초기화 상태가 유효해야 한다.
+ * @pre i_abc 과전류/유한성, 제한된 i_dq_ref, rotor validity, sin/cos와 v_dc를
+ *      App 및 motor_control 경계에서 검증해야 한다.
+ * @post 최종 alpha-beta 전압이 비유한이면 오류를 반환하며 App fault 경로가 controller를 reset한다.
+ * @note 오류 시 runtime state 보존이 필요한 일반 호출자는 foc_update()를 사용한다.
+ * @warning 일반 호출자와 시험 코드는 검증을 수행하는 foc_update()를 사용한다.
+ *
+ * @retval FOC_STATUS_OK Fast update 완료.
+ * @retval FOC_STATUS_NUMERIC_ERROR 최종 전압 결과가 비유한임.
+ */
+foc_status_t foc_update_fast(
+    foc_t *self,
+    const foc_input_t *input,
+    foc_output_t *output
+);
+
+/**
+ * @brief 검증 완료 FOC fast path를 실행하며 내부 구간별 cycle을 계측한다.
+ *
+ * @param[in,out] self 초기화된 FOC instance.
+ * @param[in] input 상위 경계에서 검증된 fast-loop 입력.
+ * @param[out] output 정상 완료 시 계산 결과 snapshot.
+ * @param[in,out] profile 누적할 구간별 cycle 계측 결과.
+ * @param[in] cycle_counter_reader Platform cycle counter reader.
+ * @note 계측 이외의 실행 계약은 foc_update_fast()와 같다.
+ *
+ * @retval FOC_STATUS_OK Fast update와 계측 완료.
+ * @retval FOC_STATUS_INVALID_ARGUMENT profile 또는 reader가 NULL임.
+ * @retval FOC_STATUS_NUMERIC_ERROR 최종 전압 결과가 비유한임.
+ */
+foc_status_t foc_update_fast_profiled(
+    foc_t *self,
+    const foc_input_t *input,
+    foc_output_t *output,
+    foc_profile_t *profile,
+    foc_cycle_counter_reader_t cycle_counter_reader
 );
 
 /** @} */

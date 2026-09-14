@@ -170,6 +170,20 @@ current_sensor_status_t current_sensor_convert(
     abc_t *i_abc
 );
 
+/**
+ * @brief 검증된 current-mode ISR raw code를 3상 전류 [A]로 즉시 환산한다.
+ * @param[in] self 초기화와 offset 보정이 완료된 current sensor instance.
+ * @param[in] raw ADC driver가 검증한 12-bit raw sample.
+ * @param[out] i_abc 보정된 a/b/c상 전류 [A].
+ * @pre 모든 pointer와 보정 완료 상태를 호출자가 보장한다.
+ * @note current_sensor_convert()와 같은 환산식만 수행하고 반복 상태 검사는 생략한다.
+ */
+void current_sensor_convert_fast(
+    const current_sensor_t *self,
+    const adc_driver_raw_sample_t *raw,
+    abc_t *i_abc
+);
+
 /** @} */
 
 #endif /* PLATFORM_CURRENT_SENSOR_H */

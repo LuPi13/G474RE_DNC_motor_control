@@ -205,6 +205,57 @@ fault_manager_status_t fault_manager_update_measurements(
     return FAULT_MANAGER_STATUS_OK;
 }
 
+void fault_manager_update_measurements_fast(
+    fault_manager_t *self,
+    const abc_t *i_abc,
+    float v_dc
+)
+{
+    const fault_manager_fault_mask_t previous_active_mask =
+        self->active_fault_mask;
+    fault_manager_fault_mask_t active_mask = previous_active_mask &
+        ~FAULT_MANAGER_MEASUREMENT_FAULT_MASK;
+
+    self->latest_i_abc = *i_abc;
+    self->latest_v_dc = v_dc;
+    self->has_valid_measurement = true;
+
+    if (fault_manager_update_current_condition(
+            i_abc->a,
+            (previous_active_mask &
+                FAULT_MANAGER_FAULT_PHASE_A_OVERCURRENT) != 0U,
+            &self->config)) {
+        active_mask |= FAULT_MANAGER_FAULT_PHASE_A_OVERCURRENT;
+    }
+    if (fault_manager_update_current_condition(
+            i_abc->b,
+            (previous_active_mask &
+                FAULT_MANAGER_FAULT_PHASE_B_OVERCURRENT) != 0U,
+            &self->config)) {
+        active_mask |= FAULT_MANAGER_FAULT_PHASE_B_OVERCURRENT;
+    }
+    if (fault_manager_update_current_condition(
+            i_abc->c,
+            (previous_active_mask &
+                FAULT_MANAGER_FAULT_PHASE_C_OVERCURRENT) != 0U,
+            &self->config)) {
+        active_mask |= FAULT_MANAGER_FAULT_PHASE_C_OVERCURRENT;
+    }
+    if (fault_manager_update_voltage_condition(
+            v_dc,
+            (previous_active_mask &
+                FAULT_MANAGER_FAULT_DC_LINK_OVERVOLTAGE) != 0U,
+            &self->config)) {
+        active_mask |= FAULT_MANAGER_FAULT_DC_LINK_OVERVOLTAGE;
+    }
+
+    self->active_fault_mask = active_mask;
+    if (active_mask != FAULT_MANAGER_FAULT_NONE) {
+        fault_manager_latch_internal(self, active_mask);
+    }
+    self->last_status = FAULT_MANAGER_STATUS_OK;
+}
+
 fault_manager_status_t fault_manager_update_dc_link_voltage(
     fault_manager_t *self,
     float v_dc

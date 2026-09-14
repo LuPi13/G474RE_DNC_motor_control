@@ -159,6 +159,25 @@ pi_controller_status_t pi_controller_update(
     return PI_CONTROLLER_STATUS_OK;
 }
 
+float pi_controller_update_fast(pi_controller_t *self, float error)
+{
+    const float proportional = self->config.kp * error;
+    const float unsaturated_output = proportional + self->integral;
+    const float limited_output = limiter_clamp(
+        unsaturated_output,
+        self->config.output_min,
+        self->config.output_max
+    );
+
+    self->integral += (self->ki_step * error) +
+        (self->anti_windup_step *
+         (limited_output - unsaturated_output));
+    self->unsaturated_output = unsaturated_output;
+    self->output = limited_output;
+
+    return limited_output;
+}
+
 pi_controller_status_t pi_controller_apply_tracking(
     pi_controller_t *self,
     float applied_output
@@ -193,4 +212,14 @@ pi_controller_status_t pi_controller_apply_tracking(
     self->output = applied_output;
 
     return PI_CONTROLLER_STATUS_OK;
+}
+
+void pi_controller_apply_tracking_fast(
+    pi_controller_t *self,
+    float applied_output
+)
+{
+    self->integral += self->anti_windup_step *
+        (applied_output - self->output);
+    self->output = applied_output;
 }

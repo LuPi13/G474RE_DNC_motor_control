@@ -117,6 +117,16 @@ rate_limiter_status_t rate_limiter_init(
 rate_limiter_status_t rate_limiter_reset(rate_limiter_t *self, float output);
 
 /**
+ * @brief 검증된 값으로 fast-loop rate-limiter 출력을 즉시 재설정한다.
+ *
+ * @param[in,out] self 초기화된 rate-limiter instance.
+ * @param[in] output 상위 제한 경로에서 검증된 새 출력.
+ * @pre self는 NULL이 아니고 초기화되어 있으며 output은 유한해야 한다.
+ * @warning 인자와 state를 검사하지 않는다. 일반 경로에서는 rate_limiter_reset()을 사용한다.
+ */
+void rate_limiter_reset_fast(rate_limiter_t *self, float output);
+
+/**
  * @brief 현재 출력을 유지하면서 상승·하강 변화율을 변경한다.
  *
  * @param[in,out] self 초기화된 rate limiter instance.
@@ -161,6 +171,19 @@ rate_limiter_status_t rate_limiter_update(
     float target,
     float *output
 );
+
+/**
+ * @brief 검증이 끝난 fast-loop target으로 rate limiter를 갱신한다.
+ *
+ * @param[in,out] self 초기화된 rate limiter instance.
+ * @param[in] target 상위 command 경로에서 유한성이 보장된 target.
+ * @return 갱신된 limited output.
+ *
+ * @pre self는 NULL이 아니고 초기화되어 있어야 한다.
+ * @pre target은 유한해야 하며 호출 간격은 sampling_period_s와 일치해야 한다.
+ * @warning 인자와 state를 검사하지 않는다. 일반 경로에서는 rate_limiter_update()를 사용한다.
+ */
+float rate_limiter_update_fast(rate_limiter_t *self, float target);
 
 /** @} */
 

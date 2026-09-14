@@ -28,6 +28,7 @@
 #include "fault_manager.h"
 #include "hall_driver.h"
 #include "hall_estimator.h"
+#include "motor_control.h"
 #include "pwm_driver.h"
 #include "voltage_sensor.h"
 /* USER CODE END Includes */
@@ -41,11 +42,22 @@
 /* USER CODE BEGIN PD */
 
 #define APP_FAST_LOOP_FREQUENCY_HZ  40000U
-#define APP_PHASE_CURRENT_TRIP_ABS_A  (10.0f)
+#define APP_PHASE_CURRENT_TRIP_ABS_A  (3.0f)
 #define APP_PHASE_CURRENT_CLEAR_ABS_A (1.0f)
 #define APP_DC_LINK_OVERVOLTAGE_TRIP_V  (79.2f)
 #define APP_DC_LINK_OVERVOLTAGE_CLEAR_V (75.0f)
-#define CURRENT_SENSOR_OFFSET_TIMEOUT_MS  10U
+#define CURRENT_SENSOR_OFFSET_SETTLING_SAMPLE_COUNT  128U
+#define CURRENT_SENSOR_OFFSET_AVERAGING_SAMPLE_COUNT 2048U
+#define CURRENT_SENSOR_OFFSET_TIMEOUT_MARGIN_MS      50U
+#define CURRENT_SENSOR_OFFSET_REQUIRED_SAMPLE_COUNT \
+    (CURRENT_SENSOR_OFFSET_SETTLING_SAMPLE_COUNT + \
+     CURRENT_SENSOR_OFFSET_AVERAGING_SAMPLE_COUNT)
+#define CURRENT_SENSOR_OFFSET_EXPECTED_DURATION_MS \
+    (((CURRENT_SENSOR_OFFSET_REQUIRED_SAMPLE_COUNT * 1000U) + \
+      APP_FAST_LOOP_FREQUENCY_HZ - 1U) / APP_FAST_LOOP_FREQUENCY_HZ)
+#define CURRENT_SENSOR_OFFSET_TIMEOUT_MS \
+    (CURRENT_SENSOR_OFFSET_EXPECTED_DURATION_MS + \
+     CURRENT_SENSOR_OFFSET_TIMEOUT_MARGIN_MS)
 #define ACS725_10AB_GAIN_A_PER_COUNT  ((3.3f / 4096.0f) / 0.132f)
 
 /* USER CODE END PD */
@@ -77,12 +89,9 @@ static current_sensor_t current_sensor;
 static voltage_sensor_t voltage_sensor;
 static hall_driver_t hall_driver;
 static hall_estimator_t hall_estimator;
+static motor_control_t motor_control;
 static fault_manager_t fault_manager;
 static app_t app;
-
-/* HRTIM Timer C reset과 동기화된 현재 40 kHz fast-loop 주기 [s]. */
-static const float hall_estimator_test_period_s =
-    1.0f / (float)APP_FAST_LOOP_FREQUENCY_HZ;
 
 static abc_t duty_abc = {
     .a = 0.50f,
@@ -134,6 +143,8 @@ static volatile hall_estimator_status_t hall_estimator_test_update_status;
 static volatile hall_driver_status_t hall_estimator_test_feedback_status;
 static volatile hall_estimator_output_t hall_estimator_test_output;
 static volatile uint32_t hall_estimator_test_update_count;
+static volatile motor_control_status_t motor_control_test_init_status;
+
 /* USER CODE END PV */
 
 /* Private function prototypes -----------------------------------------------*/
@@ -277,6 +288,52 @@ int main(void)
       Error_Handler();
   }
 
+  const float fast_loop_sampling_period_s =
+      1.0f / (float)APP_FAST_LOOP_FREQUENCY_HZ;
+  const motor_control_config_t motor_control_config = {
+      .current_reference_min = {.d = -2.0f, .q = -2.0f},
+      .current_reference_max = {.d = 2.0f, .q = 2.0f},
+      .current_reference_rise_rate_per_s = {.d = 100.0f, .q = 100.0f},
+      .current_reference_fall_rate_per_s = {.d = 100.0f, .q = 100.0f},
+      .current_reference_magnitude_limit = 2.0f,
+      .sampling_period_s = fast_loop_sampling_period_s,
+      .foc = {
+          .d_axis_pi = {
+              .kp = 1.71530959f,
+              .ki = 2623.22987f,
+              .anti_windup_gain_per_s = 1529.30403f,
+              .sampling_period_s = fast_loop_sampling_period_s,
+              .output_min = -100.0f,
+              .output_max = 100.0f,
+          },
+          .q_axis_pi = {
+              .kp = 1.85982285f,
+              .ki = 2623.22987f,
+              .anti_windup_gain_per_s = 1410.47297f,
+              .sampling_period_s = fast_loop_sampling_period_s,
+              .output_min = -100.0f,
+              .output_max = 100.0f,
+          },
+          .current_filter = {
+              .cutoff_frequency_hz = 5000.0f,
+              .sampling_period_s = fast_loop_sampling_period_s,
+          },
+          .voltage_utilization = 0.9f,
+          .d_axis_inductance_h = 546.0e-6f,
+          .q_axis_inductance_h = 592.0e-6f,
+          .permanent_magnet_flux_linkage_wb = 6.74e-3f,
+          .is_decoupling_enabled = false,
+      },
+  };
+
+  motor_control_test_init_status = motor_control_init(
+      &motor_control,
+      &motor_control_config
+  );
+  if (motor_control_test_init_status != MOTOR_CONTROL_STATUS_OK) {
+      Error_Handler();
+  }
+
   /* PWM counter가 trigger를 발생시키기 전에 모든 ADC의 보정과 시작을 완료한다. */
   const adc_driver_config_t adc_config = {
       .phase_a = {
@@ -294,6 +351,7 @@ int main(void)
           .channel = ADC_CHANNEL_15,
           .injected_rank = ADC_INJECTED_RANK_1,
       },
+      .injected_completion_adc = &hadc3,
       .dc_link = {
           .adc = &hadc1,
           .channel = ADC_CHANNEL_6,
@@ -317,8 +375,10 @@ int main(void)
           .b = ACS725_10AB_GAIN_A_PER_COUNT,
           .c = ACS725_10AB_GAIN_A_PER_COUNT,
       },
-      .settling_sample_count = 128U,
-      .averaging_sample_count = 2048U,
+      .settling_sample_count =
+          CURRENT_SENSOR_OFFSET_SETTLING_SAMPLE_COUNT,
+      .averaging_sample_count =
+          CURRENT_SENSOR_OFFSET_AVERAGING_SAMPLE_COUNT,
 
       /* Bring-up 중 rail/단선 수준의 비정상만 거르는 넓은 허용 범위. */
       .minimum_offset_counts = 1536.0f,
@@ -368,7 +428,13 @@ int main(void)
       .voltage_sensor = &voltage_sensor,
       .pwm_driver = &pwm_driver,
       .fault_manager = &fault_manager,
-      .sampling_period_s = 1.0f / (float)APP_FAST_LOOP_FREQUENCY_HZ,
+      .hall_driver = &hall_driver,
+      .hall_estimator = &hall_estimator,
+      .motor_control = &motor_control,
+      .fast_loop_profile = NULL,
+      .motor_control_profile = NULL,
+      .cycle_counter_reader = NULL,
+      .sampling_period_s = fast_loop_sampling_period_s,
       .initial_voltage_angle_rad = 0.0f,
   };
 
@@ -461,7 +527,8 @@ int main(void)
     }
 
     /* Enable 직전/도중 ADC ISR에서 fault가 발생한 경우 output을 다시 즉시 차단한다. */
-    if ((!app.is_open_loop_active) || fault_manager_is_faulted(&fault_manager)) {
+    if ((app.mode != APP_MODE_OPEN_LOOP) ||
+        fault_manager_is_faulted(&fault_manager)) {
         (void)pwm_driver_disable(&pwm_driver);
         Error_Handler();
     }
@@ -1213,53 +1280,12 @@ static void MX_GPIO_Init(void)
 }
 
 /* USER CODE BEGIN 4 */
-static void hall_estimator_test_update(void)
-{
-    hall_driver_rotor_feedback_t hall_feedback;
-    hall_estimator_output_t estimator_output;
-
-    /* Fast-loop에서는 diagnostic field를 제외한 rotor feedback만 snapshot으로 읽는다. */
-    hall_estimator_test_feedback_status = hall_driver_get_rotor_feedback(
-        &hall_driver,
-        &hall_feedback
-    );
-
-    if (hall_estimator_test_feedback_status != HALL_DRIVER_STATUS_OK) {
-        return;
-    }
-
-    const hall_estimator_observation_t observation = {
-        .theta_e_rad = hall_feedback.theta_e_rad,
-        .omega_e_rad_s = hall_feedback.omega_e_rad_s,
-        .transition_count = hall_feedback.transition_count,
-        .sector = hall_feedback.sector,
-        .has_valid_state = hall_feedback.has_valid_state,
-        .has_valid_direction = hall_feedback.has_valid_direction,
-        .has_valid_angle = hall_feedback.has_valid_angle,
-        .has_valid_speed = hall_feedback.has_valid_speed,
-        .is_angle_from_edge = hall_feedback.is_angle_from_edge,
-        .is_timed_out = hall_feedback.is_timed_out,
-    };
-
-    hall_estimator_test_update_status = hall_estimator_update(
-        &hall_estimator,
-        &observation,
-        hall_estimator_test_period_s,
-        &estimator_output
-    );
-
-    if (hall_estimator_test_update_status == HALL_ESTIMATOR_STATUS_OK) {
-        hall_estimator_test_output = estimator_output;
-        ++hall_estimator_test_update_count;
-    }
-}
-
 /* App fast loop 결과와 Hall 연속각을 debugger에서 함께 확인한다. */
 static void app_fast_loop_test_update(void)
 {
     app_fast_loop_output_t output;
 
-    app_test_status = app_motor_fast_loop(&app, &output);
+    app_test_status = app_motor_fast_loop_fast(&app, &output);
     if (app_test_status == APP_STATUS_ADC_NOT_READY) {
         /* 시작 직후 전압이 아직 변환되지 않은 경우 등을 관찰한다. */
         ++adc_test_not_ready_count;
@@ -1274,14 +1300,20 @@ static void app_fast_loop_test_update(void)
         return;
     }
 
-    /* App이 실제 사용한 측정 묶음만 기존 debugger 관찰 변수에 복사한다. */
+    /* 일반 bring-up에서 App이 실제 사용한 측정 묶음을 debugger 변수에 복사한다. */
     adc_test_raw = output.raw;
     adc_test_i_abc = output.i_abc;
     adc_test_v_dc = output.v_dc;
     adc_test_has_valid_phase_current = output.has_valid_phase_current;
     ++adc_test_sample_count;
 
-    hall_estimator_test_update();
+    hall_estimator_test_feedback_status = app.last_hall_driver_status;
+    hall_estimator_test_update_status = app.last_hall_estimator_status;
+    if ((hall_estimator_test_feedback_status == HALL_DRIVER_STATUS_OK) &&
+        (hall_estimator_test_update_status == HALL_ESTIMATOR_STATUS_OK)) {
+        hall_estimator_test_output = output.rotor_feedback;
+        ++hall_estimator_test_update_count;
+    }
 }
 
 void app_adc_irq_prologue(void)
@@ -1296,10 +1328,7 @@ void app_adc_irq_prologue(void)
 void app_adc_irq_epilogue(void)
 {
     if (!adc_fast_loop_pending) {
-        /* 처리한 ADC event가 없는 shared IRQ 재진입은 측정 묶음에서 제외한다. */
-        if ((adc_driver.complete_mask == 0U) && !adc_driver.is_sample_ready) {
-            adc_fast_loop_cycle_measurement_active = false;
-        }
+        adc_fast_loop_cycle_measurement_active = false;
         return;
     }
 
@@ -1332,9 +1361,10 @@ void app_adc_irq_epilogue(void)
     if (elapsed_cycles >= adc_fast_loop_budget_cycles) {
         ++adc_fast_loop_deadline_miss_count;
     }
+
 }
 
-void HAL_ADCEx_InjectedConvCpltCallback(ADC_HandleTypeDef *hadc)
+static void app_adc_process_injected_complete(ADC_HandleTypeDef *hadc)
 {
     bool is_complete = false;
     adc_driver_status_t status = adc_driver_handle_injected_complete(
@@ -1356,6 +1386,25 @@ void HAL_ADCEx_InjectedConvCpltCallback(ADC_HandleTypeDef *hadc)
         /* 실제 계산은 HAL이 현재 ADC의 JEOC/JEOS를 지운 뒤 IRQ 후단에서 실행한다. */
         adc_fast_loop_pending = true;
     }
+}
+
+bool app_adc_injected_irq_try_handle_fast(ADC_HandleTypeDef *hadc)
+{
+    if ((hadc == NULL) ||
+        (hadc != adc_driver.config.injected_completion_adc) ||
+        (__HAL_ADC_GET_FLAG(hadc, ADC_FLAG_JEOC) == RESET) ||
+        (__HAL_ADC_GET_IT_SOURCE(hadc, ADC_IT_JEOC) == RESET)) {
+        return false;
+    }
+
+    app_adc_process_injected_complete(hadc);
+    __HAL_ADC_CLEAR_FLAG(hadc, ADC_FLAG_JEOC | ADC_FLAG_JEOS);
+    return true;
+}
+
+void HAL_ADCEx_InjectedConvCpltCallback(ADC_HandleTypeDef *hadc)
+{
+    app_adc_process_injected_complete(hadc);
 }
 
 void HAL_ADC_ErrorCallback(ADC_HandleTypeDef *hadc)
