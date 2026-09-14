@@ -813,14 +813,32 @@ FOC가 `i_d`, `i_q`용 instance를 각각 소유하고 첫 유효 feedback으로
 anti-windup tracking을 소유하며 출력은 `v_alpha_beta_ref`까지다. 40 kHz 실행, 500 Hz/1 kHz
 current-loop bandwidth, motor parameter ±30%, 2-sample voltage delay 및 3 A 포화 후 복귀를
 포함한 standalone 수치 검증을 완료했다. `motor_control`과 App fast loop, SVPWM/PWM 경로의
-software 통합은 완료했지만 실제 current mode는 Hall offset과 전류 극성 확인 전까지 자동
-시작하지 않으며 board 폐루프 검증은 아직 수행하지 않았다.
+software 통합을 완료했고, 보정한 Hall profile을 사용한 저전류 board 폐루프 검증도 수행했다.
+Current mode는 여전히 일반 기동 시 자동으로 시작하지 않으며 명시적인 상위 명령으로 진입한다.
 
 현재 PCB의 ACS725 VIOUT와 MCU ADC 사이에는 47 Ω series resistor와 ADC 입력의 1 nF
 capacitor가 있으며 계산상 RC cutoff는 약 3.39 MHz다. 이 RC는 40 kHz sampling의 주된
 anti-alias filter가 아니라 ADC sampling kickback과 고주파 EMI를 줄이는 hardware 경계로
 취급한다. 제어에 사용할 digital IIR cutoff는 측정 noise와 목표 current-loop bandwidth를
 기준으로 정한 뒤 제품별 config에서 전달하며 Algorithm/FOC 내부 기본값으로 숨기지 않는다.
+
+### 저전류 current-mode board 검증 결과
+
+무부하에서 `i_d_ref = 0`을 유지하고 작은 양·음 `i_q_ref`를 적용했다. 측정된 q축 전류는
+지령을 같은 부호로 추종했고 정·역방향 회전이 모두 정상적으로 확인됐다. 약 `0.28 A` 이상에서
+축이 자력으로 회전하기 시작했으며, 이는 작은 지령에서 Hall edge가 갱신되지 않는 구간과
+정지마찰을 넘는 기동 토크가 필요함을 보여준다.
+
+회전 속도가 올라간 뒤 `i_q_ref = 0.3 A` 부근에서는 `is_voltage_saturated`가 간헐적으로
+동작했고, `0.4 A` 지령에서는 계속 true였다. 이때 실제 q축 전류는 약 `0.3 A` 부근에 머물렀다.
+이는 속도제어 없이 torque current를 계속 인가하여 회전수가 올라가고, 역기전력 때문에 사용
+가능한 전압 한계에 도달한 조건과 일치한다. 시험 중 software fault와 fast-loop deadline miss는
+발생하지 않았다.
+
+이 결과로 저전류 범위의 current-feedback 부호, Park/Hall angle 방향, 양방향 torque 생성,
+전압 제한 진입은 확인했다. 정량적인 1 kHz bandwidth, 2 A 지령 전 범위, 부하 급변 및 최소·정격·
+최대 DC-link 조건은 아직 검증하지 않았으므로 이 시험 결과로 확장해 주장하지 않는다. 시험용
+debugger 지령과 FOC snapshot 코드는 확인 후 production `main.c`에서 제거한다.
 
 그 다음:
 

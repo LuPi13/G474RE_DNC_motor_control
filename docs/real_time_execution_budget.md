@@ -210,6 +210,14 @@ body MUST 기준 2800 cycles는 125 cycles 초과하므로 최적화 완료 기�
 않는다. 새 capture가 없는 decoder 정상 경로는 precomputed output 복사만 수행하도록 유지하되,
 실구동 전 Hall transition/timeout을 포함한 전체 worst-case cycle을 보드에서 다시 측정해야 한다.
 
+Hall decoder와 보정 profile을 통합한 뒤 축을 손으로 정·역회전한 board 시험에서는 첫 ADC IRQ부터
+종료까지 `2530 cycles`, deadline miss `0`이 관찰됐다. 이후 PWM을 활성화한 저전류 current-mode
+시험에서도 양방향 회전, `0.3 A` 부근의 간헐적 voltage saturation과 `0.4 A` 지령에서의 지속
+saturation 동안 deadline miss는 `0`이었다. 다만 이 current-mode 시험의 정확한 maximum cycle과
+관찰 시간은 기록되지 않았고 시험용 FOC snapshot 복사도 포함되어 있었으므로, `3200 cycles`
+bring-up 목표의 최종 통과 근거로 사용하지 않는다. 시험 코드를 제거한 production current-mode
+경로에서 maximum과 관찰 시간을 다시 측정해야 한다.
+
 ---
 
 ## 4. Fast path와 checked path
