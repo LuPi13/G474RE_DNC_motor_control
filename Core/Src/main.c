@@ -26,8 +26,10 @@
 #include "cordic_driver.h"
 #include "current_sensor.h"
 #include "fault_manager.h"
+#include "hall_decoder.h"
 #include "hall_driver.h"
 #include "hall_estimator.h"
+#include "motor_config.h"
 #include "motor_control.h"
 #include "pwm_driver.h"
 #include "voltage_sensor.h"
@@ -88,6 +90,7 @@ static adc_driver_t adc_driver;
 static current_sensor_t current_sensor;
 static voltage_sensor_t voltage_sensor;
 static hall_driver_t hall_driver;
+static hall_decoder_t hall_decoder;
 static hall_estimator_t hall_estimator;
 static motor_control_t motor_control;
 static fault_manager_t fault_manager;
@@ -141,6 +144,8 @@ static volatile hall_driver_feedback_t hall_test_feedback;
 static volatile hall_estimator_status_t hall_estimator_test_init_status;
 static volatile hall_estimator_status_t hall_estimator_test_update_status;
 static volatile hall_driver_status_t hall_estimator_test_feedback_status;
+static volatile hall_decoder_status_t hall_decoder_test_init_status;
+static volatile hall_decoder_status_t hall_decoder_test_update_status;
 static volatile hall_estimator_output_t hall_estimator_test_output;
 static volatile uint32_t hall_estimator_test_update_count;
 static volatile motor_control_status_t motor_control_test_init_status;
@@ -254,25 +259,20 @@ int main(void)
           .pin = GPIO_PIN_2,
       },
 
-      /* 사용자 정의 정방향: 101 -> 100 -> 110 -> 010 -> 011 -> 001 */
-      .hall_state_by_sector = {
-          0x5U,
-          0x4U,
-          0x6U,
-          0x2U,
-          0x3U,
-          0x1U,
-      },
-
       /* 현재 CubeMX 설정의 APB1 timer kernel clock [Hz] */
       .timer_clock_hz = 170000000U,
-
-      /* Bring-up용 임시 기준. 실제 FOC 적용 전 rotor flux 기준으로 보정한다. */
-      .electrical_offset_rad = 0.0f,
   };
 
   hall_test_init_status = hall_driver_init(&hall_driver, &hall_config);
   if (hall_test_init_status != HALL_DRIVER_STATUS_OK) {
+      Error_Handler();
+  }
+
+  hall_decoder_test_init_status = hall_decoder_init(
+      &hall_decoder,
+      &motor_config_hall_profile
+  );
+  if (hall_decoder_test_init_status != HALL_DECODER_STATUS_OK) {
       Error_Handler();
   }
 
@@ -429,6 +429,7 @@ int main(void)
       .pwm_driver = &pwm_driver,
       .fault_manager = &fault_manager,
       .hall_driver = &hall_driver,
+      .hall_decoder = &hall_decoder,
       .hall_estimator = &hall_estimator,
       .motor_control = &motor_control,
       .fast_loop_profile = NULL,
@@ -532,6 +533,7 @@ int main(void)
         (void)pwm_driver_disable(&pwm_driver);
         Error_Handler();
     }
+
   /* USER CODE END 2 */
 
   /* Infinite loop */
@@ -1308,11 +1310,14 @@ static void app_fast_loop_test_update(void)
     ++adc_test_sample_count;
 
     hall_estimator_test_feedback_status = app.last_hall_driver_status;
+    hall_decoder_test_update_status = app.last_hall_decoder_status;
     hall_estimator_test_update_status = app.last_hall_estimator_status;
     if ((hall_estimator_test_feedback_status == HALL_DRIVER_STATUS_OK) &&
+        (hall_decoder_test_update_status == HALL_DECODER_STATUS_OK) &&
         (hall_estimator_test_update_status == HALL_ESTIMATOR_STATUS_OK)) {
         hall_estimator_test_output = output.rotor_feedback;
         ++hall_estimator_test_update_count;
+
     }
 }
 
@@ -1361,7 +1366,6 @@ void app_adc_irq_epilogue(void)
     if (elapsed_cycles >= adc_fast_loop_budget_cycles) {
         ++adc_fast_loop_deadline_miss_count;
     }
-
 }
 
 static void app_adc_process_injected_complete(ADC_HandleTypeDef *hadc)

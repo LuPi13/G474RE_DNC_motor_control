@@ -15,6 +15,7 @@
 #include "cordic_driver.h"
 #include "current_sensor.h"
 #include "fault_manager.h"
+#include "hall_decoder.h"
 #include "hall_driver.h"
 #include "hall_estimator.h"
 #include "motor_control.h"
@@ -32,8 +33,9 @@
  * @brief ADC, rotor feedback, motor control, fault, SVPWM과 PWM을 연결하는 fast-loop orchestration.
  *
  * @par 책임
- * 이 module은 ADC raw sample을 SI feedback으로 변환하고 Hall estimator의 rotor feedback을
- * 갱신한다. 선택한 mode에 따라 open-loop 전압 vector 또는 motor_control의 FOC 전압 지령을
+ * 이 module은 ADC raw sample을 SI feedback으로 변환하고 raw Hall snapshot을 motor별
+ * decoder와 continuous-angle estimator에 순서대로 전달한다. 선택한 mode에 따라 open-loop
+ * 전압 vector 또는 motor_control의 FOC 전압 지령을
  * SVPWM duty로 바꾸어 PWM driver에 기록한다. HAL callback, peripheral 초기화 순서와 PWM
  * output enable은 main/CubeMX 영역에 남긴다. Fault manager는 별도 instance로 유지하며
  * App이 측정/계산 오류, control reset과 PWM disable 순서를 조정한다.
@@ -41,7 +43,7 @@
  * @par 시작 순서
  *
  * 1. ADC driver를 초기화하고 시작한다.
- * 2. Sensor, Hall estimator, motor_control과 fault manager를 초기화한 뒤 app_init()으로 연결한다.
+ * 2. Sensor, Hall decoder/estimator, motor_control과 fault manager를 초기화한 뒤 app_init()으로 연결한다.
  * 3. app_start_current_offset_calibration()을 호출한다.
  * 4. PWM driver를 초기화하여 ADC trigger용 counter를 시작하고, output은 끈 채 보정 완료를 기다린다.
  * 5. 0.5 duty를 준비하고 원하는 mode의 start API 성공 뒤 PWM output을 활성화한다.
@@ -92,7 +94,8 @@ typedef enum {
     APP_STATUS_CURRENT_SENSOR_ERROR, /**< 전류 센서 보정 또는 SI 환산 실패. */
     APP_STATUS_CURRENT_OFFSET_CALIBRATION_TIMEOUT, /**< 외부 deadline 안에 영점 보정이 끝나지 않음. */
     APP_STATUS_VOLTAGE_SENSOR_ERROR, /**< DC-link 전압 센서 SI 환산 실패. */
-    APP_STATUS_HALL_FEEDBACK_ERROR, /**< Hall rotor feedback snapshot을 얻지 못함. */
+    APP_STATUS_HALL_FEEDBACK_ERROR, /**< Raw Hall signal snapshot을 얻지 못함. */
+    APP_STATUS_HALL_DECODER_ERROR, /**< Motor profile 기반 Hall decoding 실패. */
     APP_STATUS_ROTOR_ESTIMATOR_ERROR, /**< Hall estimator update 또는 angle validity 오류. */
     APP_STATUS_MOTOR_CONTROL_ERROR, /**< Current reference 또는 FOC update/reset 실패. */
     APP_STATUS_CORDIC_ERROR,       /**< Open-loop 또는 rotor angle sine/cosine 계산 실패. */
@@ -153,7 +156,8 @@ typedef struct {
     voltage_sensor_t *voltage_sensor; /**< 초기화된 DC-link voltage sensor instance. */
     pwm_driver_t *pwm_driver;       /**< 초기화될 PWM driver instance. */
     fault_manager_t *fault_manager; /**< 초기화된 software fault manager instance. */
-    hall_driver_t *hall_driver; /**< 실행 중인 Hall feedback driver instance. */
+    hall_driver_t *hall_driver; /**< 실행 중인 raw Hall signal driver instance. */
+    hall_decoder_t *hall_decoder; /**< 초기화된 motor-specific Hall decoder instance. */
     hall_estimator_t *hall_estimator; /**< 초기화된 연속 전기각 estimator instance. */
     motor_control_t *motor_control; /**< 초기화된 current-mode coordinator instance. */
     app_fast_loop_profile_t *fast_loop_profile; /**< NULL 가능 선택형 구간 계측 결과. */
@@ -201,8 +205,9 @@ typedef struct {
  * 한 instance의 app_motor_fast_loop()은 ADC IRQ 후처리 한 곳에서만 호출한다.
  * Public API를 통하지 않고 command buffer, active index 및 상태 필드를 수정하지 않는다.
  * Fault latch와 보호 threshold의 owner는 config로 연결한 fault_manager_t 이다.
- * App은 비동기 clear request와 active mode를 소유한다. Rotor estimation과 FOC state의
- * source of truth는 각각 연결된 hall_estimator와 motor_control instance다.
+ * App은 비동기 clear request와 active mode를 소유한다. Raw Hall signal, motor별 Hall 해석,
+ * 연속 rotor angle 및 FOC state의 source of truth는 각각 연결된 hall_driver, hall_decoder,
+ * hall_estimator와 motor_control instance다.
  */
 typedef struct {
     app_config_t config; /**< 초기화 시 복사한 driver/timing 설정. */
@@ -219,7 +224,8 @@ typedef struct {
     adc_driver_status_t last_adc_status;       /**< 마지막 ADC 하위 호출 결과. */
     current_sensor_status_t last_current_sensor_status; /**< 마지막 current sensor 호출 결과. */
     voltage_sensor_status_t last_voltage_sensor_status; /**< 마지막 voltage sensor 호출 결과. */
-    hall_driver_status_t last_hall_driver_status; /**< 마지막 Hall feedback snapshot 결과. */
+    hall_driver_status_t last_hall_driver_status; /**< 마지막 raw Hall signal snapshot 결과. */
+    hall_decoder_status_t last_hall_decoder_status; /**< 마지막 motor-specific Hall decoding 결과. */
     hall_estimator_status_t last_hall_estimator_status; /**< 마지막 rotor estimator 결과. */
     motor_control_status_t last_motor_control_status; /**< 마지막 motor control 호출 결과. */
     cordic_driver_status_t last_cordic_status; /**< 마지막 CORDIC 하위 호출 결과. */
@@ -456,7 +462,8 @@ app_status_t app_handle_adc_error(
  * @retval APP_STATUS_ADC_ERROR ADC raw 읽기 실패.
  * @retval APP_STATUS_CURRENT_SENSOR_ERROR 전류 sensor 보정 또는 환산 실패.
  * @retval APP_STATUS_VOLTAGE_SENSOR_ERROR DC-link voltage sensor 환산 실패.
- * @retval APP_STATUS_HALL_FEEDBACK_ERROR Hall feedback snapshot 실패.
+ * @retval APP_STATUS_HALL_FEEDBACK_ERROR Raw Hall signal snapshot 실패.
+ * @retval APP_STATUS_HALL_DECODER_ERROR Hall profile decoding 실패.
  * @retval APP_STATUS_ROTOR_ESTIMATOR_ERROR Rotor estimator update 또는 angle validity 오류.
  * @retval APP_STATUS_MOTOR_CONTROL_ERROR Current reference/FOC update 실패.
  * @retval APP_STATUS_CORDIC_ERROR Sine/cosine 계산 실패.

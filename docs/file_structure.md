@@ -15,6 +15,7 @@ Project/
 │  ├─ Control/
 │  │  ├─ motor_control.c / motor_control.h
 │  │  ├─ foc.c / foc.h
+│  │  ├─ hall_decoder.c / hall_decoder.h
 │  │  ├─ speed_controller.c / speed_controller.h
 │  │  ├─ position_controller.c / position_controller.h
 │  │  └─ rotor_estimator.c / rotor_estimator.h
@@ -130,21 +131,23 @@ MCU/peripheral 세부 구현:
 
 - CubeMX: pin, peripheral channel, trigger, sampling time, PWM preload/update 등 하드웨어 설정.
 - main/App 통합 코드: driver instance와 config를 준비하고 초기화/시작/정지 순서를 관리한다.
-  Config가 커지면 제품별 정의를 `Core/Config`로 분리할 수 있다.
+  제품별 정의는 `Core/Config`에 두고 driver/control 구현과 분리한다.
 - Driver config: 물리 채널과 논리적 a/b/c상 매핑 등 peripheral 사용 조건을 전달한다.
   ADC config의 channel/rank는 CubeMX 설정과 대조하는 값이지 하드웨어 재설정 명령이 아니다.
   세 전류 ADC가 같은 변환 timing을 사용할 때 completion interrupt 하나를 지정해 세 JDR을
   일괄 수집할 수 있으며, driver가 init에서 이 timing 계약을 검증한다.
   센서 영점, gain과 SI 단위 환산 설정은 `current_sensor`/`voltage_sensor`가 소유한다.
-  Hall config도 TIM/GPIO mapping, 정방향 state sequence, timer kernel clock 및 electrical
-  angle offset을 전달하며 CubeMX의 TIM mode나 GPIO alternate function을 다시 설정하지 않는다.
+  Hall driver config는 TIM/GPIO mapping과 timer kernel clock만 전달하며 CubeMX의 TIM mode나
+  GPIO alternate function을 다시 설정하지 않는다. Motor/phase/Hall 배선별 state mapping과
+  electrical angle 경계는 Control의 `hall_decoder_profile_t`로 분리한다.
 - Driver 구현: 지원 구성 안의 매핑/계수 변경만으로 재사용 가능하면 수정하지 않는다.
   다른 변환 방식이나 지원하지 않는 peripheral 구성이 필요하면 구현/API 변경을 검토한다.
 
 지원 구성, 전제 조건, API 사용법은 정상적인 재사용에도 필요하다.
 세부사항은 [`adc_driver.h`](../Core/Platform/adc_driver.h)와
 [`pwm_driver.h`](../Core/Platform/pwm_driver.h),
-[`hall_driver.h`](../Core/Platform/hall_driver.h)의 Doxygen을 기준으로 확인한다.
+[`hall_driver.h`](../Core/Platform/hall_driver.h)와
+[`hall_decoder.h`](../Core/Control/hall_decoder.h)의 Doxygen을 기준으로 확인한다.
 
 Hall mode와 encoder mode는 현재 같은 TIM2 resource를 사용한다. 두 driver를 별도 module로
 유지하더라도 동시에 peripheral을 소유하게 해서는 안 되며, CubeMX configuration과 App
@@ -448,21 +451,28 @@ voltage_sensor.c
 분리 기준은 파일 길이가 아니라 **peripheral access와 sensor calibration/conversion이 독립적으로 변하기 시작하는지**다.
 Raw offset과 보정 누적 상태는 `current_sensor`만 소유하며 App이나 `adc_driver`에 복제하지 않는다.
 
-현재 bring-up 단계의 `hall_driver`는 GPIO/TIM capture뿐 아니라 Hall sequence에 직접
-결합된 sector, direction, edge-to-edge electrical speed 및 Hall edge angle 계산까지
-제공한다. 이 계산들은 TIM capture/timeout 의미와 강하게 결합되어 있으므로 Platform
-boundary에 둔다.
+`hall_driver`는 GPIO/TIM capture와 timeout을 처리하여 raw 3-bit Hall state, edge interval과
+capture sequence를 일관된 snapshot으로 제공한다. 어떤 raw state가 유효한지, 어느 sector인지,
+정방향이 어느 순서인지와 rotor electrical angle이 얼마인지는 판단하지 않는다.
+
+`hall_decoder`는 hardware-independent Control module이다. Motor/phase/Hall 배선 조합별
+`hall_decoder_profile_t`의 8-entry raw-state lookup과 6개 정방향 진입 경계각으로 sector,
+direction, 실제 sector span, edge electrical angle 및 signed electrical speed를 계산한다.
+이 profile 구조는 `000`/`111`을 무조건 invalid로 가정하지 않으므로 60-degree/120-degree
+Hall coding과 channel permutation/polarity 차이를 같은 decoder로 처리할 수 있다. Profile은
+정확히 여섯 raw state를 sector 0부터 5에 한 번씩 mapping해야 하며 나머지 두 state만 invalid다.
 
 Hall edge 사이의 continuous electrical angle은 Control의 `hall_estimator`가 소유한다.
 Estimator는 hardware-independent observation을 받아 직전 signed speed를 적분하고,
 새 Hall edge에서 동기화하며, Hall state 변화 없이 추정각만 다음 sector로 넘어가지 않도록
-이동량을 `pi/3`으로 제한한다. HAL이나 `hall_driver.h`에는 직접 의존하지 않는다.
+이동량을 profile에서 얻은 현재 sector span으로 제한한다. HAL이나 `hall_driver.h`에는 직접
+의존하지 않는다.
 
 또한 TIM2 writer보다 ADC reader의 interrupt priority가 높은 현재 구성에서 일관된 feedback을
 전달하기 위해 `hall_driver` instance가 double buffer와 active index를 소유한다. 이것은
 hardware interrupt 경계의 snapshot 전달 책임이며 Control의 중복 rotor state가 아니다.
 
-현재 구조보다 추정 책임을 더 세분화하거나 공통화해야 하는 조건은 다음과 같다.
+현재 구조보다 추정 책임을 더 공통화해야 하는 조건은 다음과 같다.
 
 - filtering, hysteresis 또는 motor별 sensor 위치 보정
 - acceleration model, PLL 또는 sensorless phase correction
@@ -472,10 +482,13 @@ hardware interrupt 경계의 snapshot 전달 책임이며 Control의 중복 roto
 
 ```text
 hall_driver
-  : GPIO / timer / Hall state / sector / direction / edge angle / edge speed
+  : GPIO / timer / raw Hall state / edge interval / timeout snapshot
+
+hall_decoder
+  : motor profile / sector / direction / edge angle / edge speed / sector span
 
 hall_estimator
-  : edge 사이의 continuous electrical angle / sector 범위 제한
+  : edge 사이의 continuous electrical angle / 실제 sector span 범위 제한
 
 rotor_estimator
   : Hall / encoder / EEMF 등의 runtime 선택과 공통 interface (향후)

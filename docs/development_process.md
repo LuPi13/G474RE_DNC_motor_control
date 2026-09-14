@@ -325,6 +325,8 @@ XOR edge capture / counter overflow timeout
     ↓
 GPIO state (A/B/C = bit 2/1/0)
     ↓
+motor-specific Hall profile / decoder
+    ↓
 valid Hall state / sector
     ↓
 direction
@@ -358,9 +360,18 @@ hall_driver_status_t hall_driver_get_feedback(
     const hall_driver_t *self,
     hall_driver_feedback_t *feedback);
 
-hall_driver_status_t hall_driver_get_rotor_feedback(
+hall_driver_status_t hall_driver_get_signal_feedback(
     const hall_driver_t *self,
-    hall_driver_rotor_feedback_t *feedback);
+    hall_driver_signal_feedback_t *feedback);
+
+hall_decoder_status_t hall_decoder_init(
+    hall_decoder_t *self,
+    const hall_decoder_profile_t *profile);
+
+hall_decoder_status_t hall_decoder_update(
+    hall_decoder_t *self,
+    const hall_decoder_observation_t *observation,
+    hall_decoder_output_t *output);
 
 hall_estimator_status_t hall_estimator_init(hall_estimator_t *self);
 
@@ -371,9 +382,9 @@ hall_estimator_status_t hall_estimator_update(
     hall_estimator_output_t *output);
 ```
 
-Board/motor별 config에는 TIM handle, Hall A/B/C GPIO mapping, 정방향 Hall sequence,
-prescaler 적용 전 TIM kernel clock 및 electrical angle offset을 둔다. 현재 정방향
-sequence는 다음과 같다.
+Board config에는 TIM handle, Hall A/B/C GPIO mapping과 prescaler 적용 전 TIM kernel clock을
+둔다. Motor/phase/Hall 배선별 profile에는 raw Hall state-to-sector lookup과 여섯 정방향
+sector 진입 electrical edge angle을 둔다. 현재 motor profile의 정방향 sequence는 다음과 같다.
 
 ```text
 101 -> 100 -> 110 -> 010 -> 011 -> 001 -> 101
@@ -383,10 +394,15 @@ sector 0   1      2      3      4      5
 정방향은 물리적인 시계/반시계 방향으로 고정된 의미가 아니라 이 sequence가 증가하는
 사용자 정의 방향이다. Sector는 이 순서에 붙인 논리 번호이며 절대 기계 위치가 아니다.
 
-현재 기본 각도 모델은 sensor가 정확히 60 electrical degree 간격으로 배치되었다고
-가정한다. 유효 transition 뒤 sector 중심에서 정방향은 `-pi/6`, 역방향은 `+pi/6`인
-경계각을 사용한다. Electrical offset은 실제 FOC 전에 rotor flux와 phase 기준으로
-별도 보정해야 한다.
+이상적인 Hall 배치는 sector 0 정방향 진입 edge offset과 `pi/3` 간격으로 profile을 만들 수
+있다. 다른 motor에서는 정·역방향 저속 commissioning으로 여섯 실제 경계각을 측정한다.
+Decoder는 인접 경계각의 차이로 실제 sector span과 edge-to-edge speed를 계산하며,
+`hall_estimator`도 같은 span을 sector 제한에 사용한다.
+
+Raw state `000`과 `111`의 유효성은 driver가 고정하지 않는다. Profile의 8-entry lookup에서
+정확히 여섯 state를 sector 0부터 5에 중복 없이 mapping하고 나머지 두 state를 invalid로 둔다.
+따라서 Hall channel 순서, polarity 및 60-degree/120-degree coding 차이는 driver 수정이 아니라
+profile 교체로 처리한다.
 
 현재 bring-up의 TIM2 counter는 170 MHz timer kernel clock과 prescaler `16`으로
 10 MHz이며, auto-reload `9,999,999`를 사용해 약 1초의 timeout을 만든다. 이 값은
@@ -395,23 +411,68 @@ CubeMX config와 driver 입력을 함께 검토한다.
 
 ### 확인 순서
 
-1. Hall A/B/C mapping과 `000`, `111` invalid state 검출을 확인한다.
+1. Hall A/B/C raw bit mapping과 profile에서 invalid로 지정한 두 state 검출을 확인한다.
 2. 손으로 정·역회전하며 Hall sequence, sector 및 direction을 확인한다.
 3. 연속된 두 유효 edge에서 signed `omega_e_rad_s`의 크기와 부호를 확인한다.
 4. Timeout 시 `omega_e_rad_s == 0`, `is_timed_out == true`가 되는지 확인한다.
 5. Timeout 직후 첫 edge에서는 속도가 무효이고 다음 edge부터 다시 유효해지는지 확인한다.
-6. `invalid_state_count`, `invalid_transition_count`, `timeout_count`가 의도한 사건에만 증가하는지 확인한다.
-7. ADC가 TIM2 ISR을 선점하는 구성에서 `hall_driver_get_rotor_feedback()`과
+6. Decoder의 `invalid_state_count`, `invalid_transition_count`, `missed_capture_count`와 driver의
+   `invalid_capture_count`, `timeout_count`가 의도한 사건에만 증가하는지 확인한다.
+7. ADC가 TIM2 ISR을 선점하는 구성에서 `hall_driver_get_signal_feedback()`과
    `hall_driver_get_feedback()`이 완성된 snapshot만 반환하는지 확인한다.
-8. `hall_estimator`가 정방향에서는 증가, 역방향에서는 감소하는 연속 전기각을 만드는지 확인한다.
-9. `0`과 `2*pi` 경계에서 전기각이 [0, 2*pi) 범위로 정상 wrap되는지 확인한다.
-10. 다음 Hall edge가 늦으면 이동량이 `pi/3`으로 제한되고 `is_sector_limited`가 true가 되는지 확인한다.
+8. `hall_decoder`가 profile에 따라 raw state, sector, direction과 edge speed를 일관되게 만드는지 확인한다.
+9. `hall_estimator`가 정방향에서는 증가, 역방향에서는 감소하는 연속 전기각을 만드는지 확인한다.
+10. `0`과 `2*pi` 경계에서 전기각이 [0, 2*pi) 범위로 정상 wrap되는지 확인한다.
+11. 다음 Hall edge가 늦으면 이동량이 현재 profile sector span으로 제한되고 `is_sector_limited`가 true가 되는지 확인한다.
 
 Hall edge 사이의 continuous angle extrapolation은 현재 Control의 `hall_estimator`가
 담당한다. 직전 signed electrical speed를 적분하고 새 edge에서 동기화하며, 추정 이동량은
-이상적인 한 Hall sector 폭인 `pi/3`을 넘지 않는다. Filtering, hysteresis, sensor별 위치
-보정 및 Hall/encoder/EEMF 공통 선택은 아직 지원하지 않으며, 필요해지면 별도 estimator
-정책 또는 공통 `rotor_estimator`로 확장한다.
+decoder가 제공한 현재 sector span을 넘지 않는다. Filtering, hysteresis 및
+Hall/encoder/EEMF 공통 선택은 아직 지원하지 않으며, 필요해지면 별도 estimator 정책 또는
+공통 `rotor_estimator`로 확장한다.
+
+### Hall electrical offset commissioning
+
+Raw Hall state mapping, sector 순서, 정·역방향과 timeout 검증은 electrical offset 검증과
+별도 단계다. FOC에 사용할 `forward_edge_angle_rad[k]`는 정방향으로 sector `k`에 진입하는
+물리 Hall 경계의 rotor electrical angle [rad]이며, 초기 ideal `pi/3` profile은 이 기준을
+보장하지 않는다.
+
+임시 board test는 PWM을 활성화한 low-voltage open-loop에서 다음 계약으로 측정한다.
+
+1. DC-link 최소 전압, 무부하, 고정된 보호 조건에서 작은 전압 vector와 저속 양의
+   `omega_e_rad_s`를 적용한다. 전류는 trip threshold보다 충분히 낮게 유지한다.
+2. 처음 한 electrical revolution의 edge는 동기화/가속 구간으로 버린다. 이후 정방향으로
+   sector `k`에 진입할 때 사용한 `voltage_angle_rad`를 `k`번 경계 sample로 기록한다.
+3. 정지 settling 뒤 같은 조건의 음의 `omega_e_rad_s`를 적용한다. 역방향으로 sector `k`에
+   진입한 edge는 정방향 경계 `(k + 1) % 6`을 넘은 사건이므로 그 index에 기록한다.
+4. 각 경계의 정·역방향 sample을 circular mean하여 `[0, 2*pi)`의
+   `forward_edge_angle_rad[k]`를 만들고, 인접 차이로 sector span을 계산한다.
+
+양의 stator `voltage_angle_rad` sweep에서 decoder가 `HALL_DECODER_DIRECTION_FORWARD`를
+보고해야 profile의 증가 방향이 FOC electrical-angle 증가 방향과 일치한다. 반대 방향이면
+측정값을 적용하지 않고 logical sector numbering을 반전한 뒤 처음부터 다시 측정한다.
+
+이 시험은 rotor가 low-speed voltage vector를 따라가며 stator field angle과 rotor d-axis가
+일치한다는 commissioning 가정을 사용한다. 연속 sweep에서는 torque-angle과 마찰 때문에
+정방향과 역방향의 command angle이 공통적으로 벌어질 수 있다. 이 directional hysteresis의
+절대값은 단독으로 실패 조건이 아니며, 같은 방향 안의 반복편차와 여섯 경계에서 hysteresis가
+공통 offset으로 유지되는지를 따로 확인한다. 정·역방향 circular mean은 이 공통 offset을
+상쇄한 profile 후보로 사용한다. 방향 내부 반복편차 또는 경계별 hysteresis 편차가 크면
+전압/속도를 조정해 재측정한다. 결과는 먼저 debugger에서 검토하며, 임시 시험은 Flash 저장이나
+`motor_config_hall_profile` 자동 변경을 수행하지 않는다.
+
+현재 motor profile에는 같은 조건에서 반복한 두 측정의 경계별 평균을 적용했다.
+
+```text
+forward_edge_angle_rad =
+    [0.616236031, 1.610801515, 2.666652325,
+     3.741505025, 4.795457365, 5.775905845]
+```
+
+이 값은 현재 motor/phase/Hall 배선 조합에만 유효하다. Motor 또는 phase/Hall 배선을 바꾸면
+raw state mapping과 함께 다시 측정하며, commissioning 임시 코드는 측정 완료 후 production
+binary에서 제거한다.
 
 ### Hall과 encoder 선택
 

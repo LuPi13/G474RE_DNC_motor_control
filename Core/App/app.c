@@ -362,32 +362,52 @@ static app_status_t app_update_rotor_feedback(
     hall_estimator_output_t *rotor_feedback
 )
 {
-    hall_driver_rotor_feedback_t hall_feedback;
-    hall_estimator_observation_t observation;
+    hall_driver_signal_feedback_t hall_signal;
+    hall_decoder_observation_t decoder_observation;
+    hall_decoder_output_t decoded_hall;
+    hall_estimator_observation_t estimator_observation;
 
-    self->last_hall_driver_status = hall_driver_get_rotor_feedback(
+    self->last_hall_driver_status = hall_driver_get_signal_feedback(
         self->config.hall_driver,
-        &hall_feedback
+        &hall_signal
     );
     if (self->last_hall_driver_status != HALL_DRIVER_STATUS_OK) {
         return APP_STATUS_HALL_FEEDBACK_ERROR;
     }
 
-    observation = (hall_estimator_observation_t){
-        .theta_e_rad = hall_feedback.theta_e_rad,
-        .omega_e_rad_s = hall_feedback.omega_e_rad_s,
-        .transition_count = hall_feedback.transition_count,
-        .sector = hall_feedback.sector,
-        .has_valid_state = hall_feedback.has_valid_state,
-        .has_valid_direction = hall_feedback.has_valid_direction,
-        .has_valid_angle = hall_feedback.has_valid_angle,
-        .has_valid_speed = hall_feedback.has_valid_speed,
-        .is_angle_from_edge = hall_feedback.is_angle_from_edge,
-        .is_timed_out = hall_feedback.is_timed_out,
+    decoder_observation = (hall_decoder_observation_t){
+        .hall_state = hall_signal.hall_state,
+        .capture_count = hall_signal.capture_count,
+        .edge_interval_s = hall_signal.edge_interval_s,
+        .has_state_sample = hall_signal.has_state_sample,
+        .has_valid_interval = hall_signal.has_valid_interval,
+        .is_timed_out = hall_signal.is_timed_out,
+    };
+    self->last_hall_decoder_status = hall_decoder_update(
+        self->config.hall_decoder,
+        &decoder_observation,
+        &decoded_hall
+    );
+    if (self->last_hall_decoder_status != HALL_DECODER_STATUS_OK) {
+        return APP_STATUS_HALL_DECODER_ERROR;
+    }
+
+    estimator_observation = (hall_estimator_observation_t){
+        .theta_e_rad = decoded_hall.theta_e_rad,
+        .omega_e_rad_s = decoded_hall.omega_e_rad_s,
+        .sector_span_rad = decoded_hall.sector_span_rad,
+        .transition_count = decoded_hall.transition_count,
+        .sector = decoded_hall.sector,
+        .has_valid_state = decoded_hall.has_valid_state,
+        .has_valid_direction = decoded_hall.has_valid_direction,
+        .has_valid_angle = decoded_hall.has_valid_angle,
+        .has_valid_speed = decoded_hall.has_valid_speed,
+        .is_angle_from_edge = decoded_hall.is_angle_from_edge,
+        .is_timed_out = decoded_hall.is_timed_out,
     };
     self->last_hall_estimator_status = hall_estimator_update(
         self->config.hall_estimator,
-        &observation,
+        &estimator_observation,
         self->config.sampling_period_s,
         rotor_feedback
     );
@@ -507,6 +527,7 @@ app_status_t app_init(app_t *self, const app_config_t *config)
         (config->pwm_driver == NULL) ||
         (config->fault_manager == NULL) ||
         (config->hall_driver == NULL) ||
+        (config->hall_decoder == NULL) ||
         (config->hall_estimator == NULL) ||
         (config->motor_control == NULL) ||
         (((config->fast_loop_profile == NULL) &&
@@ -525,6 +546,7 @@ app_status_t app_init(app_t *self, const app_config_t *config)
         (!config->voltage_sensor->is_initialized) ||
         (!config->fault_manager->is_initialized) ||
         (!config->hall_driver->is_initialized) ||
+        (!config->hall_decoder->is_initialized) ||
         (!config->hall_estimator->is_initialized) ||
         (!config->motor_control->is_initialized)) {
         return APP_STATUS_INVALID_STATE;
@@ -555,6 +577,7 @@ app_status_t app_init(app_t *self, const app_config_t *config)
         .last_current_sensor_status = CURRENT_SENSOR_STATUS_OK,
         .last_voltage_sensor_status = VOLTAGE_SENSOR_STATUS_OK,
         .last_hall_driver_status = HALL_DRIVER_STATUS_OK,
+        .last_hall_decoder_status = HALL_DECODER_STATUS_OK,
         .last_hall_estimator_status = HALL_ESTIMATOR_STATUS_OK,
         .last_motor_control_status = MOTOR_CONTROL_STATUS_OK,
         .last_cordic_status = CORDIC_DRIVER_STATUS_OK,
@@ -873,6 +896,7 @@ app_status_t app_start_current_control(app_t *self)
             CURRENT_SENSOR_OFFSET_CALIBRATION_COMPLETE) ||
         (!self->config.hall_driver->is_running) ||
         (self->last_hall_driver_status != HALL_DRIVER_STATUS_OK) ||
+        (self->last_hall_decoder_status != HALL_DECODER_STATUS_OK) ||
         (self->last_hall_estimator_status !=
             HALL_ESTIMATOR_STATUS_OK) ||
         (!self->config.hall_estimator->output.has_valid_angle)) {
@@ -1085,7 +1109,8 @@ static app_status_t app_motor_fast_loop_update(
     if ((rotor_status != APP_STATUS_OK) &&
         (self->mode == APP_MODE_CURRENT)) {
         const fault_manager_fault_mask_t fault_mask =
-            (rotor_status == APP_STATUS_HALL_FEEDBACK_ERROR) ?
+            ((rotor_status == APP_STATUS_HALL_FEEDBACK_ERROR) ||
+             (rotor_status == APP_STATUS_HALL_DECODER_ERROR)) ?
                 FAULT_MANAGER_FAULT_HALL_FEEDBACK :
                 FAULT_MANAGER_FAULT_ROTOR_ESTIMATOR;
 

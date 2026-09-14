@@ -106,12 +106,12 @@ motor_control / FOC
 
 각 module의 내부 state가 필요한 경우에도 외부에 전달되는 canonical output의 owner를 명확히 한다.
 
-현재 Hall 구성에서는 `hall_driver`가 TIM capture/timeout으로부터 만든 최신
-`hall_driver_feedback_t` snapshot의 owner다. App은 fast loop가 시작될 때
-`hall_driver_get_rotor_feedback()`으로 필요한 rotor field만 읽어 해당 제어 주기의
-`motor_feedback`을 구성한다. 전체 diagnostic snapshot은 저속 진단 경로에서
-`hall_driver_get_feedback()`으로 읽는다. Control/FOC는 driver 내부 buffer를 직접 참조하거나
-별도의 Hall 각도를 독립적으로 갱신하지 않는다.
+현재 Hall 구성에서는 `hall_driver`가 TIM capture/timeout으로부터 만든 최신 raw signal
+snapshot의 owner다. App은 fast loop가 시작될 때 경량 snapshot을 읽어 `hall_decoder`에
+전달하고, decoder는 선택된 motor profile에 따라 sector/edge angle/speed를 만든다.
+`hall_estimator`는 이 decoded observation을 이어 받아 edge 사이 연속 전기각을 소유한다.
+Control/FOC는 driver 내부 buffer를 직접 참조하거나 별도의 Hall 각도를 독립적으로 갱신하지
+않는다.
 
 `main.c`의 `hall_test_feedback`은 hardware bring-up 중 debugger 관찰을 위한 임시
 복사본이며 canonical runtime feedback으로 사용하지 않는다.
@@ -143,9 +143,9 @@ app_motor_fast_loop()
    ->
 feedback acquire/convert
    ->
-Hall feedback snapshot acquire
+raw Hall snapshot acquire
    ->
-rotor estimate/update when configured
+motor profile decode / continuous rotor estimate
    ->
 motor_control fast update
    ->
@@ -214,9 +214,8 @@ App이 성공한 해당 주기 결과를 debugger에서 보기 위한 복사본�
 CODE 영역에서 호출한다. App 함수로 분리해도 실행 문맥은 같은 ADC ISR이며, main loop로
 실행이 이동하지 않는다.
 
-Hall estimator 호출은 현재 `main.c`의 bring-up/test helper에 남아 있다. FOC를 통합할 때는
-Hall snapshot 취득과 estimator 실행을 App orchestration으로 옮기고, `main.c`에는 IRQ 경계와
-debugger용 결과 복사만 유지한다.
+Hall snapshot 취득, motor profile decoding과 continuous-angle estimator 실행은 App
+orchestration에 있다. `main.c`에는 IRQ 경계, 초기화 연결과 debugger용 결과 복사만 유지한다.
 
 정상 fast IRQ는 세 JDR을 읽은 직후 현재 JEOC/JEOS를 직접 정리하고 pending을 표시한다.
 HAL fallback을 탄 경우에는 `HAL_ADCEx_InjectedConvCpltCallback()`이 pending만 표시하고,
@@ -253,13 +252,13 @@ edge 또는 counter overflow가 발생할 때 비동기적으로 갱신되고, A
 TIM2 XOR Hall edge
  -> HAL_TIM_IC_CaptureCallback()
  -> hall_driver_handle_capture()
- -> inactive feedback buffer 완성
+ -> raw state/edge interval inactive buffer 완성
  -> active index publish
 
 TIM2 counter overflow
  -> HAL_TIM_PeriodElapsedCallback()
  -> hall_driver_handle_timeout()
- -> 정지/0 rad/s 상태 publish
+ -> raw timeout 상태와 무효 interval publish
 
 completion ADC injected 변환 완료
  -> 세 ADC JDR 일괄 수집
@@ -267,8 +266,10 @@ completion ADC injected 변환 완료
  -> HAL ADC flag 정리
  -> ADC IRQ 후처리
  -> app_motor_fast_loop()
- -> hall_driver_get_rotor_feedback()
- -> 최신 완성 Hall rotor snapshot 소비
+ -> hall_driver_get_signal_feedback()
+ -> hall_decoder_update()
+ -> hall_estimator_update()
+ -> 최신 연속 Hall rotor feedback 소비
 ```
 
 현재 NVIC preemption priority는 ADC1/2와 ADC3가 `0`, TIM2가 `1`이다. 따라서 ADC
@@ -279,18 +280,22 @@ buffer 방식으로 publish한다. ADC reader는 선점 시점에 따라 이전 
 
 다음 계약을 유지한다.
 
-- Fast-loop rotor feedback은 `hall_driver_get_rotor_feedback()`으로 읽고, 전체 diagnostic
-  snapshot이 필요한 경로는 `hall_driver_get_feedback()`을 사용한다. 내부 buffer/index는
-  직접 읽거나 수정하지 않는다.
+- Fast loop는 `hall_driver_get_signal_feedback()`으로 raw signal snapshot을 읽고, 전체
+  hardware diagnostic이 필요한 경로는 `hall_driver_get_feedback()`을 사용한다. 내부
+  buffer/index는 직접 읽거나 수정하지 않는다.
 - Hall capture/timeout handler를 호출하는 writer는 해당 TIM ISR 하나뿐이다.
 - Hall ISR에서는 FOC/SVPWM을 실행하지 않는다. 제어 stack은 세 ADC 완료로 시작되는 fast loop에서 실행한다.
-- Driver는 Hall edge 사이의 angle extrapolation이나 filtering을 수행하지 않는다.
+- Driver는 raw Hall state의 유효성, sector, direction, electrical angle 또는 speed를 판단하지
+  않는다. 이 의미는 `hall_decoder`와 motor profile이 소유한다.
+- Decoder profile은 8개 raw state 각각을 sector 0부터 5 또는 invalid로 mapping하고, 여섯
+  정방향 진입 경계각을 제공한다. 실제 sector span과 edge-to-edge speed도 이 경계각으로
+  계산한다.
 - 현재 Hall estimator는 마지막 유효 edge 이후 `abs(omega_e) * elapsed_s`를 적분하되,
-  이동량을 이상적인 한 Hall sector 폭인 `pi/3`으로 제한한다. Signed speed가 양수이면
+  이동량을 profile의 현재 Hall sector span으로 제한한다. Signed speed가 양수이면
   edge 각도에서 증가하고 음수이면 감소하며, 다음 Hall edge가 없으면 해당 방향의 sector
   출구 경계에서 대기한다. 따라서 Hall state 변화 없이 추정각만 다음 sector로 넘어가지 않는다.
-- 경량 Hall snapshot은 최신 sector도 함께 전달한다. Estimator는 transition count와 validity
-  flag뿐 아니라 sector 변화도 관측 갱신으로 취급하므로, 연속된 비인접 transition 오류에서
+- Decoder output은 최신 sector와 실제 sector span을 함께 전달한다. Estimator는 transition
+  count와 validity flag뿐 아니라 sector 변화도 관측 갱신으로 취급하므로, decoder resync에서
   sector 중심각이 바뀌어도 이전 관측을 잘못 재사용하지 않는다.
 - Fast loop는 `has_valid_state`, `has_valid_angle`, `has_valid_speed`, `is_timed_out`을 확인하고
   사용할 수 없는 feedback으로 제어를 진행하지 않는 정책을 App에서 결정한다.
@@ -305,7 +310,8 @@ buffer 방식으로 publish한다. ADC reader는 선점 시점에 따라 이전 
 
 ```text
 CubeMX peripheral 초기화 (ADC trigger가 발생하지 않는 상태)
- -> hall_driver_init(): TIM/GPIO mapping, 정방향 sequence 및 timer 설정 검증
+ -> hall_driver_init(): TIM/GPIO mapping 및 timer 설정 검증
+ -> hall_decoder_init(): motor별 raw-state mapping과 electrical edge angle 검증
  -> hall_driver_start(): Hall capture와 overflow timeout interrupt 시작
  -> adc_driver_init(): 매핑 검증과 ADC 자체 calibration
  -> adc_driver_start(): regular 및 세 injected 그룹을 trigger 대기 상태로 준비
@@ -332,9 +338,9 @@ ADC 정지/재동기화 시에는 App/Platform 통합 경로에서 trigger를 �
 ADC driver는 PWM/time base를 직접 제어하지 않는다.
 
 Hall timer는 PWM/ADC trigger와 독립적으로 먼저 시작할 수 있지만, rotor feedback을 사용하는
-fast loop가 시작되기 전에는 준비되어 있어야 한다. `hall_driver_stop()`은 마지막 Hall
-state/sector/angle과 diagnostic counter를 보존하면서 속도를 `0 rad/s`로 만들고
-`has_valid_speed`를 false로 설정한다. 정지 중에도 rotor 움직임을 관찰해야 하는 시스템이면
+fast loop가 시작되기 전에는 driver와 decoder가 모두 준비되어 있어야 한다.
+`hall_driver_stop()`은 마지막 raw Hall state와 diagnostic counter를 보존하면서 edge interval을
+무효화한다. 정지 중에도 rotor 움직임을 관찰해야 하는 시스템이면
 PWM output 정지와 Hall timer 정지를 동일한 동작으로 묶지 않고 App state policy로 결정한다.
 
 ---
@@ -524,7 +530,7 @@ interrupt 복귀 비용은 포함되지 않으므로 interrupt jitter와 duty wr
 ```text
 adc_driver_read_raw / convert
  -> unfiltered i_abc / v_dc software fault 검사
- -> Hall feedback snapshot / hall_estimator_update
+ -> raw Hall snapshot / hall_decoder_update / hall_estimator_update
  -> open-loop: voltage angle -> CORDIC -> v_alpha_beta
     current: current command -> motor_control -> FOC -> v_alpha_beta_ref
  -> SVPWM

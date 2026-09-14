@@ -205,6 +205,11 @@ body MUST 기준 2800 cycles는 125 cycles 초과하므로 최적화 완료 기�
 기능 확인에 사용한 자동 지령 주입과 800-sample 판정 코드는 측정 후 `main.c`에서 제거하고,
 전체/body cycle 및 deadline miss 계측은 이후 실구동 검증을 위해 유지한다.
 
+이 측정 뒤 Hall 해석을 Platform driver에서 Control의 motor별 `hall_decoder`로 분리했다.
+따라서 위 `3220 cycles`는 변경 전 기준선이며 현재 binary의 timing 통과 근거로 재사용하지
+않는다. 새 capture가 없는 decoder 정상 경로는 precomputed output 복사만 수행하도록 유지하되,
+실구동 전 Hall transition/timeout을 포함한 전체 worst-case cycle을 보드에서 다시 측정해야 한다.
+
 ---
 
 ## 4. Fast path와 checked path

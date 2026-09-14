@@ -16,8 +16,6 @@
 
 #define HALL_ESTIMATOR_PI_F      3.14159265358979323846f
 #define HALL_ESTIMATOR_TWO_PI_F  (2.0f * HALL_ESTIMATOR_PI_F)
-#define HALL_ESTIMATOR_SECTOR_ANGLE_RAD \
-    (HALL_ESTIMATOR_TWO_PI_F / 6.0f)
 #define HALL_ESTIMATOR_SECTOR_COUNT  6U
 
 #define HALL_ESTIMATOR_FLAG_VALID_STATE      (1U << 0)
@@ -43,6 +41,7 @@ static void hall_estimator_clear_runtime(hall_estimator_t *self)
 
     self->edge_reference_theta_e_rad = 0.0f;
     self->edge_travel_rad = 0.0f;
+    self->edge_travel_limit_rad = 0.0f;
     self->last_transition_count = 0U;
     self->last_sector = UINT8_MAX;
     self->last_observation_flags = 0U;
@@ -67,7 +66,10 @@ static bool hall_estimator_is_valid_observation(
         if (!observation->has_valid_state ||
             !isfinite(observation->theta_e_rad) ||
             (observation->theta_e_rad < 0.0f) ||
-            (observation->theta_e_rad >= HALL_ESTIMATOR_TWO_PI_F)) {
+            (observation->theta_e_rad >= HALL_ESTIMATOR_TWO_PI_F) ||
+            !isfinite(observation->sector_span_rad) ||
+            (observation->sector_span_rad <= 0.0f) ||
+            (observation->sector_span_rad >= HALL_ESTIMATOR_TWO_PI_F)) {
             return false;
         }
     }
@@ -187,11 +189,11 @@ hall_estimator_status_t hall_estimator_update(
 
             /*
              * Hall state가 바뀌지 않은 동안 실제 rotor가 다음 sector로 넘어갔다는 증거가
-             * 없으므로 마지막 edge부터 한 sector 폭까지만 진행한다. 방향은 signed speed의
+             * 없으므로 마지막 edge부터 profile의 현재 sector 폭까지만 진행한다. 방향은 signed speed의
              * 부호로 적용하여 reverse에서는 edge 각도에서 감소하도록 한다.
              */
-            if (next_edge_travel_rad >= HALL_ESTIMATOR_SECTOR_ANGLE_RAD) {
-                next_edge_travel_rad = HALL_ESTIMATOR_SECTOR_ANGLE_RAD;
+            if (next_edge_travel_rad >= self->edge_travel_limit_rad) {
+                next_edge_travel_rad = self->edge_travel_limit_rad;
                 self->output.is_sector_limited = true;
             } else {
                 self->output.is_sector_limited = false;
@@ -204,7 +206,7 @@ hall_estimator_status_t hall_estimator_update(
                 next_theta_e_rad -= next_edge_travel_rad;
             }
 
-            /* 최대 이동량이 pi/3이므로 한 번의 wrap이면 [0, 2*pi)에 들어온다. */
+            /* 입력 계약상 sector span이 2*pi보다 작으므로 한 번의 wrap이면 충분하다. */
             if (next_theta_e_rad >= HALL_ESTIMATOR_TWO_PI_F) {
                 next_theta_e_rad -= HALL_ESTIMATOR_TWO_PI_F;
             } else if (next_theta_e_rad < 0.0f) {
@@ -241,6 +243,7 @@ hall_estimator_status_t hall_estimator_update(
         next_output.is_sector_limited = false;
         self->edge_reference_theta_e_rad = 0.0f;
         self->edge_travel_rad = 0.0f;
+        self->edge_travel_limit_rad = 0.0f;
     } else {
         if (observation->has_valid_speed) {
             next_output.omega_e_rad_s = observation->omega_e_rad_s;
@@ -268,6 +271,7 @@ hall_estimator_status_t hall_estimator_update(
             next_output.is_sector_limited = false;
             self->edge_reference_theta_e_rad = observation->theta_e_rad;
             self->edge_travel_rad = 0.0f;
+            self->edge_travel_limit_rad = observation->sector_span_rad;
         }
     }
 

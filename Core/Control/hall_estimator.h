@@ -23,8 +23,9 @@
  *
  * @par 현재 추정 방식
  * 유효한 Hall edge 사이에서는 직전 signed electrical speed가 일정하다고 가정하고
- * 전기각을 적분한다. 마지막 edge 이후 이동량은 이상적인 Hall sector 폭인 pi/3 이하로
- * 제한하므로, 실제 다음 Hall edge가 관측되기 전에 추정각만 다음 sector로 넘어가지 않는다.
+ * 전기각을 적분한다. 마지막 edge 이후 이동량은 decoder profile이 제공한 현재 Hall sector
+ * span 이하로 제한하므로, 실제 다음 Hall edge가 관측되기 전에 추정각만 다음 sector로
+ * 넘어가지 않는다.
  * 새로운 Hall transition이 관측되면 이론적인 Hall edge 각도로 즉시 맞춰 누적 오차를
  * 제거한다. 새 edge를 처리한 주기에는 적분하지 않으므로 edge 검출과 fast-loop 사이에
  * 최대 한 update 주기의 지연이 포함될 수 있다.
@@ -65,6 +66,7 @@ typedef enum {
 typedef struct {
     float theta_e_rad;   /**< Hall sector 중심 또는 edge 전기각 [rad], 범위 [0, 2*pi). */
     float omega_e_rad_s; /**< 방향 부호가 있는 edge-to-edge 전기각속도 [rad/s]. */
+    float sector_span_rad; /**< 현재 Hall sector의 calibrated electrical span [rad]. */
 
     uint32_t transition_count; /**< 수락된 유효 Hall transition 누적 횟수. */
     uint8_t sector;            /**< has_valid_state가 true일 때 범위 [0, 5]의 최신 Hall sector. */
@@ -105,7 +107,8 @@ typedef struct {
 typedef struct {
     hall_estimator_output_t output; /**< 가장 최근에 완성된 추정 결과. */
     float edge_reference_theta_e_rad; /**< 마지막 유효 Hall edge의 전기각 [rad]. */
-    float edge_travel_rad; /**< 마지막 유효 Hall edge 이후 방향과 무관한 이동량 [rad], 범위 [0, pi/3]. */
+    float edge_travel_rad; /**< 마지막 유효 Hall edge 이후 방향과 무관한 이동량 [rad]. */
+    float edge_travel_limit_rad; /**< 현재 Hall sector의 profile 기반 이동 한계 [rad]. */
     uint32_t last_transition_count; /**< 마지막으로 처리한 observation의 transition_count. */
     uint8_t last_sector;            /**< 마지막으로 처리한 observation의 Hall sector. */
     uint8_t last_observation_flags; /**< 변경 감지용 validity/edge/timeout flag bitmask. */
@@ -152,9 +155,10 @@ hall_estimator_status_t hall_estimator_reset(hall_estimator_t *self);
  * @post 최초 관측 또는 새로운 transition_count에서는 observation의 theta_e_rad로 즉시
  *       동기화하며 해당 호출에서는 속도 적분을 수행하지 않는다.
  * @post 새 edge가 없고 angle/speed와 edge reference가 유효하며 timeout이 아니면
- *       `abs(omega_e) * elapsed_s`를 edge 이동량에 누적한다. 이동량은 pi/3으로 제한하고,
+ *       `abs(omega_e) * elapsed_s`를 edge 이동량에 누적한다. 이동량은 observation의
+ *       sector_span_rad로 제한하고,
  *       omega_e_rad_s가 양수이면 edge 각도에 더하고 음수이면 빼서 [0, 2*pi)로 정규화한다.
- * @post 이동량이 pi/3에 도달하면 다음 Hall edge가 들어올 때까지 출구 경계를 유지하고
+ * @post 이동량이 현재 sector span에 도달하면 다음 Hall edge가 들어올 때까지 출구 경계를 유지하고
  *       is_sector_limited를 true로 설정한다.
  * @note Timeout에서는 0 rad/s 관측을 반영하고 마지막 추정각과 sector 제한 상태를 유지한다.
  * @note has_valid_speed가 false이면 이전 속도를 계속 사용하지 않고 0으로 만든다.
