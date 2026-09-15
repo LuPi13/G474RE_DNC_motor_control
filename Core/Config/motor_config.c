@@ -29,3 +29,18 @@ const hall_decoder_profile_t motor_config_hall_profile = {
         5.775905845f,
     },
 };
+
+const speed_controller_config_t motor_config_speed_controller = {
+    .pi = {
+        .kp = 0.0453f,
+        .ki = 1.007f,
+        .anti_windup_gain_per_s = 22.2f,
+        .sampling_period_s = 0.001f,
+        .output_min = -0.5f,
+        .output_max = 0.5f,
+    },
+    .feedback_filter = {
+        .cutoff_frequency_hz = 30.0f,
+        .sampling_period_s = 0.001f,
+    },
+};
