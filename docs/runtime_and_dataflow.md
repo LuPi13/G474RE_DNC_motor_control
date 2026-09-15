@@ -623,6 +623,16 @@ DISABLED
 처리한다. `app_drive_scheduler_tick()`은 1 kHz SysTick에서 calibration timeout 시간을 세고 speed PI만
 실행하며, ADC ISR은 기존 40 kHz feedback/FOC/SVPWM 경로를 유지한다.
 
+공유용 기본 firmware의 `main.c`는 CubeMX peripheral 초기화, App/driver wiring, IRQ entry와
+`app_drive_update()` 호출만 수행한다. 따라서 기동 뒤 offset 보정이 완료되면 `READY`에서 안전하게 대기하며
+PWM을 자동으로 enable하지 않는다. CAN, UART 또는 debugger test source는 protocol을 해석한 뒤 main context에서
+`drive_command_router_execute()`에 `START_SPEED`, `SET_SPEED`, `STOP`, `RECOVER_FAULT` command를 전달한다.
+통신 ISR은 직접 PWM/FOC를 조작하지 않고 command를 queue에 넣는다.
+
+현재 board bring-up에는 `drive_debug_command_source`를 연결한다. 이 module은 `main.c` 밖에 있으며
+`requested_speed_rpm`, `start_requested`, `stop_requested`만 Live Expression 입력으로 제공한다. 기본값은 모두
+0/false이므로 자동 기동하지 않는다.
+
 정상 정지는 reference가 0이 되었다는 사실만으로 PWM을 끄지 않는다. `RAMP_TO_ZERO`에서 Hall timeout 또는
 기계속도 절댓값이 `speed_stop_omega_m_threshold_rad_s` 이하임을 한 번 확인한 뒤
 `speed_stop_dwell_ms` 동안 능동 감속하고 PWM을 비활성화한다. 저속 확인 뒤에는 다음 Hall edge의 양자화된

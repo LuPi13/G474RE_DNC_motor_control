@@ -25,6 +25,7 @@
 #include "app.h"
 #include "cordic_driver.h"
 #include "current_sensor.h"
+#include "drive_debug_command_source.h"
 #include "fault_manager.h"
 #include "hall_decoder.h"
 #include "hall_driver.h"
@@ -61,9 +62,6 @@
     (CURRENT_SENSOR_OFFSET_EXPECTED_DURATION_MS + \
      CURRENT_SENSOR_OFFSET_TIMEOUT_MARGIN_MS)
 #define ACS725_10AB_GAIN_A_PER_COUNT  ((3.3f / 4096.0f) / 0.132f)
-#define SPEED_CONTROL_TEST_MAX_ABS_RPM               (3000.0f)
-#define SPEED_CONTROL_TEST_RPM_TO_RAD_S              (0.104719758f)
-#define SPEED_CONTROL_TEST_RAD_S_TO_RPM              (9.54929638f)
 #define APP_SPEED_STOP_OMEGA_M_THRESHOLD_RAD_S       (52.3598785f)
 #define APP_SPEED_STOP_DWELL_MS                       (10U)
 
@@ -131,23 +129,6 @@ static volatile uint32_t adc_fast_loop_deadline_miss_count;
 static volatile uint32_t adc_fast_loop_body_cycles_last;
 static volatile uint32_t adc_fast_loop_body_cycles_max;
 
-/* Speed-control hardware 시험용 Live Expressions 변수. */
-static volatile float speed_control_test_requested_rpm;
-static volatile float speed_control_test_applied_rpm;
-static volatile bool speed_control_test_start_requested;
-static volatile bool speed_control_test_ramp_to_zero_requested;
-static volatile bool speed_control_test_reset_timing_requested;
-static volatile bool speed_control_test_is_running;
-static volatile app_status_t speed_control_test_command_status;
-static volatile app_status_t speed_control_test_start_status;
-static volatile app_status_t speed_control_test_tick_status;
-static volatile uint32_t speed_control_test_tick_count;
-static volatile float speed_control_test_limited_reference_rpm;
-static volatile float speed_control_test_feedback_rpm;
-static volatile float speed_control_test_filtered_feedback_rpm;
-static volatile float speed_control_test_i_q_ref_a;
-static volatile bool speed_control_test_i_q_saturated;
-
 /* Hall sensor Live Expressions 확인용 */
 static volatile hall_driver_status_t hall_test_init_status;
 static volatile hall_driver_status_t hall_test_start_status;
@@ -209,33 +190,6 @@ static void adc_fast_loop_timing_test_init(void)
 
     adc_fast_loop_budget_cycles =
         SystemCoreClock / APP_FAST_LOOP_FREQUENCY_HZ;
-}
-
-/* 조건별 max 값을 다시 수집할 때 IRQ와 경합하지 않도록 통계를 원자적으로 지운다. */
-static void fast_loop_timing_test_reset_statistics(void)
-{
-    const uint32_t primask = __get_PRIMASK();
-
-    __disable_irq();
-    adc_fast_loop_cycles_last = 0U;
-    adc_fast_loop_cycles_max = 0U;
-    adc_fast_loop_deadline_miss_count = 0U;
-    adc_fast_loop_body_cycles_last = 0U;
-    adc_fast_loop_body_cycles_max = 0U;
-    if (primask == 0U) {
-        __enable_irq();
-    }
-}
-
-static float speed_control_test_limit_rpm(float rpm)
-{
-    if (rpm > SPEED_CONTROL_TEST_MAX_ABS_RPM) {
-        return SPEED_CONTROL_TEST_MAX_ABS_RPM;
-    }
-    if (rpm < -SPEED_CONTROL_TEST_MAX_ABS_RPM) {
-        return -SPEED_CONTROL_TEST_MAX_ABS_RPM;
-    }
-    return rpm;
 }
 
 /* USER CODE END 0 */
@@ -500,6 +454,8 @@ int main(void)
       Error_Handler();
   }
 
+  drive_debug_command_source_init();
+
   /* PWM output은 끈 채 ADC fast loop가 무전류 offset을 수집하게 한다. */
   app_test_status = app_drive_start(&app);
   if (app_test_status != APP_STATUS_OK) {
@@ -543,53 +499,7 @@ int main(void)
           app_test_last_error = app_test_status;
       }
 
-      if ((app.drive_state == APP_DRIVE_STATE_READY) &&
-          speed_control_test_start_requested) {
-          const app_speed_command_t command = {
-              .omega_m_ref_rad_s = speed_control_test_limit_rpm(
-                  speed_control_test_requested_rpm
-              ) * SPEED_CONTROL_TEST_RPM_TO_RAD_S,
-          };
-
-          speed_control_test_start_status = app_drive_start_speed(&app, &command);
-          if (speed_control_test_start_status == APP_STATUS_OK) {
-              speed_control_test_applied_rpm =
-                  speed_control_test_limit_rpm(speed_control_test_requested_rpm);
-              speed_control_test_is_running = true;
-          }
-          speed_control_test_start_requested = false;
-      } else if ((app.drive_state == APP_DRIVE_STATE_SPEED_RUNNING) &&
-                 speed_control_test_is_running) {
-          const float requested_rpm = speed_control_test_limit_rpm(
-              speed_control_test_requested_rpm
-          );
-
-          if (speed_control_test_reset_timing_requested) {
-              fast_loop_timing_test_reset_statistics();
-              speed_control_test_reset_timing_requested = false;
-          }
-          if (speed_control_test_ramp_to_zero_requested) {
-              speed_control_test_command_status =
-                  app_drive_request_speed_stop(&app);
-              speed_control_test_requested_rpm = 0.0f;
-              speed_control_test_ramp_to_zero_requested = false;
-          } else if (requested_rpm != speed_control_test_applied_rpm) {
-              const app_speed_command_t command = {
-                  .omega_m_ref_rad_s =
-                      requested_rpm * SPEED_CONTROL_TEST_RPM_TO_RAD_S,
-              };
-
-              speed_control_test_command_status =
-                  app_set_speed_command(&app, &command);
-              if (speed_control_test_command_status == APP_STATUS_OK) {
-                  speed_control_test_applied_rpm = requested_rpm;
-              }
-          }
-      }
-
-      speed_control_test_is_running =
-          (app.drive_state == APP_DRIVE_STATE_SPEED_RUNNING) ||
-          (app.drive_state == APP_DRIVE_STATE_RAMP_TO_ZERO);
+      drive_debug_command_source_update(&app);
 
       HAL_Delay(1U);
     /* USER CODE END WHILE */
@@ -1387,25 +1297,6 @@ void app_speed_scheduler_tick(void)
     }
 
     app_drive_scheduler_tick(&app);
-    if ((app.drive_state == APP_DRIVE_STATE_SPEED_RUNNING) ||
-        (app.drive_state == APP_DRIVE_STATE_RAMP_TO_ZERO)) {
-        speed_control_test_tick_status = app.last_status;
-        ++speed_control_test_tick_count;
-        speed_control_test_limited_reference_rpm =
-            app.last_speed_output.omega_m_ref_limited_rad_s *
-            SPEED_CONTROL_TEST_RAD_S_TO_RPM;
-        speed_control_test_feedback_rpm =
-            app.last_speed_output.omega_m_feedback_rad_s *
-            SPEED_CONTROL_TEST_RAD_S_TO_RPM;
-        speed_control_test_filtered_feedback_rpm =
-            app.last_speed_output.speed_controller
-                .omega_m_feedback_filtered_rad_s *
-            SPEED_CONTROL_TEST_RAD_S_TO_RPM;
-        speed_control_test_i_q_ref_a =
-            app.last_speed_output.speed_controller.i_q_ref;
-        speed_control_test_i_q_saturated =
-            app.last_speed_output.speed_controller.is_i_q_ref_saturated;
-    }
 }
 
 void app_adc_irq_prologue(void)

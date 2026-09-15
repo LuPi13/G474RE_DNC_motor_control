@@ -78,6 +78,10 @@ calibration, READY, speed start, ramp-to-zero와 PWM disable 순서만 소유한
 제품별 enable/interlock 및 position lifecycle은 이 구조체에 미리 모으지 않고 책임이 생길 때
 별도 App module로 추가한다.
 
+`drive_command.c/.h`는 CAN, UART 또는 debugger test source가 해석한 protocol-independent command를
+App lifecycle API로 전달한다. 이 module은 통신 peripheral과 HAL에 의존하지 않으며, command source가 PWM
+enable/disable 또는 `app_t` 내부 상태를 직접 조작하지 않게 한다.
+
 ### Control
 
 모터제어 subsystem:

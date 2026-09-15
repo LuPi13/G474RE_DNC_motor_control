@@ -911,8 +911,8 @@ rate limiter, electrical-to-mechanical speed 변환과 1 kHz 실행/publish는 `
 speed PI를 직접 삽입하지 않는다. 초기 gain, 1 ms 주기, 30 Hz feedback cutoff와 ±0.5 A bring-up
 출력 범위는 `motor_config_speed_controller`에 둔다.
 
-속도 제어 통합 뒤 App은 아래 최소 lifecycle을 제공한다. 통신 없이도 main의 임시 command source가
-동일 API를 호출하므로, 이후 CAN/UART을 추가해도 PWM enable/disable 순서를 복제하지 않는다.
+속도 제어 통합 뒤 App은 아래 최소 lifecycle을 제공한다. 외부 command source는 App lifecycle API를
+호출하므로, 이후 CAN/UART을 추가해도 PWM enable/disable 순서를 복제하지 않는다.
 
 ```text
 DISABLED -> CURRENT_OFFSET_CALIBRATION -> READY
@@ -925,6 +925,16 @@ Offset deadline은 SysTick 1 kHz에서 계산하고, ADC fast loop는 sample 누
 양자화되어 stop 판단을 다시 깨지 않도록, 0 speed reference가 제한기를 통과한 뒤 Hall timeout 또는 저속을
 처음 확인하면 stop dwell을 latch한다. 현재 bring-up 기준은 500 rpm, 10 ms이며 이 값 아래에서는 PWM을
 비활성화하므로 마지막 정지는 coast다.
+
+공유용 기본 build에는 Live Expression으로 speed command를 만들거나 PWM을 시작하는 `main.c` 시험 코드를
+넣지 않는다. `drive_command`는 protocol-independent command를 App lifecycle API로 routing하며, board
+bring-up 또는 debugger 시험은 별도 선택형 command source로 유지한다. 이 source는 product command source와
+동일한 `drive_command_router_execute()`만 호출해야 한다.
+
+현재 `drive_debug_command_source`는 debugger Live Expression으로 `requested_speed_rpm`을 설정한 뒤
+`start_requested`를 true로 만드는 board bring-up용 source다. 운전 중 target 변경은
+`requested_speed_rpm`만 갱신하고, 정상 정지는 `stop_requested`를 true로 요청한다. 이 source의 기본값은
+모두 안전한 0/false이며, 통신 command source가 준비되면 product build에서 제외하거나 교체한다.
 
 2026-09-15 board shadow 시험에서는 PWM과 App drive mode를 비활성 상태로 유지하고 실제 Hall
 속도를 1 kHz main-loop 시험 경로에서 controller에 입력했다. 손으로 축을 정·역회전했을 때
