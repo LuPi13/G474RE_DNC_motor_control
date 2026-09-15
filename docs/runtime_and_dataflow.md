@@ -131,8 +131,8 @@ snapshot의 owner다. App은 fast loop가 시작될 때 경량 snapshot을 읽�
 Control/FOC는 driver 내부 buffer를 직접 참조하거나 별도의 Hall 각도를 독립적으로 갱신하지
 않는다.
 
-`main.c`의 `hall_test_feedback`은 hardware bring-up 중 debugger 관찰을 위한 임시
-복사본이며 canonical runtime feedback으로 사용하지 않는다.
+`main.c`는 Hall feedback의 별도 복사본을 유지하지 않는다. 관찰이 필요하면 driver/App이
+소유한 snapshot API를 사용하며, 이를 product runtime state로 중복 보관하지 않는다.
 
 ---
 
@@ -208,7 +208,6 @@ void ADC1_2_IRQHandler(void)
 
 void ADC3_IRQHandler(void)
 {
-    app_adc_irq_prologue();
     if (app_adc_injected_irq_try_handle_fast(&hadc3)) {
         app_adc_irq_epilogue();
         return;
@@ -226,14 +225,14 @@ App의 `app_handle_adc_error()` 경로에 연결한다.
 HAL callback 정의는 `Core/Src/main.c`의 CubeMX USER CODE 영역에 두고,
 실제 orchestration은 `Core/App/app.c`에 둔다. 현재 open-loop bring-up에서는
 `main.c`의 IRQ 후처리 helper가 ISR 전용 `app_motor_fast_loop_fast()`를 호출하며, App이 raw sample
-소비와 SI 환산부터 CORDIC/SVPWM/PWM duty 갱신까지 수행한다. Main의 `adc_test_*` 변수는
-App이 성공한 해당 주기 결과를 debugger에서 보기 위한 복사본일 뿐 canonical feedback이 아니다.
+소비와 SI 환산부터 CORDIC/SVPWM/PWM duty 갱신까지 수행한다. `main.c`는 fast-loop raw sample,
+환산 결과 또는 Hall 추정 결과의 debugger용 복사본을 만들지 않는다.
 `app_adc_irq_epilogue()`는 completion ADC인 `ADC3_IRQHandler()`의 JEOC 정리 뒤 CubeMX USER
 CODE 영역에서 호출한다. App 함수로 분리해도 실행 문맥은 같은 ADC ISR이며, main loop로
 실행이 이동하지 않는다.
 
 Hall snapshot 취득, motor profile decoding과 continuous-angle estimator 실행은 App
-orchestration에 있다. `main.c`에는 IRQ 경계, 초기화 연결과 debugger용 결과 복사만 유지한다.
+orchestration에 있다. `main.c`에는 IRQ 경계와 초기화 연결만 유지한다.
 
 정상 fast IRQ는 세 JDR을 읽은 직후 현재 JEOC/JEOS를 직접 정리하고 pending을 표시한다.
 HAL fallback을 탄 경우에는 `HAL_ADCEx_InjectedConvCpltCallback()`이 pending만 표시하고,
@@ -548,14 +547,18 @@ Preload는 CPU가 세 값을 모두 쓸 때까지 update를 기다려주는 기�
 목표 update deadline 안에 확보해야 한다. 순차 쓰기 자체를 동시 반영 불가로 해석하지 않는다.
 API 상세 계약은 [`pwm_driver.h`](../Core/Platform/pwm_driver.h)를 따른다.
 
-Bring-up 단계에서는 Cortex-M DWT cycle counter로 첫 ADC IRQ 진입부터
-fast-loop entry point 종료까지의 cycle을 측정할 수 있다. 예를 들어
+Fast-loop execution budget을 변경하거나 board timing을 재검증할 때는 전용 검증 build에서
+Cortex-M DWT cycle counter로 첫 ADC IRQ 진입부터 fast-loop entry point 종료까지의 cycle을
+측정할 수 있다. 예를 들어
 CPU 170 MHz, fast loop 40 kHz의 한 주기는
-`170000000 / 40000 = 4250 cycles`이다. 측정 구간이 HAL IRQ 진입/처리 비용을
-포함하도록 IRQ prologue/epilogue에서 측정하며, fast-loop body만의 값도
-별도로 보존해 비용을 구분한다. IRQ 진입 직전 hardware latency와 최종
+`170000000 / 40000 = 4250 cycles`이다. 측정 구간은 HAL IRQ 진입/처리 비용을
+포함해야 하며, fast-loop body만의 값도 별도로 측정해 비용을 구분한다. IRQ 진입 직전 hardware latency와 최종
 interrupt 복귀 비용은 포함되지 않으므로 interrupt jitter와 duty write deadline을
 위한 margin을 남겨야 한다.
+
+공유 기본 build의 `main.c`에는 DWT enable, cycle 최대값, deadline miss counter 같은
+검증용 상태를 두지 않는다. 검증 계측은 App의 선택형 profile interface 또는 별도 test build에서
+켜며, 검증 종료 뒤 product build에 남기지 않는다.
 
 현재 170 MHz/40 kHz timing contract의 hard deadline은 4250 cycles이며, 통합 통과 목표는
 전체 worst-case 3200 cycles 이하와 deadline miss 0이다. Body, 정상 경로 또는 평균값만으로

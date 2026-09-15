@@ -105,57 +105,10 @@ static app_t app;
 static canopen_service_t canopen_service;
 static drive_command_router_t canopen_drive_command_router;
 
-/* 디버거에서 함수 실행 결과 확인용 */
-static volatile pwm_driver_status_t pwm_test_status;
-
-/* ADC Live Expressions 확인용. 오류는 이후 수집에 성공해도 지우지 않는다. */
-static volatile adc_driver_status_t adc_test_last_error;
-static volatile current_sensor_status_t current_sensor_test_status;
-static volatile voltage_sensor_status_t voltage_sensor_test_status;
-static volatile uint32_t adc_test_sample_count;
-static volatile uint32_t adc_test_not_ready_count;
-static volatile adc_driver_raw_sample_t adc_test_raw;
-static volatile abc_t adc_test_i_abc;
-static volatile float adc_test_v_dc;
-static volatile bool adc_test_has_valid_phase_current;
-
-/* Open-loop App Live Expressions 확인용. last_error는 정상 주기에도 유지한다. */
-static volatile app_status_t app_test_status;
-static volatile app_status_t app_test_last_error;
-static volatile fault_manager_status_t fault_test_init_status;
-static volatile canopen_service_status_t canopen_service_init_status;
-static volatile canopen_service_status_t canopen_service_last_status;
-static volatile uint32_t canopen_service_process_count;
 static uint32_t canopen_service_last_tick_ms;
 
-/* ADC IRQ 후처리와 fast-loop 실행시간 확인용 */
-static volatile bool adc_fast_loop_pending;
-static volatile uint32_t adc_fast_loop_budget_cycles;
-static volatile bool adc_fast_loop_cycle_measurement_active;
-static volatile uint32_t adc_fast_loop_cycle_start;
-static volatile uint32_t adc_fast_loop_cycles_last;
-static volatile uint32_t adc_fast_loop_cycles_max;
-static volatile uint32_t adc_fast_loop_deadline_miss_count;
-static volatile uint32_t adc_fast_loop_body_cycles_last;
-static volatile uint32_t adc_fast_loop_body_cycles_max;
-
-/* Hall sensor Live Expressions 확인용 */
-static volatile hall_driver_status_t hall_test_init_status;
-static volatile hall_driver_status_t hall_test_start_status;
-static volatile hall_driver_status_t hall_test_capture_status;
-static volatile hall_driver_status_t hall_test_timeout_status;
-static volatile hall_driver_status_t hall_test_feedback_status;
-static volatile hall_driver_feedback_t hall_test_feedback;
-
-/* Hall 연속 전기각 추정 Live Expressions 확인용 */
-static volatile hall_estimator_status_t hall_estimator_test_init_status;
-static volatile hall_estimator_status_t hall_estimator_test_update_status;
-static volatile hall_driver_status_t hall_estimator_test_feedback_status;
-static volatile hall_decoder_status_t hall_decoder_test_init_status;
-static volatile hall_decoder_status_t hall_decoder_test_update_status;
-static volatile hall_estimator_output_t hall_estimator_test_output;
-static volatile uint32_t hall_estimator_test_update_count;
-static volatile motor_control_status_t motor_control_test_init_status;
+/* ADC3 IRQ에서 완성한 세 ADC 묶음을 한 번만 fast loop에 전달한다. */
+static bool adc_fast_loop_pending;
 
 /* USER CODE END PV */
 
@@ -177,31 +130,6 @@ static void MX_CORDIC_Init(void);
 
 /* Private user code ---------------------------------------------------------*/
 /* USER CODE BEGIN 0 */
-static void hall_test_refresh_feedback(void)
-{
-    hall_driver_feedback_t feedback;
-
-    hall_test_feedback_status = hall_driver_get_feedback(
-        &hall_driver,
-        &feedback
-    );
-
-    if (hall_test_feedback_status == HALL_DRIVER_STATUS_OK) {
-        hall_test_feedback = feedback;
-    }
-}
-
-/* Cortex-M4 DWT cycle counter를 켜고 현재 CPU clock 기준 fast-loop budget을 계산한다. */
-static void adc_fast_loop_timing_test_init(void)
-{
-    CoreDebug->DEMCR |= CoreDebug_DEMCR_TRCENA_Msk;
-    DWT->CYCCNT = 0U;
-    DWT->CTRL |= DWT_CTRL_CYCCNTENA_Msk;
-
-    adc_fast_loop_budget_cycles =
-        SystemCoreClock / APP_FAST_LOOP_FREQUENCY_HZ;
-}
-
 /* USER CODE END 0 */
 
 /**
@@ -228,8 +156,6 @@ int main(void)
   SystemClock_Config();
 
   /* USER CODE BEGIN SysInit */
-
-  adc_fast_loop_timing_test_init();
 
   /* USER CODE END SysInit */
 
@@ -283,28 +209,22 @@ int main(void)
       .timer_clock_hz = 170000000U,
   };
 
-  hall_test_init_status = hall_driver_init(&hall_driver, &hall_config);
-  if (hall_test_init_status != HALL_DRIVER_STATUS_OK) {
+  if (hall_driver_init(&hall_driver, &hall_config) != HALL_DRIVER_STATUS_OK) {
       Error_Handler();
   }
 
-  hall_decoder_test_init_status = hall_decoder_init(
+  if (hall_decoder_init(
       &hall_decoder,
       &motor_config_hall_profile
-  );
-  if (hall_decoder_test_init_status != HALL_DECODER_STATUS_OK) {
+  ) != HALL_DECODER_STATUS_OK) {
       Error_Handler();
   }
 
-  hall_test_start_status = hall_driver_start(&hall_driver);
-  if (hall_test_start_status != HALL_DRIVER_STATUS_OK) {
+  if (hall_driver_start(&hall_driver) != HALL_DRIVER_STATUS_OK) {
       Error_Handler();
   }
 
-  hall_test_refresh_feedback();
-
-  hall_estimator_test_init_status = hall_estimator_init(&hall_estimator);
-  if (hall_estimator_test_init_status != HALL_ESTIMATOR_STATUS_OK) {
+  if (hall_estimator_init(&hall_estimator) != HALL_ESTIMATOR_STATUS_OK) {
       Error_Handler();
   }
 
@@ -352,11 +272,10 @@ int main(void)
       .pole_pairs = 5U,
   };
 
-  motor_control_test_init_status = motor_control_init(
+  if (motor_control_init(
       &motor_control,
       &motor_control_config
-  );
-  if (motor_control_test_init_status != MOTOR_CONTROL_STATUS_OK) {
+  ) != MOTOR_CONTROL_STATUS_OK) {
       Error_Handler();
   }
 
@@ -384,13 +303,11 @@ int main(void)
       },
   };
 
-  adc_test_last_error = adc_driver_init(&adc_driver, &adc_config);
-  if (adc_test_last_error != ADC_DRIVER_STATUS_OK) {
+  if (adc_driver_init(&adc_driver, &adc_config) != ADC_DRIVER_STATUS_OK) {
       Error_Handler();
   }
 
-  adc_test_last_error = adc_driver_start(&adc_driver);
-  if (adc_test_last_error != ADC_DRIVER_STATUS_OK) {
+  if (adc_driver_start(&adc_driver) != ADC_DRIVER_STATUS_OK) {
       Error_Handler();
   }
 
@@ -411,11 +328,10 @@ int main(void)
       .maximum_offset_counts = 2560.0f,
   };
 
-  current_sensor_test_status = current_sensor_init(
+  if (current_sensor_init(
       &current_sensor,
       &current_sensor_config
-  );
-  if (current_sensor_test_status != CURRENT_SENSOR_STATUS_OK) {
+  ) != CURRENT_SENSOR_STATUS_OK) {
       Error_Handler();
   }
 
@@ -424,11 +340,10 @@ int main(void)
       .gain_v_per_count = 0.06448461162677f,
   };
 
-  voltage_sensor_test_status = voltage_sensor_init(
+  if (voltage_sensor_init(
       &voltage_sensor,
       &voltage_sensor_config
-  );
-  if (voltage_sensor_test_status != VOLTAGE_SENSOR_STATUS_OK) {
+  ) != VOLTAGE_SENSOR_STATUS_OK) {
       Error_Handler();
   }
 
@@ -439,11 +354,10 @@ int main(void)
       .dc_link_overvoltage_clear_v = APP_DC_LINK_OVERVOLTAGE_CLEAR_V,
   };
 
-  fault_test_init_status = fault_manager_init(
+  if (fault_manager_init(
       &fault_manager,
       &fault_config
-  );
-  if (fault_test_init_status != FAULT_MANAGER_STATUS_OK) {
+  ) != FAULT_MANAGER_STATUS_OK) {
       Error_Handler();
   }
 
@@ -471,18 +385,14 @@ int main(void)
       .initial_voltage_angle_rad = 0.0f,
   };
 
-  app_test_status = app_init(&app, &app_config);
-  if (app_test_status != APP_STATUS_OK) {
-      app_test_last_error = app_test_status;
+  if (app_init(&app, &app_config) != APP_STATUS_OK) {
       Error_Handler();
   }
 
   drive_debug_command_source_init();
 
   /* PWM output은 끈 채 ADC fast loop가 무전류 offset을 수집하게 한다. */
-  app_test_status = app_drive_start(&app);
-  if (app_test_status != APP_STATUS_OK) {
-      app_test_last_error = app_test_status;
+  if (app_drive_start(&app) != APP_STATUS_OK) {
       Error_Handler();
   }
 
@@ -503,8 +413,7 @@ int main(void)
             .compare_unit = HRTIM_COMPAREUNIT_1,
         },
   };
-pwm_test_status = pwm_driver_init(&pwm_driver, &pwm_config);
-    if (pwm_test_status != PWM_DRIVER_STATUS_OK) {
+  if (pwm_driver_init(&pwm_driver, &pwm_config) != PWM_DRIVER_STATUS_OK) {
         Error_Handler();
     }
 
@@ -526,15 +435,13 @@ pwm_test_status = pwm_driver_init(&pwm_driver, &pwm_config);
       .node_id = 1U,
       .bit_rate_kbit_s = 500U,
   };
-  canopen_service_init_status = canopen_service_init(
+  if (canopen_service_init(
       &canopen_service,
       &canopen_config,
       &canopen_motor_profile
-  );
-  if (canopen_service_init_status != CANOPEN_SERVICE_STATUS_OK) {
+  ) != CANOPEN_SERVICE_STATUS_OK) {
       Error_Handler();
   }
-  canopen_service_last_status = CANOPEN_SERVICE_STATUS_OK;
   canopen_service_last_tick_ms = HAL_GetTick();
 
     /* calibration 완료와 PWM enable/disable은 이후 main-context 상태기계가 처리한다. */
@@ -545,11 +452,7 @@ pwm_test_status = pwm_driver_init(&pwm_driver, &pwm_config);
   /* USER CODE BEGIN WHILE */
   while (1)
   {
-      app_test_status = app_drive_update(&app);
-      if ((app_test_status != APP_STATUS_OK) &&
-          (app_test_status != APP_STATUS_FAULT_ACTIVE)) {
-          app_test_last_error = app_test_status;
-      }
+      (void)app_drive_update(&app);
 
       drive_debug_command_source_update(&app);
 
@@ -561,7 +464,7 @@ pwm_test_status = pwm_driver_init(&pwm_driver, &pwm_config);
 
           canopen_service_last_tick_ms = canopen_tick_ms;
           (void)app_get_speed_feedback_snapshot(&app, &speed_feedback);
-          canopen_service_last_status = canopen_service_process(
+          (void)canopen_service_process(
               &canopen_service,
               canopen_elapsed_ms * 1000U,
               0.0f,
@@ -569,7 +472,6 @@ pwm_test_status = pwm_driver_init(&pwm_driver, &pwm_config);
               speed_feedback.omega_e_rad_s,
               speed_feedback.has_valid_speed
           );
-          ++canopen_service_process_count;
       }
 
       HAL_Delay(1U);
@@ -1314,50 +1216,20 @@ static void MX_GPIO_Init(void)
 }
 
 /* USER CODE BEGIN 4 */
-/* App fast loop 결과와 Hall 연속각을 debugger에서 함께 확인한다. */
-static void app_fast_loop_test_update(void)
+/**
+ * @brief ADC complete IRQ 후단에서 App fast loop를 실행한다.
+ *
+ * @note ADC3 IRQ context에서만 호출한다. App과 하위 module이 runtime/fault 상태를 소유하며
+ *       main.c는 측정 결과의 별도 복사본을 만들지 않는다.
+ */
+static void app_fast_loop_update(void)
 {
-    app_fast_loop_output_t output;
-
-    app_test_status = ((app.mode == APP_MODE_CURRENT) ||
-        (app.mode == APP_MODE_SPEED)) ?
-        app_motor_current_fast_loop_drive_fast(&app) :
-        app_motor_fast_loop_fast(&app, &output);
-    if (app_test_status == APP_STATUS_ADC_NOT_READY) {
-        /* 시작 직후 전압이 아직 변환되지 않은 경우 등을 관찰한다. */
-        ++adc_test_not_ready_count;
-        return;
-    }
-
-    if (app_test_status != APP_STATUS_OK) {
-        app_test_last_error = app_test_status;
-        if (app.last_adc_status != ADC_DRIVER_STATUS_OK) {
-            adc_test_last_error = app.last_adc_status;
-        }
-        return;
-    }
-
     if ((app.mode == APP_MODE_CURRENT) || (app.mode == APP_MODE_SPEED)) {
-        ++adc_test_sample_count;
-        return;
-    }
+        (void)app_motor_current_fast_loop_drive_fast(&app);
+    } else {
+        app_fast_loop_output_t output;
 
-    /* 일반 bring-up에서 App이 실제 사용한 측정 묶음을 debugger 변수에 복사한다. */
-    adc_test_raw = output.raw;
-    adc_test_i_abc = output.i_abc;
-    adc_test_v_dc = output.v_dc;
-    adc_test_has_valid_phase_current = output.has_valid_phase_current;
-    ++adc_test_sample_count;
-
-    hall_estimator_test_feedback_status = app.last_hall_driver_status;
-    hall_decoder_test_update_status = app.last_hall_decoder_status;
-    hall_estimator_test_update_status = app.last_hall_estimator_status;
-    if ((hall_estimator_test_feedback_status == HALL_DRIVER_STATUS_OK) &&
-        (hall_decoder_test_update_status == HALL_DECODER_STATUS_OK) &&
-        (hall_estimator_test_update_status == HALL_ESTIMATOR_STATUS_OK)) {
-        hall_estimator_test_output = output.rotor_feedback;
-        ++hall_estimator_test_update_count;
-
+        (void)app_motor_fast_loop_fast(&app, &output);
     }
 }
 
@@ -1370,51 +1242,16 @@ void app_speed_scheduler_tick(void)
     app_drive_scheduler_tick(&app);
 }
 
-void app_adc_irq_prologue(void)
-{
-    /* 측정 자체가 IRQ deadline에 주는 영향을 최소화한다. */
-    if (!adc_fast_loop_cycle_measurement_active) {
-        adc_fast_loop_cycle_start = DWT->CYCCNT;
-        adc_fast_loop_cycle_measurement_active = true;
-    }
-}
-
 void app_adc_irq_epilogue(void)
 {
     if (!adc_fast_loop_pending) {
-        adc_fast_loop_cycle_measurement_active = false;
         return;
     }
 
     /* Pending을 먼저 소비해 같은 ADC 묶음을 두 IRQ 후단에서 중복 실행하지 않는다. */
     adc_fast_loop_pending = false;
 
-    const uint32_t body_start_cycles = DWT->CYCCNT;
-    app_fast_loop_test_update();
-    const uint32_t end_cycles = DWT->CYCCNT;
-    const uint32_t body_elapsed_cycles = end_cycles - body_start_cycles;
-
-    adc_fast_loop_body_cycles_last = body_elapsed_cycles;
-    if (body_elapsed_cycles > adc_fast_loop_body_cycles_max) {
-        adc_fast_loop_body_cycles_max = body_elapsed_cycles;
-    }
-
-    if (!adc_fast_loop_cycle_measurement_active) {
-        return;
-    }
-
-    /* 첫 ADC IRQ 진입부터 HAL 처리와 fast-loop 종료까지를 측정한다. */
-    const uint32_t elapsed_cycles = end_cycles - adc_fast_loop_cycle_start;
-    adc_fast_loop_cycle_measurement_active = false;
-
-    adc_fast_loop_cycles_last = elapsed_cycles;
-    if (elapsed_cycles > adc_fast_loop_cycles_max) {
-        adc_fast_loop_cycles_max = elapsed_cycles;
-    }
-
-    if (elapsed_cycles >= adc_fast_loop_budget_cycles) {
-        ++adc_fast_loop_deadline_miss_count;
-    }
+    app_fast_loop_update();
 }
 
 static void app_adc_process_injected_complete(ADC_HandleTypeDef *hadc)
@@ -1427,11 +1264,8 @@ static void app_adc_process_injected_complete(ADC_HandleTypeDef *hadc)
     );
 
     if (status != ADC_DRIVER_STATUS_OK) {
-        adc_test_last_error = status;
-        app_test_status = app_handle_adc_error(&app, status);
-        app_test_last_error = app_test_status;
+        (void)app_handle_adc_error(&app, status);
         adc_fast_loop_pending = false;
-        adc_fast_loop_cycle_measurement_active = false;
         return;
     }
 
@@ -1466,14 +1300,11 @@ void HAL_ADC_ErrorCallback(ADC_HandleTypeDef *hadc)
         return;
     }
 
-    adc_test_last_error = ADC_DRIVER_STATUS_HAL_ERROR;
-    app_test_status = app_handle_adc_error(
+    (void)app_handle_adc_error(
         &app,
         ADC_DRIVER_STATUS_HAL_ERROR
     );
-    app_test_last_error = app_test_status;
     adc_fast_loop_pending = false;
-    adc_fast_loop_cycle_measurement_active = false;
 }
 
 void HAL_TIM_IC_CaptureCallback(TIM_HandleTypeDef *htim)
@@ -1482,12 +1313,10 @@ void HAL_TIM_IC_CaptureCallback(TIM_HandleTypeDef *htim)
         return;
     }
 
-    hall_test_capture_status = hall_driver_handle_capture(
+    (void)hall_driver_handle_capture(
         &hall_driver,
         htim
     );
-
-    hall_test_refresh_feedback();
 }
 
 void HAL_TIM_PeriodElapsedCallback(TIM_HandleTypeDef *htim)
@@ -1496,12 +1325,10 @@ void HAL_TIM_PeriodElapsedCallback(TIM_HandleTypeDef *htim)
         return;
     }
 
-    hall_test_timeout_status = hall_driver_handle_timeout(
+    (void)hall_driver_handle_timeout(
         &hall_driver,
         htim
     );
-
-    hall_test_refresh_feedback();
 }
 
 void HAL_FDCAN_RxFifo0Callback(

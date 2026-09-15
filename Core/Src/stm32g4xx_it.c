@@ -240,7 +240,6 @@ void ADC3_IRQHandler(void)
 {
   /* USER CODE BEGIN ADC3_IRQn 0 */
 
-  app_adc_irq_prologue();
   if (app_adc_injected_irq_try_handle_fast(&hadc3)) {
     app_adc_irq_epilogue();
     return;

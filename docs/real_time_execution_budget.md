@@ -206,8 +206,9 @@ SINE function의 반복 검사를 생략한다.
 3220 cycles로 감소했다. Body 바깥 ADC/IRQ 처리 차이도 약 1015 cycles에서 295 cycles로
 감소했다. Hard deadline 4250 cycles는 만족하지만 bring-up 목표 3200 cycles는 20 cycles,
 당시 body 설계 목표 2800 cycles는 125 cycles 초과하므로 최적화 완료 기준으로 간주하지 않는다.
-기능 확인에 사용한 자동 지령 주입과 800-sample 판정 코드는 측정 후 `main.c`에서 제거하고,
-전체/body cycle 및 deadline miss 계측은 이후 실구동 검증을 위해 유지한다.
+기능 확인에 사용한 자동 지령 주입과 800-sample 판정 코드는 측정 후 `main.c`에서 제거했다.
+이후 product `main.c`에서도 전체/body cycle 및 deadline miss 계측을 제거했으므로, 후속 실구동
+검증은 선택형 App profile 또는 별도 timing test build에서 수행한다.
 
 이 측정 뒤 Hall 해석을 Platform driver에서 Control의 motor별 `hall_decoder`로 분리했다.
 따라서 위 `3220 cycles`는 변경 전 기준선이며 현재 binary의 timing 통과 근거로 재사용하지
