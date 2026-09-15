@@ -1189,7 +1189,7 @@ static void MX_TIM2_Init(void)
   htim2.Instance = TIM2;
   htim2.Init.Prescaler = 16;
   htim2.Init.CounterMode = TIM_COUNTERMODE_UP;
-  htim2.Init.Period = 9999999;
+  htim2.Init.Period = 999999;
   htim2.Init.ClockDivision = TIM_CLOCKDIVISION_DIV1;
   htim2.Init.AutoReloadPreload = TIM_AUTORELOAD_PRELOAD_DISABLE;
   sConfig.IC1Polarity = TIM_ICPOLARITY_RISING;
@@ -1390,7 +1390,7 @@ void app_speed_scheduler_tick(void)
     if ((app.drive_state == APP_DRIVE_STATE_SPEED_RUNNING) ||
         (app.drive_state == APP_DRIVE_STATE_RAMP_TO_ZERO)) {
         speed_control_test_tick_status = app.last_status;
-    ++speed_control_test_tick_count;
+        ++speed_control_test_tick_count;
         speed_control_test_limited_reference_rpm =
             app.last_speed_output.omega_m_ref_limited_rad_s *
             SPEED_CONTROL_TEST_RAD_S_TO_RPM;

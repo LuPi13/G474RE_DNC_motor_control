@@ -266,6 +266,9 @@ Hall feedback은 ADC sample 주기마다 새로 측정되는 값이 아니다. T
 edge 또는 counter overflow가 발생할 때 비동기적으로 갱신되고, ADC fast loop는
 그 시점까지 publish된 최신 완성본을 읽는다.
 
+현재 TIM2 counter는 10 MHz, auto-reload `999999`로 설정되어 Hall edge timeout은 100 ms다.
+이 값은 Hall speed feedback을 무효/0으로 전이하는 시간이며, 정상 정지의 유일한 조건으로 쓰지 않는다.
+
 ```text
 TIM2 XOR Hall edge
  -> HAL_TIM_IC_CaptureCallback()
