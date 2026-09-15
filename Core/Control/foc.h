@@ -278,6 +278,18 @@ foc_status_t foc_update_fast(
 );
 
 /**
+ * @brief ISR에서 full diagnostic snapshot 없이 FOC 전압 지령만 계산한다.
+ *
+ * @pre foc_update_fast()와 같은 검증 완료 input 조건을 만족해야 한다.
+ * @note PI/filter/voltage-limit/tracking state 갱신과 최종 수치 검사는 foc_update_fast()와 같다.
+ */
+foc_status_t foc_update_fast_voltage(
+    foc_t *self,
+    const foc_input_t *input,
+    alpha_beta_t *v_alpha_beta_ref
+);
+
+/**
  * @brief 검증 완료 FOC fast path를 실행하며 내부 구간별 cycle을 계측한다.
  *
  * @param[in,out] self 초기화된 FOC instance.

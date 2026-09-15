@@ -10,6 +10,8 @@
 #include <stdbool.h>
 #include <stdint.h>
 
+#include "hall_signal.h"
+
 /**
  * @defgroup control_hall_decoder Hall decoder
  * @brief Raw 3-bit Hall state와 edge interval을 motor별 sector/angle/speed로 변환한다.
@@ -61,15 +63,8 @@ typedef struct {
     float forward_edge_angle_rad[HALL_DECODER_SECTOR_COUNT]; /**< Sector별 정방향 진입 경계각 [rad]. */
 } hall_decoder_profile_t;
 
-/** @brief Platform raw Hall snapshot에서 decoder로 전달하는 hardware-independent 관측값. */
-typedef struct {
-    uint8_t hall_state;       /**< A/B/C = bit 2/1/0인 raw state, 범위 [0, 7]. */
-    uint32_t capture_count;   /**< Hall edge마다 증가하는 capture sequence. */
-    float edge_interval_s;    /**< 직전 edge부터 현재 edge까지의 시간 [s]. */
-    bool has_state_sample;    /**< hall_state가 GPIO에서 수집된 값임. */
-    bool has_valid_interval;  /**< edge_interval_s를 속도 계산에 사용할 수 있음. */
-    bool is_timed_out;        /**< Hall edge 없이 driver timeout이 발생함. */
-} hall_decoder_observation_t;
+/** @brief Hall decoder가 해석할 motor-independent raw Hall signal snapshot. */
+typedef hall_signal_t hall_decoder_observation_t;
 
 /** @brief Profile 해석을 완료한 최신 Hall rotor observation. */
 typedef struct {
@@ -146,6 +141,38 @@ hall_decoder_status_t hall_decoder_update(
     hall_decoder_t *self,
     const hall_decoder_observation_t *observation,
     hall_decoder_output_t *output
+);
+
+/**
+ * @brief Hall driver가 보장한 observation으로 decoder 상태를 fast-loop에서 갱신한다.
+ *
+ * @param[in,out] self 초기화된 decoder instance.
+ * @param[in] observation 같은 fast-loop에서 hall_driver_get_signal_feedback()으로 얻은 snapshot.
+ * @return 처리 결과 status.
+ *
+ * @pre @p self와 @p observation은 NULL이 아니며 @p self는 초기화되어야 한다.
+ * @pre @p observation은 hall_driver_get_signal_feedback()의 정상 반환값으로 만들어져야 한다.
+ * @note pointer, 초기화, raw field 범위와 interval 조합 검사는 생략한다. 다만 state sample
+ *       부재, profile-invalid state, capture 누락, 비인접 transition은 계속 검출한다.
+ * @warning 범용 입력 또는 unit test에는 hall_decoder_update()를 사용한다.
+ */
+hall_decoder_status_t hall_decoder_update_fast(
+    hall_decoder_t *self,
+    const hall_decoder_observation_t *observation
+);
+
+/**
+ * @brief 가장 최근 decoder output의 읽기 전용 주소를 반환한다.
+ *
+ * @param[in] self hall_decoder_update_fast()를 완료한 decoder instance.
+ * @return @p self가 소유하는 최신 decoded output의 읽기 전용 주소.
+ *
+ * @pre @p self는 NULL이 아니고 초기화되어야 한다.
+ * @note 반환 포인터는 다음 decoder update 전까지만 snapshot으로 사용한다. 호출자는 내용을
+ *       변경하거나 장기 보관하지 않는다.
+ */
+const hall_decoder_output_t *hall_decoder_get_latest_output_fast(
+    const hall_decoder_t *self
 );
 
 /** @} */

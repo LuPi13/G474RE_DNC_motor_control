@@ -10,6 +10,8 @@
 #include <stdbool.h>
 #include <stdint.h>
 
+#include "hall_signal.h"
+
 #include "stm32g4xx_hal.h"
 
 /**
@@ -70,15 +72,8 @@ typedef struct {
     bool is_timed_out;        /**< Hall edge 없이 timer overflow가 발생함. */
 } hall_driver_feedback_t;
 
-/** @brief Fast loop가 motor-independent raw signal만 읽기 위한 경량 snapshot. */
-typedef struct {
-    uint8_t hall_state; /**< A/B/C = bit 2/1/0인 raw state. */
-    uint32_t capture_count; /**< Hall edge마다 증가하는 sequence. */
-    float edge_interval_s; /**< 유효할 때 직전 edge와의 시간 [s]. */
-    bool has_state_sample; /**< hall_state가 실제 GPIO sample임. */
-    bool has_valid_interval; /**< edge_interval_s를 사용할 수 있음. */
-    bool is_timed_out; /**< Hall edge 없이 timer overflow가 발생함. */
-} hall_driver_signal_feedback_t;
+/** @brief Fast loop가 읽는 motor-independent raw Hall signal snapshot. */
+typedef hall_signal_t hall_driver_signal_feedback_t;
 
 /** @brief Hall peripheral 설정과 ISR-to-fast-loop raw snapshot state. */
 typedef struct {

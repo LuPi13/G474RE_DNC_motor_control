@@ -124,22 +124,12 @@ hall_estimator_status_t hall_estimator_reset(hall_estimator_t *self)
     return HALL_ESTIMATOR_STATUS_OK;
 }
 
-hall_estimator_status_t hall_estimator_update(
+static hall_estimator_status_t hall_estimator_update_unchecked(
     hall_estimator_t *self,
     const hall_estimator_observation_t *observation,
-    float elapsed_s,
-    hall_estimator_output_t *output
+    float elapsed_s
 )
 {
-    if ((self == NULL) || (observation == NULL) || (output == NULL) ||
-        !isfinite(elapsed_s) || (elapsed_s <= 0.0f)) {
-        return HALL_ESTIMATOR_STATUS_INVALID_ARGUMENT;
-    }
-
-    if (!self->is_initialized) {
-        return HALL_ESTIMATOR_STATUS_INVALID_STATE;
-    }
-
     /* bool field를 branch 없이 묶어 일반 fast-loop의 변경 검사를 가볍게 유지한다. */
     const uint8_t observation_flags =
         ((uint8_t)observation->has_valid_state *
@@ -217,12 +207,7 @@ hall_estimator_status_t hall_estimator_update(
             self->output.theta_e_rad = next_theta_e_rad;
         }
 
-        *output = self->output;
         return HALL_ESTIMATOR_STATUS_OK;
-    }
-
-    if (!hall_estimator_is_valid_observation(observation)) {
-        return HALL_ESTIMATOR_STATUS_INVALID_OBSERVATION;
     }
 
     /* transition_count는 유효 edge에서만 증가하므로 edge 정보가 없으면 입력 계약 위반이다. */
@@ -280,7 +265,90 @@ hall_estimator_status_t hall_estimator_update(
     self->last_sector = observation->sector;
     self->last_observation_flags = observation_flags;
     self->has_observation = true;
-    *output = next_output;
 
     return HALL_ESTIMATOR_STATUS_OK;
+}
+
+hall_estimator_status_t hall_estimator_update_fast(
+    hall_estimator_t *self,
+    const hall_estimator_observation_t *observation,
+    float elapsed_s,
+    hall_estimator_output_t *output
+)
+{
+    const hall_estimator_status_t status = hall_estimator_update_unchecked(
+        self,
+        observation,
+        elapsed_s
+    );
+
+    if (status == HALL_ESTIMATOR_STATUS_OK) {
+        *output = self->output;
+    }
+
+    return status;
+}
+
+hall_estimator_status_t hall_estimator_update_from_decoder_fast(
+    hall_estimator_t *self,
+    const hall_decoder_output_t *decoded_hall,
+    float elapsed_s
+)
+{
+    const hall_estimator_observation_t observation = {
+        .theta_e_rad = decoded_hall->theta_e_rad,
+        .omega_e_rad_s = decoded_hall->omega_e_rad_s,
+        .sector_span_rad = decoded_hall->sector_span_rad,
+        .transition_count = decoded_hall->transition_count,
+        .sector = decoded_hall->sector,
+        .has_valid_state = decoded_hall->has_valid_state,
+        .has_valid_direction = decoded_hall->has_valid_direction,
+        .has_valid_angle = decoded_hall->has_valid_angle,
+        .has_valid_speed = decoded_hall->has_valid_speed,
+        .is_angle_from_edge = decoded_hall->is_angle_from_edge,
+        .is_timed_out = decoded_hall->is_timed_out,
+    };
+
+    return hall_estimator_update_unchecked(self, &observation, elapsed_s);
+}
+
+const hall_estimator_output_t *hall_estimator_get_latest_output_fast(
+    const hall_estimator_t *self
+)
+{
+    return &self->output;
+}
+
+hall_estimator_status_t hall_estimator_update(
+    hall_estimator_t *self,
+    const hall_estimator_observation_t *observation,
+    float elapsed_s,
+    hall_estimator_output_t *output
+)
+{
+    hall_estimator_status_t status;
+
+    if ((self == NULL) || (observation == NULL) || (output == NULL) ||
+        !isfinite(elapsed_s) || (elapsed_s <= 0.0f)) {
+        return HALL_ESTIMATOR_STATUS_INVALID_ARGUMENT;
+    }
+
+    if (!self->is_initialized) {
+        return HALL_ESTIMATOR_STATUS_INVALID_STATE;
+    }
+
+    if (!hall_estimator_is_valid_observation(observation)) {
+        return HALL_ESTIMATOR_STATUS_INVALID_OBSERVATION;
+    }
+
+    status = hall_estimator_update_unchecked(
+        self,
+        observation,
+        elapsed_s
+    );
+    if (status == HALL_ESTIMATOR_STATUS_OK) {
+        *output = self->output;
+    }
+
+    return status;
 }

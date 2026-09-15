@@ -11,15 +11,18 @@
 #include <stdbool.h>
 #include <stdint.h>
 
+#include "hall_decoder.h"
+
 /**
  * @defgroup control_hall_estimator Hall estimator
  * @brief Hall edge 각도와 signed electrical speed로 fast-loop 전기각을 추정한다.
  *
  * @par 책임과 계층 경계
- * Hall GPIO/TIM 접근, transition 판정 및 edge-to-edge 속도 측정은 Platform의
- * hall_driver가 담당한다. Application은 driver feedback에서 필요한 값만
- * hall_estimator_observation_t로 옮겨 이 module에 전달한다. 이 module은 HAL이나
- * hall_driver.h에 의존하지 않으며 추정 결과만 Control/FOC에 제공한다.
+ * Hall GPIO/TIM 접근은 Platform의 hall_driver가 담당하고, transition 판정 및 edge-to-edge
+ * 속도 측정은 Control의 hall_decoder가 담당한다. 범용 API는
+ * hall_estimator_observation_t를 입력으로 사용하며, current-mode fast API는 decoder가
+ * 소유한 read-only output을 직접 소비한다. 이 module은 HAL이나 hall_driver.h에 의존하지
+ * 않으며 추정 결과만 Control/FOC에 제공한다.
  *
  * @par 현재 추정 방식
  * 유효한 Hall edge 사이에서는 직전 signed electrical speed가 일정하다고 가정하고
@@ -176,6 +179,65 @@ hall_estimator_status_t hall_estimator_update(
     const hall_estimator_observation_t *observation,
     float elapsed_s,
     hall_estimator_output_t *output
+);
+
+/**
+ * @brief 검증 완료 Hall observation으로 연속 전기각을 fast-loop에서 갱신한다.
+ *
+ * @param[in,out] self 초기화된 estimator instance.
+ * @param[in] observation 같은 정상 hall_decoder_update() 결과에서 만든 observation.
+ * @param[in] elapsed_s 고정 fast-loop 주기 [s].
+ * @param[out] output 갱신된 연속 전기각/속도 snapshot.
+ *
+ * @pre @p self, @p observation, @p output은 NULL이 아니고 @p self는 초기화되어야 한다.
+ * @pre @p observation은 같은 fast-loop에서 성공한 hall decoder output으로 만들고,
+ *      @p elapsed_s는 양의 유한 고정 주기여야 한다.
+ * @note pointer/초기화/observation 전체 유효성 검사는 생략한다. 단, runtime 순서가
+ *       모순되는 새 transition은 오류로 반환한다.
+ * @warning 범용 입력 또는 unit test에는 hall_estimator_update()를 사용한다.
+ *
+ * @retval HALL_ESTIMATOR_STATUS_OK 추정 결과 갱신 완료.
+ * @retval HALL_ESTIMATOR_STATUS_INVALID_OBSERVATION transition 순서가 모순되었음.
+ */
+hall_estimator_status_t hall_estimator_update_fast(
+    hall_estimator_t *self,
+    const hall_estimator_observation_t *observation,
+    float elapsed_s,
+    hall_estimator_output_t *output
+);
+
+/**
+ * @brief 최신 decoder output을 반영하여 estimator state를 in-place로 갱신한다.
+ *
+ * @param[in,out] self 초기화된 estimator instance.
+ * @param[in] decoded_hall 같은 fast-loop에서 성공한 hall_decoder output.
+ * @param[in] elapsed_s 고정 fast-loop 주기 [s].
+ * @return 처리 결과 status.
+ *
+ * @pre @p decoded_hall은 같은 ISR에서 hall_decoder_update_fast()를 성공한 뒤 얻은
+ *      hall_decoder_get_latest_output_fast() 반환 포인터여야 한다.
+ * @note App의 중간 observation 복사와 estimator output 복사를 만들지 않는다. pointer와
+ *       입력 전체 검사는 생략하지만 transition 순서 모순은 계속 오류로 반환한다.
+ * @warning 범용 입력 또는 unit test에는 hall_estimator_update()를 사용한다.
+ */
+hall_estimator_status_t hall_estimator_update_from_decoder_fast(
+    hall_estimator_t *self,
+    const hall_decoder_output_t *decoded_hall,
+    float elapsed_s
+);
+
+/**
+ * @brief 가장 최근 estimator output의 읽기 전용 주소를 반환한다.
+ *
+ * @param[in] self hall_estimator_update_from_decoder_fast()를 완료한 estimator instance.
+ * @return @p self가 소유하는 최신 연속 rotor feedback의 읽기 전용 주소.
+ *
+ * @pre @p self는 NULL이 아니고 초기화되어야 한다.
+ * @note 반환 포인터는 다음 estimator update 전까지만 사용한다. 호출자는 내용을 변경하거나
+ *       장기 보관하지 않는다.
+ */
+const hall_estimator_output_t *hall_estimator_get_latest_output_fast(
+    const hall_estimator_t *self
 );
 
 /** @} */

@@ -212,28 +212,15 @@ hall_decoder_status_t hall_decoder_reset(hall_decoder_t *self)
     return HALL_DECODER_STATUS_OK;
 }
 
-hall_decoder_status_t hall_decoder_update(
+static hall_decoder_status_t hall_decoder_update_unchecked(
     hall_decoder_t *self,
-    const hall_decoder_observation_t *observation,
-    hall_decoder_output_t *output
+    const hall_decoder_observation_t *observation
 )
 {
-    if ((self == NULL) || (observation == NULL) || (output == NULL)) {
-        return HALL_DECODER_STATUS_INVALID_ARGUMENT;
-    }
-    if (!self->is_initialized) {
-        return HALL_DECODER_STATUS_INVALID_STATE;
-    }
-    if ((observation->hall_state >= HALL_DECODER_STATE_COUNT) ||
-        (observation->is_timed_out && observation->has_valid_interval)) {
-        return HALL_DECODER_STATUS_INVALID_OBSERVATION;
-    }
-
     if (!observation->has_state_sample) {
         hall_decoder_set_invalid_state(self, observation);
         self->has_observation = true;
         self->last_capture_count = observation->capture_count;
-        *output = self->output;
         return HALL_DECODER_STATUS_INVALID_OBSERVATION;
     }
 
@@ -246,16 +233,9 @@ hall_decoder_status_t hall_decoder_update(
         (observation->is_timed_out != self->output.is_timed_out);
 
     if (!is_first_observation && !has_new_capture && !has_timeout_change) {
-        *output = self->output;
         return self->output.has_valid_state ?
             HALL_DECODER_STATUS_OK :
             HALL_DECODER_STATUS_INVALID_HALL_STATE;
-    }
-
-    if (has_new_capture && observation->has_valid_interval &&
-        (!isfinite(observation->edge_interval_s) ||
-         (observation->edge_interval_s <= 0.0f))) {
-        return HALL_DECODER_STATUS_INVALID_OBSERVATION;
     }
 
     self->has_observation = true;
@@ -266,7 +246,6 @@ hall_decoder_status_t hall_decoder_update(
     if (sector == HALL_DECODER_INVALID_SECTOR) {
         hall_decoder_set_invalid_state(self, observation);
         ++self->invalid_state_count;
-        *output = self->output;
         return HALL_DECODER_STATUS_INVALID_HALL_STATE;
     }
 
@@ -277,7 +256,6 @@ hall_decoder_status_t hall_decoder_update(
             sector,
             observation->is_timed_out
         );
-        *output = self->output;
         return HALL_DECODER_STATUS_OK;
     }
 
@@ -286,7 +264,6 @@ hall_decoder_status_t hall_decoder_update(
         self->output.omega_e_rad_s = 0.0f;
         self->output.has_valid_speed = observation->is_timed_out &&
             self->output.has_valid_state;
-        *output = self->output;
         return HALL_DECODER_STATUS_OK;
     }
 
@@ -298,7 +275,6 @@ hall_decoder_status_t hall_decoder_update(
             sector,
             false
         );
-        *output = self->output;
         return HALL_DECODER_STATUS_MISSED_CAPTURE;
     }
 
@@ -315,7 +291,6 @@ hall_decoder_status_t hall_decoder_update(
             sector,
             false
         );
-        *output = self->output;
         return HALL_DECODER_STATUS_INVALID_TRANSITION;
     }
 
@@ -346,6 +321,51 @@ hall_decoder_status_t hall_decoder_update(
         self->output.has_valid_speed = true;
     }
 
-    *output = self->output;
     return HALL_DECODER_STATUS_OK;
+}
+
+hall_decoder_status_t hall_decoder_update_fast(
+    hall_decoder_t *self,
+    const hall_decoder_observation_t *observation
+)
+{
+    return hall_decoder_update_unchecked(self, observation);
+}
+
+const hall_decoder_output_t *hall_decoder_get_latest_output_fast(
+    const hall_decoder_t *self
+)
+{
+    return &self->output;
+}
+
+hall_decoder_status_t hall_decoder_update(
+    hall_decoder_t *self,
+    const hall_decoder_observation_t *observation,
+    hall_decoder_output_t *output
+)
+{
+    hall_decoder_status_t status;
+
+    if ((self == NULL) || (observation == NULL) || (output == NULL)) {
+        return HALL_DECODER_STATUS_INVALID_ARGUMENT;
+    }
+    if (!self->is_initialized) {
+        return HALL_DECODER_STATUS_INVALID_STATE;
+    }
+    if ((observation->hall_state >= HALL_DECODER_STATE_COUNT) ||
+        (observation->is_timed_out && observation->has_valid_interval)) {
+        return HALL_DECODER_STATUS_INVALID_OBSERVATION;
+    }
+    if (observation->has_state_sample && self->has_observation &&
+        (observation->capture_count != self->last_capture_count) &&
+        observation->has_valid_interval &&
+        (!isfinite(observation->edge_interval_s) ||
+         (observation->edge_interval_s <= 0.0f))) {
+        return HALL_DECODER_STATUS_INVALID_OBSERVATION;
+    }
+
+    status = hall_decoder_update_unchecked(self, observation);
+    *output = self->output;
+    return status;
 }
