@@ -302,6 +302,18 @@ static uint16_t canopen_service_statusword(
     return statusword;
 }
 
+/**
+ * @brief CANopen service가 현재 App current lifecycle을 소유하는지 확인한다.
+ *
+ * @note Pre-operational 또는 switch-on 단계는 App을 시작하지 않았으므로 debugger 등 다른
+ *       command source의 current 운전을 중지하지 않는다.
+ */
+static bool canopen_service_owns_drive(const canopen_service_t *self)
+{
+    return (self->drive_state == CANOPEN_SERVICE_DRIVE_OPERATION_ENABLED) ||
+        (self->drive_state == CANOPEN_SERVICE_DRIVE_QUICK_STOP_ACTIVE);
+}
+
 static void canopen_service_stop_drive(canopen_service_t *self)
 {
     const drive_command_t command = {
@@ -310,8 +322,9 @@ static void canopen_service_stop_drive(canopen_service_t *self)
         .omega_m_ref_rad_s = 0.0f,
     };
 
-    if (self->config.app->drive_state ==
-        APP_DRIVE_STATE_CURRENT_RUNNING) {
+    if (canopen_service_owns_drive(self) &&
+        (self->config.app->drive_state ==
+         APP_DRIVE_STATE_CURRENT_RUNNING)) {
         (void)drive_command_router_execute(
             self->config.drive_command_router,
             self->config.app,

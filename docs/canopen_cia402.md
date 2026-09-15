@@ -52,6 +52,11 @@ CiA 402의 Enable operation은 `DRIVE_COMMAND_START_CURRENT`을 통해서만 cur
 시작한다. Disable voltage와 Quick stop은 `DRIVE_COMMAND_STOP`으로 current command를 0 A로
 publish한 뒤 PWM을 끄는 App lifecycle을 사용한다.
 
+CANopen service는 자신이 `OPERATION_ENABLED` 또는 `QUICK_STOP_ACTIVE`로 진입해 시작한
+current lifecycle만 중지한다. 따라서 NMT pre-operational/switch-on 단계는 board bring-up의
+`drive_debug_command_source` current mode를 중지하지 않는다. 단, CANopen Enable operation과
+debug command를 동시에 사용하지 않으며, 실제 제품 build에서는 단일 product command source만 둔다.
+
 Fault reset controlword edge는 먼저 `DRIVE_COMMAND_REQUEST_FAULT_CLEAR`로 App의 비동기
 fault clear를 요청한다. 유효 ADC sample에서 latch가 실제 해제된 뒤에만
 `DRIVE_COMMAND_RECOVER_FAULT`가 FAULTED에서 READY로 복귀시킨다. reset 전의 current command로
