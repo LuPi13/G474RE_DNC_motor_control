@@ -875,6 +875,48 @@ i_q_ref = small value
 
 Current loop이 충분히 안정화된 뒤 진행한다.
 
+현재 motor의 초기 speed-loop 설계 기준은 다음과 같다.
+
+```text
+mechanical speed range: 300 to 3000 rpm (초기 검증 범위)
+speed-loop rate: 1 kHz
+initial bandwidth: 5 Hz
+speed-feedback low-pass cutoff: 30 Hz
+acceleration/deceleration limit: 300 rpm/s
+bring-up q-axis current limit: +/-0.5 A
+product q-axis current limit: +/-2.0 A
+```
+
+Motor rotor inertia는 `8.6e-6 kg*m^2`, 초기 최대 load inertia는 그 5배로 두어 총 관성을
+`5.16e-5 kg*m^2`로 사용한다. `K_t = 1.5 * pole_pairs * lambda_f = 0.05055 N*m/A`와
+5 Hz, damping ratio 약 0.707을 적용한 초기 speed PI 후보는 `Kp = 0.0453 A/(rad/s)`,
+`Ki = 1.007 A/rad`, `Kaw = 22.2 1/s`다. 실제 발전기 부하와 관성 변화에 따라 config에서
+gain과 reference rate를 교체할 수 있어야 한다.
+
+Speed PI는 40 kHz ADC ISR에 직접 추가하지 않고 별도 1 kHz scheduler context에서 실행하여
+double-buffered q축 current target을 publish한다. Fast current loop는 마지막으로 완성된 target만
+소비한다. 정지 명령은 speed reference를 0까지 ramp하며 회생 제동한 뒤 q축 current를 0으로
+만들고 PWM을 비활성화한다. 정지 후 shaft position hold는 제공하지 않는다.
+
+`speed_controller` 자체는 mechanical-speed feedback의 30 Hz low-pass filter와 PI, q축 전류
+scalar 제한 및 downstream current 제한용 external tracking만 소유한다. 300 rpm/s speed-reference
+rate limiter, electrical-to-mechanical speed 변환과 1 kHz 실행/publish는 `motor_control`과 App
+integration 단계에서 연결한다. 따라서 standalone controller의 수치 검증은 먼저 진행하되,
+40 kHz current fast path에는 speed PI를 직접 삽입하지 않는다. 초기 gain, 1 ms 주기, 30 Hz
+feedback cutoff와 ±0.5 A bring-up 출력 범위는 `motor_config_speed_controller`에 둔다.
+
+2026-09-15 board shadow 시험에서는 PWM과 App drive mode를 비활성 상태로 유지하고 실제 Hall
+속도를 1 kHz main-loop 시험 경로에서 controller에 입력했다. 손으로 축을 정·역회전했을 때
+기계속도 feedback, filtered speed, speed error와 `i_q_ref`의 부호가 예상과 일치했고, ±0.5 A
+PI 포화, ±3000 rpm command clamp, reset 및 Hall timeout 처리도 정상 동작했다. 시험용
+controller/output은 current-reference 또는 PWM에 전달하지 않았다. 해당 임시 코드는 검증 후
+`main.c`에서 제거했다.
+
+3000 rpm에서 Hall edge rate는 1500 Hz이고 rotor electrical speed는 약 `1571 rad/s`다.
+24 V DC-link에서는 현재 0.9 SVPWM voltage utilization 기준으로 3000 rpm을 우선 검증한다.
+저속 한계는 아직 확정하지 않았으므로 300 rpm부터 낮추며 Hall edge-to-edge speed의 품질을
+확인하고, 필요하면 Hall PLL 또는 별도 speed estimator를 후속 단계로 추가한다.
+
 ```text
 omega_ref
   ↓
@@ -1024,5 +1066,7 @@ PWM 동기 fast loop에 영향을 주는 변경은 위 항목에 더해 다음�
 - deadline miss 0 확인
 - linked image disassembly와 stack usage 검토
 
-이 timing gate를 통과하기 전에는 current-loop 실구동이나 speed/position loop 추가로
-진행하지 않는다.
+이 timing gate를 통과하기 전에는 current-loop 실구동 확대, speed/position loop의 40 kHz
+fast-path 통합 또는 speed-mode PWM 활성화로 진행하지 않는다. Hardware-independent controller와
+PWM 비활성 shadow 시험은 `real_time_execution_budget.md`에 정의한 분리 조건에서 먼저 수행할
+수 있다.

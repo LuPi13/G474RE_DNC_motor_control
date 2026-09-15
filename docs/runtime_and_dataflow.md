@@ -415,21 +415,22 @@ void app_motor_fast_loop(void)
     if (!app_update_feedback_fast()) {
         return;
     }
+    app_publish_rotor_feedback_for_speed_loop(...);
     motor_control_fast_update(&motor_control, ...);
+}
 
-    if (++speed_divider >= SPEED_LOOP_DIVIDER) {
-        speed_divider = 0U;
-        motor_control_speed_update(&motor_control, ...);
-    }
-
-    if (++position_divider >= POSITION_LOOP_DIVIDER) {
-        position_divider = 0U;
-        motor_control_position_update(&motor_control, ...);
-    }
+void app_speed_loop_1khz(void)
+{
+    app_read_latest_rotor_feedback(...);
+    motor_control_speed_update(&motor_control, ...);
+    app_publish_current_target(...);
 }
 ```
 
-실제 rate와 scheduling method는 향후 구현에 따라 바뀔 수 있다.
+Speed loop는 40 kHz ADC ISR에 직접 넣지 않는다. 최신 rotor feedback snapshot과 q축 current
+target은 한쪽에서 완성되지 않은 값을 읽지 않도록 App이 명시적인 publish/read 경계를 제공한다.
+실제 1 kHz timer/event source와 interrupt priority는 통합 단계에서 결정하고, 그 주기와
+`speed_controller`의 PI/filter sampling period를 일치시킨다.
 
 핵심은 **실행 rate를 알고리즘 내부의 숨은 counter로 분산시키지 않는 것**이다.
 
