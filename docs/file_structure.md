@@ -73,8 +73,10 @@ software fault 보호, Hall rotor estimation, open-loop 전압 vector와 FOC cur
 CORDIC, SVPWM, PWM 갱신을 연결한다. Fault threshold, active/latch 상태와 최초 진단
 snapshot은 별도 `fault_manager.c/.h`가 소유하고 App은 측정/오류 전달, control reset,
 PWM disable과 명령 기반 clear 순서를 조정한다. FOC runtime state와 최종 `i_dq_ref`는
-`motor_control`이 소유하며 App은 중복 저장하지 않는다. 통신/완전한 state machine까지
-App 구조체에 미리 모으지 않고 이후 기능은 책임에 맞는 module을 추가한다.
+`motor_control`이 소유하며 App은 중복 저장하지 않는다. 현재 `app_drive_state_t`는 offset
+calibration, READY, speed start, ramp-to-zero와 PWM disable 순서만 소유한다. 통신 command,
+제품별 enable/interlock 및 position lifecycle은 이 구조체에 미리 모으지 않고 책임이 생길 때
+별도 App module로 추가한다.
 
 ### Control
 

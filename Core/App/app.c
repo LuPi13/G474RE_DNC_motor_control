@@ -317,6 +317,7 @@ static app_status_t app_disable_for_fault(app_t *self, app_status_t status)
     const bool should_reset_motor_control = app_is_foc_mode(self->mode);
 
     self->mode = APP_MODE_DISABLED;
+    self->drive_state = APP_DRIVE_STATE_FAULTED;
     current_sensor_status = current_sensor_get_offset_calibration_state(
         self->config.current_sensor,
         &calibration_state
@@ -579,6 +580,10 @@ app_status_t app_init(app_t *self, const app_config_t *config)
         (config->sampling_period_s <= 0.0f) ||
         (!app_float_is_finite(config->speed_loop_period_s)) ||
         (config->speed_loop_period_s <= 0.0f) ||
+        (config->current_offset_calibration_timeout_ms == 0U) ||
+        (!app_float_is_finite(config->speed_stop_omega_m_threshold_rad_s)) ||
+        (config->speed_stop_omega_m_threshold_rad_s <= 0.0f) ||
+        (config->speed_stop_dwell_ms == 0U) ||
         (config->speed_loop_period_s !=
             config->motor_control->config.speed_controller.pi.sampling_period_s) ||
         (!app_float_is_finite(config->initial_voltage_angle_rad)) ||
@@ -670,6 +675,10 @@ app_status_t app_init(app_t *self, const app_config_t *config)
         .fault_clear_blocked_count = 0U,
         .is_initialized = true,
         .mode = APP_MODE_DISABLED,
+        .drive_state = APP_DRIVE_STATE_DISABLED,
+        .current_offset_calibration_elapsed_ms = 0U,
+        .is_current_offset_calibration_timeout_requested = false,
+        .speed_stop_low_speed_elapsed_ms = 0U,
         .is_fault_clear_requested = false,
     };
 
@@ -1023,7 +1032,10 @@ app_status_t app_start_current_control(app_t *self)
     return APP_STATUS_OK;
 }
 
-app_status_t app_stop_current_control(app_t *self)
+static app_status_t app_stop_foc_control(
+    app_t *self,
+    app_mode_t expected_mode
+)
 {
     abc_t neutral_duty;
     const app_speed_command_t zero_speed_command = {
@@ -1039,8 +1051,9 @@ app_status_t app_stop_current_control(app_t *self)
     }
     if ((!self->is_initialized) ||
         (!self->config.pwm_driver->is_initialized) ||
-        (self->mode == APP_MODE_OPEN_LOOP) ||
-        (self->mode == APP_MODE_SPEED)) {
+        ((expected_mode != APP_MODE_CURRENT) &&
+            (expected_mode != APP_MODE_SPEED)) ||
+        (self->mode != expected_mode)) {
         return APP_STATUS_INVALID_STATE;
     }
 
@@ -1085,6 +1098,16 @@ app_status_t app_stop_current_control(app_t *self)
     self->last_duty = neutral_duty;
     self->last_status = APP_STATUS_OK;
     return APP_STATUS_OK;
+}
+
+app_status_t app_stop_current_control(app_t *self)
+{
+    return app_stop_foc_control(self, APP_MODE_CURRENT);
+}
+
+static app_status_t app_stop_speed_control(app_t *self)
+{
+    return app_stop_foc_control(self, APP_MODE_SPEED);
 }
 
 app_status_t app_start_speed_control(app_t *self)
@@ -1173,6 +1196,277 @@ app_status_t app_speed_control_tick(app_t *self)
     __DMB();
     self->active_speed_current_target_index = inactive_index;
 
+    self->last_status = APP_STATUS_OK;
+    return APP_STATUS_OK;
+}
+
+app_status_t app_drive_start(app_t *self)
+{
+    app_status_t status;
+
+    if (self == NULL) {
+        return APP_STATUS_INVALID_ARGUMENT;
+    }
+    if ((!self->is_initialized) ||
+        (self->drive_state != APP_DRIVE_STATE_DISABLED)) {
+        return APP_STATUS_INVALID_STATE;
+    }
+
+    status = app_start_current_offset_calibration(self);
+    if (status != APP_STATUS_OK) {
+        return status;
+    }
+
+    self->current_offset_calibration_elapsed_ms = 0U;
+    self->is_current_offset_calibration_timeout_requested = false;
+    __DMB();
+    self->drive_state = APP_DRIVE_STATE_CURRENT_OFFSET_CALIBRATION;
+    self->last_status = APP_STATUS_OK;
+    return APP_STATUS_OK;
+}
+
+app_status_t app_drive_start_speed(
+    app_t *self,
+    const app_speed_command_t *command
+)
+{
+    const app_current_command_t zero_current_command = {
+        .i_dq_ref = {0.0f, 0.0f},
+    };
+    const app_speed_command_t zero_speed_command = {
+        .omega_m_ref_rad_s = 0.0f,
+    };
+    app_status_t status;
+
+    if ((self == NULL) || (command == NULL) ||
+        (!app_float_is_finite(command->omega_m_ref_rad_s))) {
+        return APP_STATUS_INVALID_ARGUMENT;
+    }
+    if ((!self->is_initialized) ||
+        (!self->config.pwm_driver->is_initialized) ||
+        (self->drive_state != APP_DRIVE_STATE_READY)) {
+        return APP_STATUS_INVALID_STATE;
+    }
+    if (fault_manager_is_faulted(self->config.fault_manager)) {
+        self->last_status = APP_STATUS_FAULT_ACTIVE;
+        return APP_STATUS_FAULT_ACTIVE;
+    }
+
+    status = app_set_current_command(self, &zero_current_command);
+    if (status != APP_STATUS_OK) {
+        return status;
+    }
+    status = app_set_speed_command(self, &zero_speed_command);
+    if (status != APP_STATUS_OK) {
+        return status;
+    }
+    status = app_start_speed_control(self);
+    if (status != APP_STATUS_OK) {
+        return status;
+    }
+
+    self->last_pwm_status = pwm_driver_enable(self->config.pwm_driver);
+    if (self->last_pwm_status != PWM_DRIVER_STATUS_OK) {
+        return app_latch_and_stop(
+            self,
+            APP_STATUS_PWM_ERROR,
+            FAULT_MANAGER_FAULT_PWM
+        );
+    }
+    if (fault_manager_is_faulted(self->config.fault_manager)) {
+        return app_disable_for_fault(self, APP_STATUS_FAULT_ACTIVE);
+    }
+
+    status = app_set_speed_command(self, command);
+    if (status != APP_STATUS_OK) {
+        return app_latch_and_stop(
+            self,
+            status,
+            FAULT_MANAGER_FAULT_MOTOR_CONTROL
+        );
+    }
+
+    __DMB();
+    self->drive_state = APP_DRIVE_STATE_SPEED_RUNNING;
+    self->last_status = APP_STATUS_OK;
+    return APP_STATUS_OK;
+}
+
+app_status_t app_drive_request_speed_stop(app_t *self)
+{
+    const app_speed_command_t zero_speed_command = {
+        .omega_m_ref_rad_s = 0.0f,
+    };
+    app_status_t status;
+
+    if (self == NULL) {
+        return APP_STATUS_INVALID_ARGUMENT;
+    }
+    if ((!self->is_initialized) ||
+        (self->drive_state != APP_DRIVE_STATE_SPEED_RUNNING)) {
+        return APP_STATUS_INVALID_STATE;
+    }
+
+    status = app_set_speed_command(self, &zero_speed_command);
+    if (status != APP_STATUS_OK) {
+        return status;
+    }
+
+    __DMB();
+    self->drive_state = APP_DRIVE_STATE_RAMP_TO_ZERO;
+    self->speed_stop_low_speed_elapsed_ms = 0U;
+    self->last_status = APP_STATUS_OK;
+    return APP_STATUS_OK;
+}
+
+app_status_t app_drive_update(app_t *self)
+{
+    current_sensor_offset_calibration_state_t calibration_state;
+    app_status_t status;
+
+    if (self == NULL) {
+        return APP_STATUS_INVALID_ARGUMENT;
+    }
+    if (!self->is_initialized) {
+        return APP_STATUS_INVALID_STATE;
+    }
+    if (fault_manager_is_faulted(self->config.fault_manager)) {
+        if (self->drive_state != APP_DRIVE_STATE_FAULTED) {
+            return app_disable_for_fault(self, APP_STATUS_FAULT_ACTIVE);
+        }
+        self->last_status = APP_STATUS_FAULT_ACTIVE;
+        return APP_STATUS_FAULT_ACTIVE;
+    }
+
+    if (self->drive_state == APP_DRIVE_STATE_CURRENT_OFFSET_CALIBRATION) {
+        if (self->is_current_offset_calibration_timeout_requested) {
+            self->is_current_offset_calibration_timeout_requested = false;
+            status = app_handle_current_offset_calibration_timeout(self);
+            if (status != APP_STATUS_OK) {
+                return status;
+            }
+        }
+
+        self->last_current_sensor_status =
+            current_sensor_get_offset_calibration_state(
+                self->config.current_sensor,
+                &calibration_state
+            );
+        if (self->last_current_sensor_status != CURRENT_SENSOR_STATUS_OK) {
+            return app_latch_and_stop(
+                self,
+                APP_STATUS_CURRENT_SENSOR_ERROR,
+                FAULT_MANAGER_FAULT_CURRENT_SENSOR
+            );
+        }
+        if (calibration_state == CURRENT_SENSOR_OFFSET_CALIBRATION_COMPLETE) {
+            __DMB();
+            self->drive_state = APP_DRIVE_STATE_READY;
+        } else if (calibration_state == CURRENT_SENSOR_OFFSET_CALIBRATION_FAILED) {
+            return app_latch_and_stop(
+                self,
+                APP_STATUS_CURRENT_SENSOR_ERROR,
+                FAULT_MANAGER_FAULT_CURRENT_SENSOR
+            );
+        }
+    } else if (self->drive_state == APP_DRIVE_STATE_RAMP_TO_ZERO) {
+        if (self->speed_stop_low_speed_elapsed_ms >=
+            self->config.speed_stop_dwell_ms) {
+            status = app_stop_speed_control(self);
+            if (status != APP_STATUS_OK) {
+                return status;
+            }
+            self->last_pwm_status = pwm_driver_disable(self->config.pwm_driver);
+            if (self->last_pwm_status != PWM_DRIVER_STATUS_OK) {
+                return app_latch_and_stop(
+                    self,
+                    APP_STATUS_PWM_ERROR,
+                    FAULT_MANAGER_FAULT_PWM
+                );
+            }
+            __DMB();
+            self->drive_state = APP_DRIVE_STATE_READY;
+        }
+    }
+
+    self->last_status = APP_STATUS_OK;
+    return APP_STATUS_OK;
+}
+
+void app_drive_scheduler_tick(app_t *self)
+{
+    if ((self == NULL) || !self->is_initialized) {
+        return;
+    }
+
+    if (self->drive_state == APP_DRIVE_STATE_CURRENT_OFFSET_CALIBRATION) {
+        if (self->current_offset_calibration_elapsed_ms <
+            self->config.current_offset_calibration_timeout_ms) {
+            ++self->current_offset_calibration_elapsed_ms;
+        }
+        if (self->current_offset_calibration_elapsed_ms >=
+            self->config.current_offset_calibration_timeout_ms) {
+            self->is_current_offset_calibration_timeout_requested = true;
+            __DMB();
+        }
+    }
+
+    if ((self->drive_state == APP_DRIVE_STATE_SPEED_RUNNING) ||
+        (self->drive_state == APP_DRIVE_STATE_RAMP_TO_ZERO)) {
+        (void)app_speed_control_tick(self);
+    }
+
+    if (self->drive_state == APP_DRIVE_STATE_RAMP_TO_ZERO) {
+        const app_speed_feedback_t speed_feedback = app_get_speed_feedback(self);
+        const float omega_m_feedback_rad_s =
+            self->last_speed_output.omega_m_feedback_rad_s;
+        const bool is_below_stop_speed =
+            (omega_m_feedback_rad_s >=
+                -self->config.speed_stop_omega_m_threshold_rad_s) &&
+            (omega_m_feedback_rad_s <=
+                self->config.speed_stop_omega_m_threshold_rad_s);
+        const bool is_stop_speed_confirmed = speed_feedback.is_timed_out ||
+            (speed_feedback.has_valid_speed && is_below_stop_speed);
+
+        if (self->last_speed_output.omega_m_ref_limited_rad_s != 0.0f) {
+            self->speed_stop_low_speed_elapsed_ms = 0U;
+        } else if ((self->speed_stop_low_speed_elapsed_ms != 0U) ||
+                   is_stop_speed_confirmed) {
+            if (self->speed_stop_low_speed_elapsed_ms <
+                self->config.speed_stop_dwell_ms) {
+                ++self->speed_stop_low_speed_elapsed_ms;
+            }
+        }
+    }
+}
+
+app_status_t app_drive_recover_after_fault(app_t *self)
+{
+    current_sensor_offset_calibration_state_t calibration_state;
+
+    if (self == NULL) {
+        return APP_STATUS_INVALID_ARGUMENT;
+    }
+    if ((!self->is_initialized) ||
+        (self->drive_state != APP_DRIVE_STATE_FAULTED)) {
+        return APP_STATUS_INVALID_STATE;
+    }
+    if (fault_manager_is_faulted(self->config.fault_manager)) {
+        self->last_status = APP_STATUS_FAULT_ACTIVE;
+        return APP_STATUS_FAULT_ACTIVE;
+    }
+
+    self->last_current_sensor_status = current_sensor_get_offset_calibration_state(
+        self->config.current_sensor,
+        &calibration_state
+    );
+    if ((self->last_current_sensor_status != CURRENT_SENSOR_STATUS_OK) ||
+        (calibration_state != CURRENT_SENSOR_OFFSET_CALIBRATION_COMPLETE)) {
+        return APP_STATUS_INVALID_STATE;
+    }
+
+    __DMB();
+    self->drive_state = APP_DRIVE_STATE_READY;
     self->last_status = APP_STATUS_OK;
     return APP_STATUS_OK;
 }

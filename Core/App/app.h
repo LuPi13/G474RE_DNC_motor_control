@@ -36,18 +36,20 @@
  * 이 module은 ADC raw sample을 SI feedback으로 변환하고 raw Hall snapshot을 motor별
  * decoder와 continuous-angle estimator에 순서대로 전달한다. 선택한 mode에 따라 open-loop
  * 전압 vector 또는 motor_control의 FOC 전압 지령을
- * SVPWM duty로 바꾸어 PWM driver에 기록한다. HAL callback, peripheral 초기화 순서와 PWM
- * output enable은 main/CubeMX 영역에 남긴다. Fault manager는 별도 instance로 유지하며
+ * SVPWM duty로 바꾸어 PWM driver에 기록한다. HAL callback과 peripheral 초기화 순서는
+ * main/CubeMX 영역에 남기며, PWM output enable/disable의 정상 lifecycle은 App main context가
+ * 처리한다. Fault manager는 별도 instance로 유지하며
  * App이 측정/계산 오류, control reset과 PWM disable 순서를 조정한다.
  *
  * @par 시작 순서
  *
  * 1. ADC driver를 초기화하고 시작한다.
  * 2. Sensor, Hall decoder/estimator, motor_control과 fault manager를 초기화한 뒤 app_init()으로 연결한다.
- * 3. app_start_current_offset_calibration()을 호출한다.
- * 4. PWM driver를 초기화하여 ADC trigger용 counter를 시작하고, output은 끈 채 보정 완료를 기다린다.
- * 5. 0.5 duty를 준비하고 원하는 mode의 start API 성공 뒤 PWM output을 활성화한다.
- * 6. Completion ADC IRQ가 세 JDR을 수집하고 flag를 정리한 뒤 App fast loop를 한 번 호출한다.
+ * 3. app_drive_start()를 호출한 뒤 PWM driver를 초기화하여 ADC trigger용 counter를 시작한다.
+ * 4. output은 끈 채 ADC fast loop가 current offset을 수집하고 app_drive_update()가 READY를 확인한다.
+ * 5. app_drive_start_speed()가 0 A target을 준비한 뒤 PWM output을 활성화한다.
+ * 6. app_drive_scheduler_tick()은 1 kHz speed PI와 calibration deadline을 처리하고,
+ *    completion ADC IRQ는 세 JDR을 수집한 뒤 App fast loop를 한 번 호출한다.
  *
  * PWM counter 시작 중 발생할 수 있는 ADC event를 안전하게 소비할 수 있도록 app_init()은
  * pwm_driver_init()보다 먼저 호출할 수 있다. Mode start 전에는 ADC/rotor feedback만
@@ -116,6 +118,21 @@ typedef enum {
 } app_mode_t;
 
 /**
+ * @brief App이 소유하는 drive lifecycle 상태.
+ *
+ * @note @ref app_mode_t 는 ADC fast loop의 제어 계산 선택만 나타낸다. 이 상태는
+ *       calibration, PWM output enable 및 정상 정지 순서를 포함한다.
+ */
+typedef enum {
+    APP_DRIVE_STATE_DISABLED = 0, /**< 기동 전 또는 보정하지 않은 PWM 비활성 상태. */
+    APP_DRIVE_STATE_CURRENT_OFFSET_CALIBRATION, /**< PWM 비활성 무전류 offset 수집 중. */
+    APP_DRIVE_STATE_READY, /**< offset 보정 완료, PWM 비활성, speed start 대기. */
+    APP_DRIVE_STATE_SPEED_RUNNING, /**< PWM 활성 speed control 운전 중. */
+    APP_DRIVE_STATE_RAMP_TO_ZERO, /**< 0 rad/s로 능동 감속하고 저속 종료 조건을 대기 중. */
+    APP_DRIVE_STATE_FAULTED /**< fault latch 뒤 PWM 비활성 상태. */
+} app_drive_state_t;
+
+/**
  * @brief 선택형 fast-loop 구간 계측기의 한 구간 결과.
  */
 typedef struct {
@@ -166,6 +183,9 @@ typedef struct {
     app_cycle_counter_reader_t cycle_counter_reader; /**< Profile 사용 시 필수 cycle reader. */
     float sampling_period_s;        /**< 고정 fast-loop 호출 주기 [s], 양의 유한값. */
     float speed_loop_period_s;       /**< SysTick speed scheduler 고정 주기 [s]. */
+    uint32_t current_offset_calibration_timeout_ms; /**< 무전류 offset 보정 deadline [ms]. */
+    float speed_stop_omega_m_threshold_rad_s; /**< 정상 정지 PWM-off 기계각속도 임계값 [rad/s]. */
+    uint32_t speed_stop_dwell_ms; /**< 저속 또는 Hall timeout을 처음 확인한 뒤 PWM-off까지의 대기 시간 [ms]. */
     float initial_voltage_angle_rad; /**< 초기 전압 vector phase [0, 2*pi) [rad]. */
 } app_config_t;
 
@@ -275,6 +295,10 @@ typedef struct {
 
     bool is_initialized;              /**< app_init() 정상 완료 여부. */
     volatile app_mode_t mode;         /**< Fast loop가 실행할 현재 drive mode. */
+    volatile app_drive_state_t drive_state; /**< App lifecycle의 canonical drive state. */
+    volatile uint32_t current_offset_calibration_elapsed_ms; /**< scheduler가 센 보정 경과 시간 [ms]. */
+    volatile bool is_current_offset_calibration_timeout_requested; /**< main-context timeout 처리 요청. */
+    volatile uint32_t speed_stop_low_speed_elapsed_ms; /**< 저속 또는 Hall timeout을 처음 확인한 뒤 scheduler가 센 정상 정지 dwell [ms]. */
     volatile bool is_fault_clear_requested; /**< 다음 유효 fast loop에서 소비할 clear 요청. */
 } app_t;
 
@@ -463,6 +487,56 @@ app_status_t app_start_speed_control(app_t *self);
  * @note ADC ISR보다 낮은 priority에서만 호출한다. FOC나 PWM register는 직접 갱신하지 않는다.
  */
 app_status_t app_speed_control_tick(app_t *self);
+
+/**
+ * @brief PWM output을 끈 상태에서 offset 보정 lifecycle을 시작한다.
+ *
+ * @param[in,out] self 초기화된 App instance.
+ * @note ADC trigger는 이미 실행 중이어야 한다. offset sample 누적은 ADC fast loop가 수행한다.
+ */
+app_status_t app_drive_start(app_t *self);
+
+/**
+ * @brief READY 상태에서 PWM을 활성화하고 speed control을 시작한다.
+ *
+ * @param[in,out] self 초기화된 App instance.
+ * @param[in] command 시작 직후 publish할 기계각속도 command [rad/s].
+ * @note PWM enable 전에는 항상 0 A speed target을 준비한다.
+ */
+app_status_t app_drive_start_speed(
+    app_t *self,
+    const app_speed_command_t *command
+);
+
+/**
+ * @brief Speed command를 0 rad/s로 바꾸고 능동 감속을 요청한다.
+ *
+ * @note 0 reference가 rate limiter를 통과한 뒤 Hall timeout 또는 설정한 저속 threshold를
+ *       한 번 확인하면 dwell을 latch하고, 그 시간 동안 speed PI를 계속 실행한다. 완료 시
+ *       app_drive_update()가 PWM을 비활성화한다.
+ */
+app_status_t app_drive_request_speed_stop(app_t *self);
+
+/**
+ * @brief Main context에서 drive lifecycle 전이를 처리한다.
+ *
+ * @note ISR에서 호출하지 않는다. PWM enable/disable과 calibration 완료/timeout 전이는 이 함수만 수행한다.
+ */
+app_status_t app_drive_update(app_t *self);
+
+/**
+ * @brief 1 kHz SysTick에서 speed PI와 calibration timeout 시간을 갱신한다.
+ *
+ * @note FOC 또는 PWM register를 직접 갱신하지 않는다.
+ */
+void app_drive_scheduler_tick(app_t *self);
+
+/**
+ * @brief 해제된 fault 뒤 READY 상태로 복귀한다.
+ *
+ * @pre app_request_fault_clear() 요청이 유효 ADC sample에서 성공했고 offset 보정이 COMPLETE여야 한다.
+ */
+app_status_t app_drive_recover_after_fault(app_t *self);
 
 /**
  * @brief 외부 명령 경로에서 fault latch 해제를 일회성으로 요청한다.

@@ -350,16 +350,16 @@ CubeMX peripheral 초기화 (ADC trigger가 발생하지 않는 상태)
  -> hall_driver_start(): Hall capture와 overflow timeout interrupt 시작
  -> adc_driver_init(): 매핑 검증과 ADC 자체 calibration
  -> adc_driver_start(): regular 및 세 injected 그룹을 trigger 대기 상태로 준비
- -> app_start_current_offset_calibration(): PWM 비활성 조건에서 무전류 평균 수집 요청
+ -> app_drive_start(): PWM 비활성 조건에서 무전류 평균 수집 lifecycle 시작
  -> pwm_driver_init(): HRTIM counter 시작과 동기화
- -> settling sample 폐기 및 3상 영점 평균 완료 대기
- -> 초기 duty 준비 및 update 반영 확인
- -> pwm_driver_enable(): PWM output 활성화
+ -> ADC fast loop: settling sample 폐기 및 3상 영점 평균 누적
+ -> App main-context update: calibration COMPLETE를 READY로 전이
+ -> app_drive_start_speed(): 0 A target 준비, speed mode 진입, PWM output 활성화
 ```
 
 `pwm_driver_init()`의 counter 시작/software reset부터 ADC trigger가 발생할 수 있다.
-따라서 callback이 사용하는 상태를 먼저 준비해야 한다. 향후 제어를 연결할 때는
-App이 startup 상태를 구분하여 PWM driver 초기화 완료 전에 duty 갱신을 호출하지 않게 한다.
+따라서 callback이 사용하는 상태를 먼저 준비해야 한다. `app_drive_state_t`는 PWM driver
+초기화 완료 전에는 duty 갱신을 호출하지 않도록 startup lifecycle을 구분한다.
 현재 App은 보정 중 open-loop 또는 PWM output 활성화를 거부한다. `current_sensor`는 settling
 sample 폐기, 3상 평균 누적, 허용 ADC code 범위 검사와 완료 offset의 유일한 owner다.
 결과가 범위를 벗어나거나 timeout이 발생하면 current-sensor fault를 latch하고 PWM을
@@ -602,6 +602,31 @@ active mode 중지와 software PWM disable만 수행하며 control/SVPWM 계산�
 
 ## 8. Fault와 state machine
 
+현재 App의 정상 lifecycle은 다음과 같다.
+
+```text
+DISABLED
+ -> CURRENT_OFFSET_CALIBRATION  (PWM output off, ADC fast loop가 sample 누적)
+ -> READY                       (offset COMPLETE, PWM output off)
+ -> SPEED_RUNNING               (0 A target 준비 후 PWM output on)
+ -> RAMP_TO_ZERO                (0 rad/s command, speed rate limiter/PI 유지)
+ -> Hall timeout 또는 저속 dwell 확인
+ -> PWM output off
+ -> READY
+```
+
+`READY`는 별도 PWM-disabled enum을 중복으로 두지 않고 **보정 완료 + PWM output off**를
+의미한다. `app_drive_update()`는 main context에서 calibration 완료/timeout과 PWM enable/disable만
+처리한다. `app_drive_scheduler_tick()`은 1 kHz SysTick에서 calibration timeout 시간을 세고 speed PI만
+실행하며, ADC ISR은 기존 40 kHz feedback/FOC/SVPWM 경로를 유지한다.
+
+정상 정지는 reference가 0이 되었다는 사실만으로 PWM을 끄지 않는다. `RAMP_TO_ZERO`에서 Hall timeout 또는
+기계속도 절댓값이 `speed_stop_omega_m_threshold_rad_s` 이하임을 한 번 확인한 뒤
+`speed_stop_dwell_ms` 동안 능동 감속하고 PWM을 비활성화한다. 저속 확인 뒤에는 다음 Hall edge의 양자화된
+속도값이 커져도 dwell을 되돌리지 않는다. 현재 bring-up 값은 500 rpm, 10 ms다. Hall의 저속 양자화로 edge가
+반복될 때 연속 조건이나 timeout만 기다리면 speed PI가 rotor를 경계에서 왕복시킬 수 있으므로, 제어가 안정적인
+최저속도에서 PWM을 끄고 마지막 구간은 coast로 맡긴다. 정지 뒤 속도 hold는 하지 않는다.
+
 Fault detection source는 여러 곳일 수 있다.
 
 ```text
@@ -663,8 +688,8 @@ active measurement fault 없음
 ```
 
 요청은 성공/실패와 관계없이 한 번만 소비한다. 해제 성공 후에도 drive mode와 PWM은
-비활성 상태이며 별도의 새 command와 시작 절차가 필요하다. 따라서 이전 nonzero command로
-자동 재시작하지 않는다. ADC 동기 오류처럼 유효 sample 자체가 재개되지 않는 fault는
+비활성 상태이며 `app_drive_recover_after_fault()`로 READY 복귀를 명시적으로 요청한 뒤 별도의 새 command와
+시작 절차가 필요하다. 따라서 이전 nonzero command로 자동 재시작하지 않는다. ADC 동기 오류처럼 유효 sample 자체가 재개되지 않는 fault는
 명령 해제만으로 처리하지 않고 trigger 차단, ADC stop/start 재동기화 또는 MCU reset이 필요하다.
 
 현재 fault manager는 ADC 결과를 사용하는 software 보호다. 실제 hardware revision에서는

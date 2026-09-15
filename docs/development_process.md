@@ -898,8 +898,10 @@ double-buffered q축 current target을 publish한다. ADC ISR은 Hall speed feed
 writer이고 SysTick은 reader이며, SysTick은 speed target의 writer이고 ADC ISR은 reader다.
 각 snapshot은 inactive buffer 완성 뒤 memory barrier와 active index 하나로 publish한다.
 Fast current loop는 마지막으로 완성된 target만 소비한다. 현재 bring-up command의 정지는
-speed reference를 0까지 ramp하여 회생 제동하는 방식이며, PWM disable 시점과 restart policy는
-통신/state-machine 단계에서 별도로 정의한다. 정지 후 shaft position hold는 제공하지 않는다.
+speed reference를 0까지 ramp하여 회생 제동하는 방식이다. `app_drive_state_t`는 reference가
+0에 도달한 뒤 Hall timeout 또는 저속을 한 번 확인하면 dwell을 latch하고 PWM을 disable한다. 현재
+initial cutoff는 500 rpm/10 ms이며, Hall 저속 양자화 시험 결과에 따라 제품 config에서 조정한다. 이
+cutoff 아래에서는 PWM을 비활성화하므로 마지막 구간은 coast이며, shaft position hold는 제공하지 않는다.
 
 `speed_controller` 자체는 mechanical-speed feedback의 30 Hz low-pass filter와 PI, q축 전류
 scalar 제한 및 downstream current 제한용 external tracking만 소유한다. 300 rpm/s speed-reference
@@ -908,6 +910,21 @@ rate limiter, electrical-to-mechanical speed 변환과 1 kHz 실행/publish는 `
 이를 읽어 speed PI 결과를 current target으로 publish한다. 따라서 40 kHz current fast path에는
 speed PI를 직접 삽입하지 않는다. 초기 gain, 1 ms 주기, 30 Hz feedback cutoff와 ±0.5 A bring-up
 출력 범위는 `motor_config_speed_controller`에 둔다.
+
+속도 제어 통합 뒤 App은 아래 최소 lifecycle을 제공한다. 통신 없이도 main의 임시 command source가
+동일 API를 호출하므로, 이후 CAN/UART을 추가해도 PWM enable/disable 순서를 복제하지 않는다.
+
+```text
+DISABLED -> CURRENT_OFFSET_CALIBRATION -> READY
+READY -> SPEED_RUNNING -> RAMP_TO_ZERO -> READY (PWM output off)
+fault -> FAULTED -> explicit clear/recover -> READY
+```
+
+Offset deadline은 SysTick 1 kHz에서 계산하고, ADC fast loop는 sample 누적만 수행한다. lifecycle
+전이와 PWM driver 호출은 main context에 남겨 40 kHz ISR budget에 넣지 않는다. Hall speed가 저속에서
+양자화되어 stop 판단을 다시 깨지 않도록, 0 speed reference가 제한기를 통과한 뒤 Hall timeout 또는 저속을
+처음 확인하면 stop dwell을 latch한다. 현재 bring-up 기준은 500 rpm, 10 ms이며 이 값 아래에서는 PWM을
+비활성화하므로 마지막 정지는 coast다.
 
 2026-09-15 board shadow 시험에서는 PWM과 App drive mode를 비활성 상태로 유지하고 실제 Hall
 속도를 1 kHz main-loop 시험 경로에서 controller에 입력했다. 손으로 축을 정·역회전했을 때
@@ -1016,8 +1033,8 @@ FOC
 - calibration mode
 - fault reporting
 - parameter configuration
-- startup sequence
-- system state machine
+- product startup/interlock sequence
+- drive state machine 확장
 
 을 고도화한다.
 
