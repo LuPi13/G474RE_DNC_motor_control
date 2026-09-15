@@ -932,10 +932,15 @@ Offset deadline은 SysTick 1 kHz에서 계산하고, ADC fast loop는 sample 누
 bring-up 또는 debugger 시험은 별도 선택형 command source로 유지한다. 이 source는 product command source와
 동일한 `drive_command_router_execute()`만 호출해야 한다.
 
-현재 `drive_debug_command_source`는 debugger Live Expression으로 `requested_speed_rpm`을 설정한 뒤
-`start_requested`를 true로 만드는 board bring-up용 source다. 운전 중 target 변경은
-`requested_speed_rpm`만 갱신하고, 정상 정지는 `stop_requested`를 true로 요청한다. 이 source의 기본값은
-모두 안전한 0/false이며, 통신 command source가 준비되면 product build에서 제외하거나 교체한다.
+현재 `drive_debug_command_source`는 debugger Live Expression으로 `requested_mode`와 해당 reference를 설정한 뒤
+`start_requested`를 true로 만드는 board bring-up용 source다. current mode는 `requested_i_d_a`/
+`requested_i_q_a`, speed mode는 `requested_speed_rpm`을 운전 중 갱신한다. 정상 정지는 `stop_requested`를
+true로 요청한다. 이 source의 기본값은 speed mode와 안전한 0/false이며, 통신 command source가 준비되면
+product build에서 제외하거나 교체한다.
+
+CANopen 통합은 먼저 FDCAN nominal bit rate, transceiver, RX IRQ와 raw frame driver를 검증한 뒤
+CANopenNode transport, CiA 402 state machine, torque command 순으로 추가한다. FDCAN ISR에는 frame
+수신과 짧은 전달만 두고 stack process와 drive lifecycle 전이는 main context에서 실행한다.
 
 2026-09-15 board shadow 시험에서는 PWM과 App drive mode를 비활성 상태로 유지하고 실제 Hall
 속도를 1 kHz main-loop 시험 경로에서 controller에 입력했다. 손으로 축을 정·역회전했을 때

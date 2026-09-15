@@ -6,6 +6,8 @@
 
 #include "motor_config.h"
 
+const float motor_config_canopen_torque_reference_current_peak_a = 2.0f;
+
 const hall_decoder_profile_t motor_config_hall_profile = {
     /* Raw Hall state 000부터 111까지의 sector mapping. */
     .sector_by_state = {

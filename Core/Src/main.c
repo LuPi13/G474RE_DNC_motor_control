@@ -23,6 +23,7 @@
 /* USER CODE BEGIN Includes */
 #include "adc_driver.h"
 #include "app.h"
+#include "canopen_service.h"
 #include "cordic_driver.h"
 #include "current_sensor.h"
 #include "drive_debug_command_source.h"
@@ -101,6 +102,8 @@ static motor_control_t motor_control;
 static fault_manager_t fault_manager;
 static fdcan_driver_t fdcan_driver;
 static app_t app;
+static canopen_service_t canopen_service;
+static drive_command_router_t canopen_drive_command_router;
 
 /* 디버거에서 함수 실행 결과 확인용 */
 static volatile pwm_driver_status_t pwm_test_status;
@@ -120,6 +123,10 @@ static volatile bool adc_test_has_valid_phase_current;
 static volatile app_status_t app_test_status;
 static volatile app_status_t app_test_last_error;
 static volatile fault_manager_status_t fault_test_init_status;
+static volatile canopen_service_status_t canopen_service_init_status;
+static volatile canopen_service_status_t canopen_service_last_status;
+static volatile uint32_t canopen_service_process_count;
+static uint32_t canopen_service_last_tick_ms;
 
 /* ADC IRQ 후처리와 fast-loop 실행시간 확인용 */
 static volatile bool adc_fast_loop_pending;
@@ -496,10 +503,39 @@ int main(void)
             .compare_unit = HRTIM_COMPAREUNIT_1,
         },
   };
-  pwm_test_status = pwm_driver_init(&pwm_driver, &pwm_config);
+pwm_test_status = pwm_driver_init(&pwm_driver, &pwm_config);
     if (pwm_test_status != PWM_DRIVER_STATUS_OK) {
         Error_Handler();
     }
+
+  drive_command_router_init(&canopen_drive_command_router);
+  const canopen_service_motor_profile_t canopen_motor_profile = {
+      .pole_pairs = motor_control_config.pole_pairs,
+      .permanent_magnet_flux_linkage_wb =
+          motor_control_config.foc.permanent_magnet_flux_linkage_wb,
+      .torque_reference_current_peak_a =
+          motor_config_canopen_torque_reference_current_peak_a,
+      .maximum_mechanical_speed_rad_s =
+          motor_control_config.speed_reference_max_rad_s,
+  };
+  const canopen_service_config_t canopen_config = {
+      .fdcan_driver = &fdcan_driver,
+      .app = &app,
+      .drive_command_router = &canopen_drive_command_router,
+      .fault_manager = &fault_manager,
+      .node_id = 1U,
+      .bit_rate_kbit_s = 500U,
+  };
+  canopen_service_init_status = canopen_service_init(
+      &canopen_service,
+      &canopen_config,
+      &canopen_motor_profile
+  );
+  if (canopen_service_init_status != CANOPEN_SERVICE_STATUS_OK) {
+      Error_Handler();
+  }
+  canopen_service_last_status = CANOPEN_SERVICE_STATUS_OK;
+  canopen_service_last_tick_ms = HAL_GetTick();
 
     /* calibration 완료와 PWM enable/disable은 이후 main-context 상태기계가 처리한다. */
 
@@ -516,6 +552,25 @@ int main(void)
       }
 
       drive_debug_command_source_update(&app);
+
+      const uint32_t canopen_tick_ms = HAL_GetTick();
+      const uint32_t canopen_elapsed_ms =
+          canopen_tick_ms - canopen_service_last_tick_ms;
+      if (canopen_elapsed_ms != 0U) {
+          app_speed_feedback_t speed_feedback = {0};
+
+          canopen_service_last_tick_ms = canopen_tick_ms;
+          (void)app_get_speed_feedback_snapshot(&app, &speed_feedback);
+          canopen_service_last_status = canopen_service_process(
+              &canopen_service,
+              canopen_elapsed_ms * 1000U,
+              0.0f,
+              false,
+              speed_feedback.omega_e_rad_s,
+              speed_feedback.has_valid_speed
+          );
+          ++canopen_service_process_count;
+      }
 
       HAL_Delay(1U);
     /* USER CODE END WHILE */

@@ -38,6 +38,10 @@ Project/
 │  │  ├─ cordic_driver.c / cordic_driver.h
 │  │  ├─ can_driver.c / can_driver.h
 │  │  └─ uart_driver.c / uart_driver.h
+│  ├─ Communication/
+│  │  └─ object_dictionary/       # CANopenEditor generated OD
+│  └─ ThirdParty/
+│     └─ CANopenNode/             # 최소 CiA 301 source, Apache-2.0
 │  └─ Config/
 │     └─ motor_config.c / motor_config.h
 └─ docs/

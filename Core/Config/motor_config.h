@@ -7,6 +7,8 @@
 #ifndef CONFIG_MOTOR_CONFIG_H
 #define CONFIG_MOTOR_CONFIG_H
 
+#include <stdint.h>
+
 #include "hall_decoder.h"
 #include "speed_controller.h"
 
@@ -27,6 +29,14 @@ extern const hall_decoder_profile_t motor_config_hall_profile;
  * @note 초기 bring-up을 위해 q축 전류 출력을 ±0.5 A로 제한한다.
  */
 extern const speed_controller_config_t motor_config_speed_controller;
+
+/**
+ * @brief CiA 402 target torque 1000 permille에 대응하는 q-axis current [A peak].
+ *
+ * 실제 FOC current command limit과 독립적으로 설정할 수 있다. 이 값보다 큰
+ * CANopen target은 FOC limit에서 제한되고 statusword의 internal-limit bit에 반영된다.
+ */
+extern const float motor_config_canopen_torque_reference_current_peak_a;
 
 /** @} */
 

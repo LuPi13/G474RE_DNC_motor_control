@@ -36,6 +36,9 @@
 - [`legacy_migration_notes.md`](legacy_migration_notes.md)  
   기존 `legacy_code.zip`에서 확인된 문제와 신규 구조로의 migration 기준.
 
+- [`canopen_cia402.md`](canopen_cia402.md)  
+  CANopenNode, FDCAN transport, CiA 402 Profile Torque 통합 경계와 검증 기준.
+
 ## 최상위 원칙
 
 1. 신호 흐름과 `#include` 의존성은 동일하지 않다.

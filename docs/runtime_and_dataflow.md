@@ -629,8 +629,16 @@ DISABLED
 공유용 기본 firmware의 `main.c`는 CubeMX peripheral 초기화, App/driver wiring, IRQ entry와
 `app_drive_update()` 호출만 수행한다. 따라서 기동 뒤 offset 보정이 완료되면 `READY`에서 안전하게 대기하며
 PWM을 자동으로 enable하지 않는다. CAN, UART 또는 debugger test source는 protocol을 해석한 뒤 main context에서
-`drive_command_router_execute()`에 `START_SPEED`, `SET_SPEED`, `STOP`, `RECOVER_FAULT` command를 전달한다.
-통신 ISR은 직접 PWM/FOC를 조작하지 않고 command를 queue에 넣는다.
+`drive_command_router_execute()`에 `START_CURRENT`, `SET_CURRENT`, `START_SPEED`, `SET_SPEED`, `STOP`,
+`RECOVER_FAULT` command를 전달한다. `STOP`은 current mode에서는 PWM을 즉시 끄고 READY로 복귀하며,
+speed mode에서는 기존 ramp-to-zero 경로를 사용한다. 통신 ISR은 직접 PWM/FOC를 조작하지 않고 command를 queue에 넣는다.
+
+FDCAN2는 500 kbit/s Classic CAN과 interrupt priority 2로 설정한다. `fdcan_driver`는 HAL RX
+FIFO0 callback에서 standard data frame을 꺼내 ISR consumer에만 전달하며, CANopen protocol 처리와
+drive command routing은 main context의 communication service가 수행한다. 따라서 priority 0 ADC fast
+loop와 priority 1 Hall timer는 CAN 수신 처리에 의해 지연되지 않는다.
+기본 firmware는 FDCAN driver를 초기화 뒤 start하여 raw frame 수신 diagnostic을 유지하지만, 이 동작은
+PWM output 또는 App drive lifecycle을 변경하지 않는다.
 
 현재 board bring-up에는 `drive_debug_command_source`를 연결한다. 이 module은 `main.c` 밖에 있으며
 `requested_mode`, `requested_i_d_a`, `requested_i_q_a`, `requested_speed_rpm`, `start_requested`,
