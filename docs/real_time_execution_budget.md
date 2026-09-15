@@ -213,10 +213,21 @@ body MUST 기준 2800 cycles는 125 cycles 초과하므로 최적화 완료 기�
 Hall decoder와 보정 profile을 통합한 뒤 축을 손으로 정·역회전한 board 시험에서는 첫 ADC IRQ부터
 종료까지 `2530 cycles`, deadline miss `0`이 관찰됐다. 이후 PWM을 활성화한 저전류 current-mode
 시험에서도 양방향 회전, `0.3 A` 부근의 간헐적 voltage saturation과 `0.4 A` 지령에서의 지속
-saturation 동안 deadline miss는 `0`이었다. 다만 이 current-mode 시험의 정확한 maximum cycle과
-관찰 시간은 기록되지 않았고 시험용 FOC snapshot 복사도 포함되어 있었으므로, `3200 cycles`
-bring-up 목표의 최종 통과 근거로 사용하지 않는다. 시험 코드를 제거한 production current-mode
-경로에서 maximum과 관찰 시간을 다시 측정해야 한다.
+saturation 동안 첫 ADC IRQ부터 종료까지 최대 `3757 cycles`, deadline miss `0`이 관찰됐다.
+다만 시험용 FOC snapshot 복사가 포함되었고 관찰 시간이 기록되지 않았으므로, `3200 cycles`
+bring-up 목표의 최종 통과 근거로 사용하지 않는다. FOC snapshot 복사를 제거한
+production-equivalent current-mode 경로에서는 전체 최대 `3485 cycles`, deadline miss `0`이
+관찰됐다. 측정용 current command/poll 코드는 이후 제거했다. Hard deadline은 만족하지만
+`3200 cycles` 목표보다 285 cycles 크고 시험 전류와 관찰 시간이 기록되지 않았으므로,
+speed-mode 실구동 활성화 전에는 조건을 명시한 worst-case timing 시험을 다시 수행해야 한다.
+
+Standalone speed controller를 추가한 뒤 PWM과 App drive mode를 비활성화하고 실제 Hall 축을
+손으로 회전한 1 kHz shadow 시험에서는 첫 ADC IRQ부터 종료까지 최대 `2139 cycles`, deadline
+miss `0`이 관찰됐다. 속도 feedback/filter 부호, ±0.5 A PI 포화, ±3000 rpm clamp, reset과
+Hall timeout은 예상대로 동작했으며 speed-controller 출력은 current loop에 적용하지 않았다.
+이 값은 speed PI가 ADC ISR 밖에서 실행된 조건의 회귀 확인값이다. FOC/SVPWM/PWM 경로가 실행되지
+않았고 관찰 시간이 기록되지 않았으므로 current-mode `3485 cycles`를 대체하거나 `3200 cycles`
+speed-mode 통합 gate를 통과했다는 근거로 사용하지 않는다.
 
 ---
 
@@ -306,13 +317,19 @@ Fast-loop 경로를 바꾸는 변경은 다음 순서를 **MUST** 따른다.
 6. 보드에서 정상 및 worst-case cycle을 다시 측정한다.
 7. 이 문서의 통과 기준을 만족한 뒤 다음 기능을 fast loop에 추가한다.
 
-다음 중 하나라도 해당하면 current-loop 실구동이나 상위 loop 개발로 진행하지 않는다.
+다음 중 하나라도 해당하면 current-loop 실구동 확대, 상위 loop의 40 kHz fast path 통합 또는
+speed-mode PWM 활성화로 진행하지 않는다.
 
 - deadline miss가 1회 이상 발생
 - 전체 maximum이 3200 cycles를 초과
 - worst-case 분기를 계측하지 않음
 - compiler option이나 clock 조건이 불명확함
 - 기능 결과와 timing 결과를 같은 binary에서 확인하지 않음
+
+상위 loop의 hardware-independent controller와 수치 시험은 위 통합 gate 전에도 개발할 수 있다.
+단, 이 코드를 40 kHz ADC ISR에 추가하거나 PWM을 활성화해서는 안 되며, speed loop는 별도
+1 kHz scheduler 경로에서 실행한다. 이 예외는 `3200 cycles` 목표를 폐기하는 것이 아니라
+알고리즘 개발과 timing-critical integration을 분리하기 위한 것이다.
 
 기능 추가가 timing budget을 초과하면 우선 checked/slow/event path로 책임을 이동한다.
 그래도 만족하지 못하면 20 kHz current-loop 같은 multi-rate 구조를 검토하되, scheduler에
