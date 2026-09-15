@@ -26,7 +26,9 @@
 #include "cordic_driver.h"
 #include "current_sensor.h"
 #include "drive_debug_command_source.h"
+#include "drive_command.h"
 #include "fault_manager.h"
+#include "fdcan_driver.h"
 #include "hall_decoder.h"
 #include "hall_driver.h"
 #include "hall_estimator.h"
@@ -97,6 +99,7 @@ static hall_decoder_t hall_decoder;
 static hall_estimator_t hall_estimator;
 static motor_control_t motor_control;
 static fault_manager_t fault_manager;
+static fdcan_driver_t fdcan_driver;
 static app_t app;
 
 /* 디버거에서 함수 실행 결과 확인용 */
@@ -236,6 +239,19 @@ int main(void)
   MX_CORDIC_Init();
   /* USER CODE BEGIN 2 */
   if (cordic_driver_init() != CORDIC_DRIVER_STATUS_OK) {
+      Error_Handler();
+  }
+
+  const fdcan_driver_config_t fdcan_config = {
+      .hfdcan = &hfdcan2,
+      .receive_callback = NULL,
+      .receive_context = NULL,
+  };
+  if (fdcan_driver_init(&fdcan_driver, &fdcan_config) !=
+      FDCAN_DRIVER_STATUS_OK) {
+      Error_Handler();
+  }
+  if (fdcan_driver_start(&fdcan_driver) != FDCAN_DRIVER_STATUS_OK) {
       Error_Handler();
   }
 
@@ -837,13 +853,13 @@ static void MX_FDCAN2_Init(void)
   hfdcan2.Init.ClockDivider = FDCAN_CLOCK_DIV1;
   hfdcan2.Init.FrameFormat = FDCAN_FRAME_CLASSIC;
   hfdcan2.Init.Mode = FDCAN_MODE_NORMAL;
-  hfdcan2.Init.AutoRetransmission = DISABLE;
+  hfdcan2.Init.AutoRetransmission = ENABLE;
   hfdcan2.Init.TransmitPause = DISABLE;
   hfdcan2.Init.ProtocolException = DISABLE;
-  hfdcan2.Init.NominalPrescaler = 16;
+  hfdcan2.Init.NominalPrescaler = 20;
   hfdcan2.Init.NominalSyncJumpWidth = 1;
-  hfdcan2.Init.NominalTimeSeg1 = 1;
-  hfdcan2.Init.NominalTimeSeg2 = 1;
+  hfdcan2.Init.NominalTimeSeg1 = 13;
+  hfdcan2.Init.NominalTimeSeg2 = 3;
   hfdcan2.Init.DataPrescaler = 1;
   hfdcan2.Init.DataSyncJumpWidth = 1;
   hfdcan2.Init.DataTimeSeg1 = 1;
@@ -1431,6 +1447,23 @@ void HAL_TIM_PeriodElapsedCallback(TIM_HandleTypeDef *htim)
     );
 
     hall_test_refresh_feedback();
+}
+
+void HAL_FDCAN_RxFifo0Callback(
+    FDCAN_HandleTypeDef *hfdcan,
+    uint32_t interrupt_flags
+)
+{
+    fdcan_driver_handle_rx_fifo0(
+        &fdcan_driver,
+        hfdcan,
+        interrupt_flags
+    );
+}
+
+void HAL_FDCAN_ErrorCallback(FDCAN_HandleTypeDef *hfdcan)
+{
+    fdcan_driver_handle_error(&fdcan_driver, hfdcan);
 }
 /* USER CODE END 4 */
 
