@@ -611,6 +611,9 @@ active mode 중지와 software PWM disable만 수행하며 control/SVPWM 계산�
 DISABLED
  -> CURRENT_OFFSET_CALIBRATION  (PWM output off, ADC fast loop가 sample 누적)
  -> READY                       (offset COMPLETE, PWM output off)
+ -> CURRENT_RUNNING             (0 A target 준비 후 PWM output on)
+ -> PWM output off
+ -> READY
  -> SPEED_RUNNING               (0 A target 준비 후 PWM output on)
  -> RAMP_TO_ZERO                (0 rad/s command, speed rate limiter/PI 유지)
  -> Hall timeout 또는 저속 dwell 확인
@@ -630,8 +633,9 @@ PWM을 자동으로 enable하지 않는다. CAN, UART 또는 debugger test sourc
 통신 ISR은 직접 PWM/FOC를 조작하지 않고 command를 queue에 넣는다.
 
 현재 board bring-up에는 `drive_debug_command_source`를 연결한다. 이 module은 `main.c` 밖에 있으며
-`requested_speed_rpm`, `start_requested`, `stop_requested`만 Live Expression 입력으로 제공한다. 기본값은 모두
-0/false이므로 자동 기동하지 않는다.
+`requested_mode`, `requested_i_d_a`, `requested_i_q_a`, `requested_speed_rpm`, `start_requested`,
+`stop_requested`를 Live Expression 입력으로 제공한다. 기본 mode는 speed이고 모든 reference와 request의
+기본값은 0/false이므로 자동 기동하지 않는다.
 
 정상 정지는 reference가 0이 되었다는 사실만으로 PWM을 끄지 않는다. `RAMP_TO_ZERO`에서 Hall timeout 또는
 기계속도 절댓값이 `speed_stop_omega_m_threshold_rad_s` 이하임을 한 번 확인한 뒤

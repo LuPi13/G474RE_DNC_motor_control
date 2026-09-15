@@ -916,6 +916,7 @@ speed PI를 직접 삽입하지 않는다. 초기 gain, 1 ms 주기, 30 Hz feedb
 
 ```text
 DISABLED -> CURRENT_OFFSET_CALIBRATION -> READY
+READY -> CURRENT_RUNNING -> READY (PWM output off)
 READY -> SPEED_RUNNING -> RAMP_TO_ZERO -> READY (PWM output off)
 fault -> FAULTED -> explicit clear/recover -> READY
 ```

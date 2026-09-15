@@ -126,7 +126,8 @@ typedef enum {
 typedef enum {
     APP_DRIVE_STATE_DISABLED = 0, /**< 기동 전 또는 보정하지 않은 PWM 비활성 상태. */
     APP_DRIVE_STATE_CURRENT_OFFSET_CALIBRATION, /**< PWM 비활성 무전류 offset 수집 중. */
-    APP_DRIVE_STATE_READY, /**< offset 보정 완료, PWM 비활성, speed start 대기. */
+    APP_DRIVE_STATE_READY, /**< offset 보정 완료, PWM 비활성, current/speed start 대기. */
+    APP_DRIVE_STATE_CURRENT_RUNNING, /**< PWM 활성 current control 운전 중. */
     APP_DRIVE_STATE_SPEED_RUNNING, /**< PWM 활성 speed control 운전 중. */
     APP_DRIVE_STATE_RAMP_TO_ZERO, /**< 0 rad/s로 능동 감속하고 저속 종료 조건을 대기 중. */
     APP_DRIVE_STATE_FAULTED /**< fault latch 뒤 PWM 비활성 상태. */
@@ -376,6 +377,19 @@ app_status_t app_set_speed_command(
 );
 
 /**
+ * @brief 마지막으로 publish된 Hall speed feedback snapshot을 읽는다.
+ *
+ * @param[in] self 초기화된 App instance.
+ * @param[out] feedback main-context consumer가 사용할 speed snapshot.
+ * @retval APP_STATUS_OK snapshot 복사 완료.
+ * @note ADC ISR writer와 main-context reader 사이의 double buffer를 사용한다.
+ */
+app_status_t app_get_speed_feedback_snapshot(
+    const app_t *self,
+    app_speed_feedback_t *feedback
+);
+
+/**
  * @brief PWM 출력이 꺼진 상태에서 3상 전류 센서 영점 측정을 시작한다.
  *
  * @param[in,out] self 초기화된 App instance.
@@ -507,6 +521,27 @@ app_status_t app_drive_start_speed(
     app_t *self,
     const app_speed_command_t *command
 );
+
+/**
+ * @brief READY 상태에서 PWM을 활성화하고 current control을 시작한다.
+ *
+ * @param[in,out] self 초기화된 App instance.
+ * @param[in] command 시작 직후 publish할 d/q current command [A].
+ * @note PWM enable 전에는 항상 0 A current target을 준비한다.
+ */
+app_status_t app_drive_start_current(
+    app_t *self,
+    const app_current_command_t *command
+);
+
+/**
+ * @brief Current control을 정지하고 PWM output을 비활성화한다.
+ *
+ * @param[in,out] self 초기화된 App instance.
+ * @note 이 정상 stop은 PWM을 즉시 비활성화한다. 0 A command를 유지하는 active braking 또는
+ *       CiA402 Quick Stop 정책은 상위 command source가 별도로 요청한다.
+ */
+app_status_t app_drive_stop_current(app_t *self);
 
 /**
  * @brief Speed command를 0 rad/s로 바꾸고 능동 감속을 요청한다.

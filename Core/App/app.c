@@ -247,6 +247,19 @@ static app_speed_feedback_t app_get_speed_feedback(const app_t *self)
     return self->speed_feedback_buffer[active_index];
 }
 
+app_status_t app_get_speed_feedback_snapshot(
+    const app_t *self,
+    app_speed_feedback_t *feedback
+)
+{
+    if ((self == NULL) || (feedback == NULL) || !self->is_initialized) {
+        return APP_STATUS_INVALID_ARGUMENT;
+    }
+
+    *feedback = app_get_speed_feedback(self);
+    return APP_STATUS_OK;
+}
+
 static void app_publish_speed_feedback(
     app_t *self,
     const hall_estimator_output_t *rotor_feedback,
@@ -1288,6 +1301,106 @@ app_status_t app_drive_start_speed(
 
     __DMB();
     self->drive_state = APP_DRIVE_STATE_SPEED_RUNNING;
+    self->last_status = APP_STATUS_OK;
+    return APP_STATUS_OK;
+}
+
+app_status_t app_drive_start_current(
+    app_t *self,
+    const app_current_command_t *command
+)
+{
+    const app_current_command_t zero_current_command = {
+        .i_dq_ref = {0.0f, 0.0f},
+    };
+    app_status_t status;
+
+    if ((self == NULL) || (command == NULL) ||
+        (!app_float_is_finite(command->i_dq_ref.d)) ||
+        (!app_float_is_finite(command->i_dq_ref.q))) {
+        return APP_STATUS_INVALID_ARGUMENT;
+    }
+    if ((!self->is_initialized) ||
+        (!self->config.pwm_driver->is_initialized) ||
+        (self->drive_state != APP_DRIVE_STATE_READY)) {
+        return APP_STATUS_INVALID_STATE;
+    }
+    if (fault_manager_is_faulted(self->config.fault_manager)) {
+        self->last_status = APP_STATUS_FAULT_ACTIVE;
+        return APP_STATUS_FAULT_ACTIVE;
+    }
+
+    status = app_set_current_command(self, &zero_current_command);
+    if (status != APP_STATUS_OK) {
+        return status;
+    }
+    status = app_start_current_control(self);
+    if (status != APP_STATUS_OK) {
+        return status;
+    }
+
+    self->last_pwm_status = pwm_driver_enable(self->config.pwm_driver);
+    if (self->last_pwm_status != PWM_DRIVER_STATUS_OK) {
+        return app_latch_and_stop(
+            self,
+            APP_STATUS_PWM_ERROR,
+            FAULT_MANAGER_FAULT_PWM
+        );
+    }
+    if (fault_manager_is_faulted(self->config.fault_manager)) {
+        return app_disable_for_fault(self, APP_STATUS_FAULT_ACTIVE);
+    }
+
+    status = app_set_current_command(self, command);
+    if (status != APP_STATUS_OK) {
+        return app_latch_and_stop(
+            self,
+            status,
+            FAULT_MANAGER_FAULT_MOTOR_CONTROL
+        );
+    }
+
+    __DMB();
+    self->drive_state = APP_DRIVE_STATE_CURRENT_RUNNING;
+    self->last_status = APP_STATUS_OK;
+    return APP_STATUS_OK;
+}
+
+app_status_t app_drive_stop_current(app_t *self)
+{
+    const app_current_command_t zero_current_command = {
+        .i_dq_ref = {0.0f, 0.0f},
+    };
+    app_status_t status;
+
+    if (self == NULL) {
+        return APP_STATUS_INVALID_ARGUMENT;
+    }
+    if ((!self->is_initialized) ||
+        (self->drive_state != APP_DRIVE_STATE_CURRENT_RUNNING)) {
+        return APP_STATUS_INVALID_STATE;
+    }
+
+    status = app_set_current_command(self, &zero_current_command);
+    if (status != APP_STATUS_OK) {
+        return status;
+    }
+    status = app_stop_current_control(self);
+    if (status != APP_STATUS_OK) {
+        return status;
+    }
+
+    self->last_pwm_status = pwm_driver_disable(self->config.pwm_driver);
+    if (self->last_pwm_status != PWM_DRIVER_STATUS_OK) {
+        return app_latch_and_stop(
+            self,
+            APP_STATUS_PWM_ERROR,
+            FAULT_MANAGER_FAULT_PWM
+        );
+    }
+
+    __DMB();
+    self->drive_state = APP_DRIVE_STATE_READY;
     self->last_status = APP_STATUS_OK;
     return APP_STATUS_OK;
 }

@@ -74,13 +74,14 @@ CORDIC, SVPWM, PWM 갱신을 연결한다. Fault threshold, active/latch 상태�
 snapshot은 별도 `fault_manager.c/.h`가 소유하고 App은 측정/오류 전달, control reset,
 PWM disable과 명령 기반 clear 순서를 조정한다. FOC runtime state와 최종 `i_dq_ref`는
 `motor_control`이 소유하며 App은 중복 저장하지 않는다. 현재 `app_drive_state_t`는 offset
-calibration, READY, speed start, ramp-to-zero와 PWM disable 순서만 소유한다. 통신 command,
+calibration, READY, current/speed start, speed ramp-to-zero와 PWM disable 순서만 소유한다. 통신 command,
 제품별 enable/interlock 및 position lifecycle은 이 구조체에 미리 모으지 않고 책임이 생길 때
 별도 App module로 추가한다.
 
 `drive_command.c/.h`는 CAN, UART 또는 debugger test source가 해석한 protocol-independent command를
-App lifecycle API로 전달한다. 이 module은 통신 peripheral과 HAL에 의존하지 않으며, command source가 PWM
-enable/disable 또는 `app_t` 내부 상태를 직접 조작하지 않게 한다.
+App lifecycle API로 전달한다. 이 module은 current와 speed command, 정상 stop을 App lifecycle에 맞춰
+dispatch한다. 통신 peripheral과 HAL에 의존하지 않으며, command source가 PWM enable/disable 또는 `app_t`
+내부 상태를 직접 조작하지 않게 한다.
 
 ### Control
 

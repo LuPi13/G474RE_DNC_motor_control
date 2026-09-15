@@ -33,6 +33,32 @@ app_status_t drive_command_router_execute(
     }
 
     switch (command->type) {
+    case DRIVE_COMMAND_START_CURRENT:
+        if ((!isfinite(command->i_dq_ref.d)) ||
+            (!isfinite(command->i_dq_ref.q))) {
+            status = APP_STATUS_INVALID_ARGUMENT;
+        } else {
+            const app_current_command_t current_command = {
+                .i_dq_ref = command->i_dq_ref,
+            };
+            status = app_drive_start_current(app, &current_command);
+        }
+        break;
+
+    case DRIVE_COMMAND_SET_CURRENT:
+        if ((!isfinite(command->i_dq_ref.d)) ||
+            (!isfinite(command->i_dq_ref.q))) {
+            status = APP_STATUS_INVALID_ARGUMENT;
+        } else if (app->drive_state != APP_DRIVE_STATE_CURRENT_RUNNING) {
+            status = APP_STATUS_INVALID_STATE;
+        } else {
+            const app_current_command_t current_command = {
+                .i_dq_ref = command->i_dq_ref,
+            };
+            status = app_set_current_command(app, &current_command);
+        }
+        break;
+
     case DRIVE_COMMAND_START_SPEED:
         if (!isfinite(command->omega_m_ref_rad_s)) {
             status = APP_STATUS_INVALID_ARGUMENT;
@@ -58,7 +84,15 @@ app_status_t drive_command_router_execute(
         break;
 
     case DRIVE_COMMAND_STOP:
-        status = app_drive_request_speed_stop(app);
+        if (app->drive_state == APP_DRIVE_STATE_CURRENT_RUNNING) {
+            status = app_drive_stop_current(app);
+        } else {
+            status = app_drive_request_speed_stop(app);
+        }
+        break;
+
+    case DRIVE_COMMAND_REQUEST_FAULT_CLEAR:
+        status = app_request_fault_clear(app);
         break;
 
     case DRIVE_COMMAND_RECOVER_FAULT:

@@ -17,9 +17,12 @@
  * @brief 외부 command source가 요청할 수 있는 정상 drive 동작.
  */
 typedef enum {
-    DRIVE_COMMAND_START_SPEED = 0, /**< READY에서 speed control과 PWM output을 시작한다. */
+    DRIVE_COMMAND_START_CURRENT = 0, /**< READY에서 current control과 PWM output을 시작한다. */
+    DRIVE_COMMAND_SET_CURRENT, /**< 실행 중인 d/q current reference를 갱신한다. */
+    DRIVE_COMMAND_START_SPEED, /**< READY에서 speed control과 PWM output을 시작한다. */
     DRIVE_COMMAND_SET_SPEED, /**< 실행 중인 speed reference를 갱신한다. */
-    DRIVE_COMMAND_STOP, /**< speed reference를 0 rad/s로 ramp하고 PWM off를 요청한다. */
+    DRIVE_COMMAND_STOP, /**< 현재 운전 mode의 정상 정지를 요청한다. */
+    DRIVE_COMMAND_REQUEST_FAULT_CLEAR, /**< 다음 유효 fast-loop sample에서 fault latch clear를 요청한다. */
     DRIVE_COMMAND_RECOVER_FAULT /**< fault clear 뒤 FAULTED에서 READY로 복귀를 요청한다. */
 } drive_command_type_t;
 
@@ -28,6 +31,7 @@ typedef enum {
  */
 typedef struct {
     drive_command_type_t type; /**< 요청할 lifecycle 동작. */
+    dq_t i_dq_ref; /**< START_CURRENT 또는 SET_CURRENT의 d/q current 지령 [A]. */
     float omega_m_ref_rad_s; /**< START_SPEED 또는 SET_SPEED의 기계각속도 지령 [rad/s]. */
 } drive_command_t;
 
