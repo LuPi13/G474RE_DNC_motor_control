@@ -89,6 +89,12 @@ bool app_adc_injected_irq_try_handle_fast(ADC_HandleTypeDef *hadc);
  */
 void app_adc_irq_epilogue(void);
 
+/**
+ * @brief 1 kHz SysTick에서 speed PI scheduler를 실행한다.
+ * @note SysTick_Handler()의 USER CODE 영역에서만 호출한다.
+ */
+void app_speed_scheduler_tick(void);
+
 /* USER CODE END EFP */
 
 /* Private defines -----------------------------------------------------------*/

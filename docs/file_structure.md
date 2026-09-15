@@ -296,6 +296,11 @@ motor_control       : 전체 drive mode/routing
 
 좌표계/3상 값을 표현하는 공용 value type은 `Common/vector_types.h`에서 정의한다.
 
+Platform `hall_driver`가 publish하고 Control `hall_decoder`가 소비하는 raw Hall state/capture
+timing value type은 `Common/hall_signal.h`의 `hall_signal_t`로 정의한다. motor profile,
+decoder runtime state, peripheral handle을 포함하지 않는 계층 독립 snapshot이므로 Common에 두며,
+두 계층이 같은 signal을 다른 구조체로 재포장하거나 복사하지 않는다.
+
 ```c
 typedef struct {
     float a;
@@ -466,7 +471,10 @@ Hall edge 사이의 continuous electrical angle은 Control의 `hall_estimator`�
 Estimator는 hardware-independent observation을 받아 직전 signed speed를 적분하고,
 새 Hall edge에서 동기화하며, Hall state 변화 없이 추정각만 다음 sector로 넘어가지 않도록
 이동량을 profile에서 얻은 현재 sector span으로 제한한다. HAL이나 `hall_driver.h`에는 직접
-의존하지 않는다.
+의존하지 않는다. Current-mode fast API는 `hall_decoder`가 소유한 read-only decoded output을
+직접 읽어 App의 observation/output 중간 복사를 만들지 않는다. 이는 Control 내부의 단방향
+`hall_estimator -> hall_decoder` type dependency이며, decoder는 estimator를 include하지 않아
+순환 dependency가 생기지 않는다. 범용 입력과 수치 test는 기존 observation 기반 API를 유지한다.
 
 또한 TIM2 writer보다 ADC reader의 interrupt priority가 높은 현재 구성에서 일관된 feedback을
 전달하기 위해 `hall_driver` instance가 double buffer와 active index를 소유한다. 이것은

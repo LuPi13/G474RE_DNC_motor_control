@@ -47,6 +47,11 @@ static bool motor_control_is_finite_dq(const dq_t *value)
     return (value != NULL) && isfinite(value->d) && isfinite(value->q);
 }
 
+static bool motor_control_is_finite(float value)
+{
+    return isfinite(value);
+}
+
 static float motor_control_minimum(float first, float second)
 {
     return (first < second) ? first : second;
@@ -71,7 +76,11 @@ static bool motor_control_is_valid_config(
             &config->current_reference_fall_rate_per_s
         ) ||
         !isfinite(config->current_reference_magnitude_limit) ||
-        !isfinite(config->sampling_period_s)) {
+        !isfinite(config->sampling_period_s) ||
+        !motor_control_is_finite(config->speed_reference_min_rad_s) ||
+        !motor_control_is_finite(config->speed_reference_max_rad_s) ||
+        !motor_control_is_finite(config->speed_reference_rise_rate_rad_s2) ||
+        !motor_control_is_finite(config->speed_reference_fall_rate_rad_s2)) {
         return false;
     }
 
@@ -95,6 +104,18 @@ static bool motor_control_is_valid_config(
             config->foc.q_axis_pi.sampling_period_s) ||
         (config->sampling_period_s !=
             config->foc.current_filter.sampling_period_s)) {
+        return false;
+    }
+
+    if ((config->pole_pairs == 0U) ||
+        (config->speed_reference_min_rad_s > 0.0f) ||
+        (config->speed_reference_max_rad_s < 0.0f) ||
+        (config->speed_reference_min_rad_s >
+            config->speed_reference_max_rad_s) ||
+        (config->speed_reference_rise_rate_rad_s2 < 0.0f) ||
+        (config->speed_reference_fall_rate_rad_s2 < 0.0f) ||
+        (config->speed_controller.pi.sampling_period_s !=
+            config->speed_controller.feedback_filter.sampling_period_s)) {
         return false;
     }
 
@@ -289,6 +310,23 @@ motor_control_status_t motor_control_init(
         return MOTOR_CONTROL_STATUS_INVALID_CONFIG;
     }
 
+    rate_limiter_config = (rate_limiter_config_t){
+        .rise_rate_per_s = config->speed_reference_rise_rate_rad_s2,
+        .fall_rate_per_s = config->speed_reference_fall_rate_rad_s2,
+        .sampling_period_s = config->speed_controller.pi.sampling_period_s,
+    };
+    if (rate_limiter_init(
+            &initialized.speed_reference_rate_limiter,
+            &rate_limiter_config,
+            0.0f) != RATE_LIMITER_STATUS_OK) {
+        return MOTOR_CONTROL_STATUS_SPEED_CONTROLLER_ERROR;
+    }
+    if (speed_controller_init(
+            &initialized.speed_controller,
+            &config->speed_controller) != SPEED_CONTROLLER_STATUS_OK) {
+        return MOTOR_CONTROL_STATUS_SPEED_CONTROLLER_ERROR;
+    }
+
     initialized.is_initialized = true;
     *self = initialized;
     return MOTOR_CONTROL_STATUS_OK;
@@ -376,6 +414,10 @@ motor_control_status_t motor_control_reset(motor_control_t *self)
     if (!self->foc.is_initialized) {
         return MOTOR_CONTROL_STATUS_FOC_ERROR;
     }
+    if ((!self->speed_reference_rate_limiter.is_initialized) ||
+        (!self->speed_controller.is_initialized)) {
+        return MOTOR_CONTROL_STATUS_SPEED_CONTROLLER_ERROR;
+    }
 
     if (foc_reset(&self->foc) != FOC_STATUS_OK) {
         return MOTOR_CONTROL_STATUS_FOC_ERROR;
@@ -383,10 +425,78 @@ motor_control_status_t motor_control_reset(motor_control_t *self)
 
     self->i_d_rate_limiter.output = 0.0f;
     self->i_q_rate_limiter.output = 0.0f;
+    self->speed_reference_rate_limiter.output = 0.0f;
+    if (speed_controller_reset(&self->speed_controller) !=
+        SPEED_CONTROLLER_STATUS_OK) {
+        return MOTOR_CONTROL_STATUS_SPEED_CONTROLLER_ERROR;
+    }
     self->i_dq_ref.d = 0.0f;
     self->i_dq_ref.q = 0.0f;
     self->is_current_reference_rate_limited = false;
     self->is_current_reference_saturated = false;
+    return MOTOR_CONTROL_STATUS_OK;
+}
+
+motor_control_status_t motor_control_update_speed(
+    motor_control_t *self,
+    const motor_control_speed_input_t *input,
+    motor_control_speed_output_t *output
+)
+{
+    motor_control_speed_output_t calculated_output;
+    speed_controller_input_t speed_input;
+    dq_t requested_i_dq_ref;
+
+    if ((self == NULL) || (input == NULL) || (output == NULL) ||
+        !motor_control_is_finite(input->omega_m_requested_rad_s) ||
+        !motor_control_is_finite(input->omega_e_feedback_rad_s)) {
+        return MOTOR_CONTROL_STATUS_INVALID_ARGUMENT;
+    }
+    if (!self->is_initialized) {
+        return MOTOR_CONTROL_STATUS_INVALID_STATE;
+    }
+
+    speed_input.omega_m_ref_rad_s = rate_limiter_update_fast(
+        &self->speed_reference_rate_limiter,
+        limiter_clamp(
+            input->omega_m_requested_rad_s,
+            self->config.speed_reference_min_rad_s,
+            self->config.speed_reference_max_rad_s
+        )
+    );
+    speed_input.omega_m_feedback_rad_s = input->omega_e_feedback_rad_s /
+        (float)self->config.pole_pairs;
+    if (speed_controller_update(
+            &self->speed_controller,
+            &speed_input,
+            &calculated_output.speed_controller) !=
+        SPEED_CONTROLLER_STATUS_OK) {
+        return MOTOR_CONTROL_STATUS_SPEED_CONTROLLER_ERROR;
+    }
+
+    requested_i_dq_ref = (dq_t){
+        .d = 0.0f,
+        .q = calculated_output.speed_controller.i_q_ref,
+    };
+    if (motor_control_prepare_current_reference_target(
+            self,
+            &requested_i_dq_ref,
+            &calculated_output.current_reference_target) !=
+        MOTOR_CONTROL_STATUS_OK) {
+        return MOTOR_CONTROL_STATUS_SPEED_CONTROLLER_ERROR;
+    }
+    if (speed_controller_apply_tracking(
+            &self->speed_controller,
+            calculated_output.current_reference_target.i_dq_ref.q) !=
+        SPEED_CONTROLLER_STATUS_OK) {
+        return MOTOR_CONTROL_STATUS_SPEED_CONTROLLER_ERROR;
+    }
+
+    calculated_output.omega_m_ref_limited_rad_s =
+        speed_input.omega_m_ref_rad_s;
+    calculated_output.omega_m_feedback_rad_s =
+        speed_input.omega_m_feedback_rad_s;
+    *output = calculated_output;
     return MOTOR_CONTROL_STATUS_OK;
 }
 
@@ -756,6 +866,32 @@ motor_control_status_t motor_control_update_fast(
         NULL,
         NULL
     );
+}
+
+motor_control_status_t motor_control_update_fast_voltage(
+    motor_control_t *self,
+    const motor_control_fast_input_t *input,
+    alpha_beta_t *v_alpha_beta_ref
+)
+{
+    dq_t i_dq_ref;
+    const foc_input_t foc_input_base = {
+        .i_abc = input->i_abc,
+        .i_dq_ref = {0.0f, 0.0f},
+        .sin_theta = input->sin_theta,
+        .cos_theta = input->cos_theta,
+        .omega_e_rad_s = input->omega_e_rad_s,
+        .v_dc = input->v_dc,
+    };
+    foc_input_t foc_input = foc_input_base;
+
+    motor_control_update_current_reference_fast(
+        self, &input->current_reference_target, &i_dq_ref);
+    foc_input.i_dq_ref = i_dq_ref;
+
+    return (foc_update_fast_voltage(&self->foc, &foc_input,
+                                    v_alpha_beta_ref) == FOC_STATUS_OK) ?
+        MOTOR_CONTROL_STATUS_OK : MOTOR_CONTROL_STATUS_FOC_ERROR;
 }
 
 motor_control_status_t motor_control_update_fast_profiled(

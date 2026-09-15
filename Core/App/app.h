@@ -111,7 +111,8 @@ typedef enum {
 typedef enum {
     APP_MODE_DISABLED = 0, /**< Feedback만 갱신하고 PWM duty를 계산하지 않음. */
     APP_MODE_OPEN_LOOP,    /**< 지정한 회전 alpha-beta 전압 vector를 적용함. */
-    APP_MODE_CURRENT       /**< Rotor angle 기반 FOC d/q current mode. */
+    APP_MODE_CURRENT,      /**< Rotor angle 기반 FOC d/q current mode. */
+    APP_MODE_SPEED         /**< 1 kHz speed PI target을 소비하는 FOC mode. */
 } app_mode_t;
 
 /**
@@ -164,6 +165,7 @@ typedef struct {
     motor_control_profile_t *motor_control_profile; /**< NULL 가능 control 내부 계측 결과. */
     app_cycle_counter_reader_t cycle_counter_reader; /**< Profile 사용 시 필수 cycle reader. */
     float sampling_period_s;        /**< 고정 fast-loop 호출 주기 [s], 양의 유한값. */
+    float speed_loop_period_s;       /**< SysTick speed scheduler 고정 주기 [s]. */
     float initial_voltage_angle_rad; /**< 초기 전압 vector phase [0, 2*pi) [rad]. */
 } app_config_t;
 
@@ -181,6 +183,27 @@ typedef struct {
 typedef struct {
     dq_t i_dq_ref; /**< Motor control에 요청할 d/q 전류 지령 [A]. */
 } app_current_command_t;
+
+/**
+ * @brief Speed mode의 제한 전 기계각속도 command.
+ *
+ * 범위와 변화율 제한은 SysTick speed scheduler가 적용한다.
+ */
+typedef struct {
+    float omega_m_ref_rad_s; /**< 기계각속도 지령 [rad/s]. */
+} app_speed_command_t;
+
+/**
+ * @brief ADC ISR writer와 SysTick reader 사이의 Hall speed snapshot.
+ *
+ * inactive buffer를 모두 작성한 뒤 active index를 publish한다.
+ */
+typedef struct {
+    float omega_e_rad_s; /**< Hall estimator 전기각속도 [rad/s]. */
+    uint32_t capture_count; /**< 이 speed를 만든 Hall capture sequence. */
+    bool has_valid_speed; /**< omega_e_rad_s가 유효하면 true. */
+    bool is_timed_out; /**< Hall driver timeout으로 0 speed가 publish되었으면 true. */
+} app_speed_feedback_t;
 
 /**
  * @brief 한 번의 App fast loop에서 정상적으로 계산하고 적용한 결과.
@@ -216,6 +239,12 @@ typedef struct {
     volatile uint32_t active_command_index;    /**< Fast loop가 읽을 완성 command index. */
     motor_control_current_reference_target_t current_command_buffer[2]; /**< 사전 제한한 current target double buffer. */
     volatile uint32_t active_current_command_index; /**< Current command active index. */
+    app_speed_command_t speed_command_buffer[2]; /**< SysTick writer가 읽는 speed command double buffer. */
+    volatile uint32_t active_speed_command_index; /**< Speed command active index. */
+    motor_control_current_reference_target_t speed_current_target_buffer[2]; /**< SysTick writer가 publish한 current target. */
+    volatile uint32_t active_speed_current_target_index; /**< Speed current target active index. */
+    app_speed_feedback_t speed_feedback_buffer[2]; /**< ADC ISR writer가 publish한 speed feedback. */
+    volatile uint32_t active_speed_feedback_index; /**< Speed feedback active index. */
 
     float voltage_angle_rad;       /**< 다음 duty 계산에 사용할 전압 vector phase [rad]. */
     alpha_beta_t last_v_alpha_beta; /**< 마지막으로 적용한 alpha-beta 전압 [V]. */
@@ -234,6 +263,7 @@ typedef struct {
     fault_manager_status_t last_fault_manager_status; /**< 마지막 fault manager 하위 호출 결과. */
     fault_manager_status_t last_fault_clear_status; /**< 마지막 비동기 clear 요청 처리 결과. */
     app_status_t last_status;                   /**< 마지막 App API 실행 결과. */
+    motor_control_speed_output_t last_speed_output; /**< 마지막 1 kHz speed PI 결과. */
 
     uint32_t fast_loop_count;   /**< Raw ADC와 필요한 sensor 처리를 완료한 fast-loop 횟수. */
     uint32_t duty_update_count; /**< PWM duty 기록까지 성공한 횟수. */
@@ -304,6 +334,21 @@ app_status_t app_set_open_loop_command(
 app_status_t app_set_current_command(
     app_t *self,
     const app_current_command_t *command
+);
+
+/**
+ * @brief 다음 SysTick speed scheduler부터 사용할 기계각속도 command를 publish한다.
+ *
+ * @param[in,out] self 초기화된 App instance.
+ * @param[in] command 기계각속도 command [rad/s].
+ * @return 처리 결과 status.
+ *
+ * @note main loop 또는 통신 task가 writer이고 SysTick이 reader이다. 제한은 이 함수가
+ *       아니라 scheduler의 motor-control 단계에서 적용한다.
+ */
+app_status_t app_set_speed_command(
+    app_t *self,
+    const app_speed_command_t *command
 );
 
 /**
@@ -394,11 +439,30 @@ app_status_t app_start_current_control(app_t *self);
  *
  * @retval APP_STATUS_OK Current mode 정지 완료.
  * @retval APP_STATUS_INVALID_ARGUMENT self가 NULL임.
- * @retval APP_STATUS_INVALID_STATE App/PWM 상태가 유효하지 않거나 open-loop mode가 활성 상태임.
+ * @retval APP_STATUS_INVALID_STATE App/PWM 상태가 유효하지 않거나 open-loop/speed mode가 활성 상태임.
  * @retval APP_STATUS_MOTOR_CONTROL_ERROR Motor control reset 실패.
  * @retval APP_STATUS_PWM_ERROR Neutral duty 기록 실패.
  */
 app_status_t app_stop_current_control(app_t *self);
+
+/**
+ * @brief 0 rad/s command에서 시작하는 FOC speed mode를 준비한다.
+ *
+ * @param[in,out] self 초기화된 App instance.
+ * @return 처리 결과 status.
+ *
+ * @pre PWM, current offset calibration, Hall electrical angle이 준비되어야 한다.
+ * @pre speed command는 0 rad/s여야 한다.
+ * @note 먼저 current controller를 reset하고 0 A target을 publish한 뒤 mode를 전환한다.
+ */
+app_status_t app_start_speed_control(app_t *self);
+
+/**
+ * @brief 1 kHz SysTick에서 speed PI를 실행하고 current target을 publish한다.
+ *
+ * @note ADC ISR보다 낮은 priority에서만 호출한다. FOC나 PWM register는 직접 갱신하지 않는다.
+ */
+app_status_t app_speed_control_tick(app_t *self);
 
 /**
  * @brief 외부 명령 경로에서 fault latch 해제를 일회성으로 요청한다.
@@ -496,6 +560,18 @@ app_status_t app_motor_fast_loop_fast(
     app_t *self,
     app_fast_loop_output_t *output
 );
+
+/**
+ * @brief FOC current/speed mode에서 diagnostic output 없이 PWM duty를 갱신하는 ISR 전용 경로.
+ *
+ * @param[in,out] self 초기화된 App instance.
+ * @return Fast-loop 처리 결과 status.
+ *
+ * @pre Current 또는 speed mode와 PWM output이 시작되어야 한다.
+ * @note ADC completion ISR에서만 호출한다. 일반 app_motor_fast_loop_fast()보다 결과 구조체
+ *       복사와 범용 경로 검증을 줄이지만, sensing, fault, rotor, FOC, SVPWM 순서는 같다.
+ */
+app_status_t app_motor_current_fast_loop_drive_fast(app_t *self);
 
 /** @} */
 

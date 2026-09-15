@@ -893,17 +893,21 @@ Motor rotor inertia는 `8.6e-6 kg*m^2`, 초기 최대 load inertia는 그 5배�
 `Ki = 1.007 A/rad`, `Kaw = 22.2 1/s`다. 실제 발전기 부하와 관성 변화에 따라 config에서
 gain과 reference rate를 교체할 수 있어야 한다.
 
-Speed PI는 40 kHz ADC ISR에 직접 추가하지 않고 별도 1 kHz scheduler context에서 실행하여
-double-buffered q축 current target을 publish한다. Fast current loop는 마지막으로 완성된 target만
-소비한다. 정지 명령은 speed reference를 0까지 ramp하며 회생 제동한 뒤 q축 current를 0으로
-만들고 PWM을 비활성화한다. 정지 후 shaft position hold는 제공하지 않는다.
+Speed PI는 40 kHz ADC ISR에 직접 추가하지 않고 SysTick 1 kHz scheduler context에서 실행하여
+double-buffered q축 current target을 publish한다. ADC ISR은 Hall speed feedback snapshot의
+writer이고 SysTick은 reader이며, SysTick은 speed target의 writer이고 ADC ISR은 reader다.
+각 snapshot은 inactive buffer 완성 뒤 memory barrier와 active index 하나로 publish한다.
+Fast current loop는 마지막으로 완성된 target만 소비한다. 현재 bring-up command의 정지는
+speed reference를 0까지 ramp하여 회생 제동하는 방식이며, PWM disable 시점과 restart policy는
+통신/state-machine 단계에서 별도로 정의한다. 정지 후 shaft position hold는 제공하지 않는다.
 
 `speed_controller` 자체는 mechanical-speed feedback의 30 Hz low-pass filter와 PI, q축 전류
 scalar 제한 및 downstream current 제한용 external tracking만 소유한다. 300 rpm/s speed-reference
-rate limiter, electrical-to-mechanical speed 변환과 1 kHz 실행/publish는 `motor_control`과 App
-integration 단계에서 연결한다. 따라서 standalone controller의 수치 검증은 먼저 진행하되,
-40 kHz current fast path에는 speed PI를 직접 삽입하지 않는다. 초기 gain, 1 ms 주기, 30 Hz
-feedback cutoff와 ±0.5 A bring-up 출력 범위는 `motor_config_speed_controller`에 둔다.
+rate limiter, electrical-to-mechanical speed 변환과 1 kHz 실행/publish는 `motor_control`과 App이
+연결한다. ADC ISR은 Hall edge/timeout 변화 때만 speed feedback snapshot을 publish하고, SysTick은
+이를 읽어 speed PI 결과를 current target으로 publish한다. 따라서 40 kHz current fast path에는
+speed PI를 직접 삽입하지 않는다. 초기 gain, 1 ms 주기, 30 Hz feedback cutoff와 ±0.5 A bring-up
+출력 범위는 `motor_config_speed_controller`에 둔다.
 
 2026-09-15 board shadow 시험에서는 PWM과 App drive mode를 비활성 상태로 유지하고 실제 Hall
 속도를 1 kHz main-loop 시험 경로에서 controller에 입력했다. 손으로 축을 정·역회전했을 때
@@ -911,6 +915,35 @@ feedback cutoff와 ±0.5 A bring-up 출력 범위는 `motor_config_speed_control
 PI 포화, ±3000 rpm command clamp, reset 및 Hall timeout 처리도 정상 동작했다. 시험용
 controller/output은 current-reference 또는 PWM에 전달하지 않았다. 해당 임시 코드는 검증 후
 `main.c`에서 제거했다.
+
+### 통합 speed-mode board 검증 결과
+
+2026-09-15에 SysTick 1 kHz speed PI와 40 kHz FOC를 연결한 상태로 board 시험을 수행했다.
+`500 rpm` 기계각속도 지령에서 정방향과 역방향 모두 안정적으로 회전했고, 축을 손으로 가볍게
+잡아 마찰을 증가시키면 `i_q_ref`가 증가하여 속도를 유지하려는 동작을 확인했다. 이 시험에서
+software fault와 deadline miss는 발생하지 않았다.
+
+같은 speed-mode binary의 `500 rpm` 조건에서 관찰한 최대 cycle은 다음과 같다.
+
+| 항목 | 관찰값 |
+|---|---:|
+| ADC IRQ부터 fast-loop 종료까지 total max | 3115 cycles |
+| fast-loop body max | 2818 cycles |
+| deadline miss count | 0 |
+| latched fault mask | 0 |
+
+Total maximum은 3200-cycle bring-up 목표 이내이며, body는 2800-cycle 설계 목표보다 18 cycles
+높지만 2850-cycle 조건부 상한 이내다. 이 결과는 Hall transition을 포함한 500 rpm 단기 board
+시험 결과이며, 장시간 run, DC-link 전 범위와 최대 3000 rpm 시험을 대신하지 않는다.
+
+`0 rpm` 및 `100 rpm` 지령에서는 Hall edge-to-edge speed의 이산성 때문에 q축 current가 흔들리는
+현상을 관찰했다. 현재 요구사항은 0 rpm shaft hold를 포함하지 않으며, 이 현상만으로 FOC/current
+loop 오류로 판단하지 않는다. 제품 최소 speed는 아직 확정하지 않았고, 현 board에서의 다음
+speed-loop 검증 시작점은 `500 rpm`으로 둔다. 300 rpm 이하 운전이 요구되면 Hall PLL 또는 별도
+speed estimator의 필요성을 먼저 평가한다.
+
+시험용 `main.c` Live Expression command는 drive state machine 도입 전 bring-up 전용이다. 정상
+stop 후 PWM disable과 restart policy는 이 임시 code가 아니라 상위 state machine에서 소유한다.
 
 3000 rpm에서 Hall edge rate는 1500 Hz이고 rotor electrical speed는 약 `1571 rad/s`다.
 24 V DC-link에서는 현재 0.9 SVPWM voltage utilization 기준으로 3000 rpm을 우선 검증한다.
@@ -937,7 +970,10 @@ FOC
 
 ### 완료 조건
 
-속도 reference를 안정적으로 추종한다.
+초기 bring-up 범위에서 정·역방향 speed reference를 안정적으로 추종하고, 제한 범위 안에서
+부하 증가 시 q축 current가 같은 부호로 증가한다. 같은 binary의 total cycle과 deadline miss가
+real-time budget을 통과해야 한다. 저속 최소 운전 범위, 장시간 run, DC-link 전 범위와 최대 speed
+검증은 별도 완료 조건으로 남긴다.
 
 ---
 

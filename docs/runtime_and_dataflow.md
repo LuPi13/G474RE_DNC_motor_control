@@ -76,6 +76,24 @@ rate limit도 보존된다. 이 제한이 개입하면 limiter state도 실제 �
 동기화한다. 외부 target은 command source가 소유하고,
 `motor_control.i_dq_ref`가 FOC에 전달되는 최종 reference의 source of truth다.
 
+Speed mode는 1 kHz SysTick scheduler에서만 다음 순서로 처리한다.
+
+```text
+published omega_m target
+  -> speed-reference range/rate limit
+  -> hall omega_e snapshot / pole-pair conversion
+  -> speed PI and external tracking
+  -> double-buffered i_d = 0, i_q target
+  -> 40 kHz current fast loop / FOC
+```
+
+ADC ISR은 Hall speed feedback snapshot의 단일 writer이고 SysTick은 그 reader다. 새 Hall capture,
+speed-validity 변화 또는 timeout일 때만 speed snapshot을 publish하며, 같은 capture의 반복
+fast-loop에서는 재-publish하지 않는다. SysTick은 speed current target의 단일 writer이고 ADC ISR은
+그 reader다. 두 방향 모두 inactive buffer를 완성한 뒤 memory barrier와 active index 하나로
+publish한다. 따라서 speed PI를 ADC ISR에 넣거나 SysTick에서 FOC/PWM register를 직접 갱신하지
+않는다.
+
 ---
 
 ## 2. Single source of truth
@@ -267,8 +285,8 @@ completion ADC injected 변환 완료
  -> ADC IRQ 후처리
  -> app_motor_fast_loop()
  -> hall_driver_get_signal_feedback()
- -> hall_decoder_update()
- -> hall_estimator_update()
+ -> hall_decoder_update_fast()
+ -> hall_estimator_update_from_decoder_fast()
  -> 최신 연속 Hall rotor feedback 소비
 ```
 
@@ -283,6 +301,9 @@ buffer 방식으로 publish한다. ADC reader는 선점 시점에 따라 이전 
 - Fast loop는 `hall_driver_get_signal_feedback()`으로 raw signal snapshot을 읽고, 전체
   hardware diagnostic이 필요한 경로는 `hall_driver_get_feedback()`을 사용한다. 내부
   buffer/index는 직접 읽거나 수정하지 않는다.
+- `hall_driver_signal_feedback_t`와 `hall_decoder_observation_t`는 Common의 같은
+  `hall_signal_t` alias다. App은 signal snapshot을 복사하거나 재포장하지 않고 decoder에
+  전달하며, raw signal의 owner는 계속 Platform driver다.
 - Hall capture/timeout handler를 호출하는 writer는 해당 TIM ISR 하나뿐이다.
 - Hall ISR에서는 FOC/SVPWM을 실행하지 않는다. 제어 stack은 세 ADC 완료로 시작되는 fast loop에서 실행한다.
 - Driver는 raw Hall state의 유효성, sector, direction, electrical angle 또는 speed를 판단하지
@@ -299,6 +320,20 @@ buffer 방식으로 publish한다. ADC reader는 선점 시점에 따라 이전 
   sector 중심각이 바뀌어도 이전 관측을 잘못 재사용하지 않는다.
 - Fast loop는 `has_valid_state`, `has_valid_angle`, `has_valid_speed`, `is_timed_out`을 확인하고
   사용할 수 없는 feedback으로 제어를 진행하지 않는 정책을 App에서 결정한다.
+- `hall_estimator_update_fast()`는 이미 검증된 범용 observation을 사용할 수 있는 fast API이며,
+  pointer/초기화/observation 전체 검사를 생략하지만 transition 순서 오류는 계속 반환한다.
+  범용 입력과 수치 test는 checked `hall_estimator_update()`를 사용한다.
+- App current-mode fast loop는 `hall_decoder_update_fast()`로 Hall driver가 보장한 raw
+  snapshot을 처리한다. 이 경로는 pointer/초기화/raw field 검증과 output 구조체 복사를
+  생략하지만, state sample 부재, profile-invalid state, capture 누락, 비인접 transition은
+  계속 오류로 반환한다. `hall_decoder_get_latest_output_fast()`의 반환 포인터는 같은 ISR에서
+  다음 decoder update 전까지만 읽고, 범용 입력과 수치 test는 checked `hall_decoder_update()`를
+  사용한다.
+- Current-mode에서는 `hall_estimator_update_from_decoder_fast()`가 위 decoder output을 직접
+  읽고 estimator가 소유하는 output을 in-place로 갱신한다. App은 같은 ISR에서
+  `hall_estimator_get_latest_output_fast()`의 읽기 전용 포인터만 소비한다. Generic fast-loop의
+  diagnostic output은 필요할 때만 이 결과를 복사하며, decoder와 estimator 사이에 새 runtime
+  source of truth를 만들지 않는다.
 - Timeout 뒤 첫 Hall edge의 capture 시간은 완전한 edge-to-edge 간격이 아니므로 속도를
   계산하지 않는다. 다음 유효 edge부터 속도 계산을 재개한다.
 - Priority 관계나 실행 문맥을 바꾸면 double buffer의 single-writer/reader 선점 전제를
@@ -531,7 +566,7 @@ interrupt 복귀 비용은 포함되지 않으므로 interrupt jitter와 duty wr
 ```text
 adc_driver_read_raw / convert
  -> unfiltered i_abc / v_dc software fault 검사
- -> raw Hall snapshot / hall_decoder_update / hall_estimator_update
+ -> raw Hall snapshot / hall_decoder_update_fast / hall_estimator_update_from_decoder_fast
  -> open-loop: voltage angle -> CORDIC -> v_alpha_beta
     current: current command -> motor_control -> FOC -> v_alpha_beta_ref
  -> SVPWM

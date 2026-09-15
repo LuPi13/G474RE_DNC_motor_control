@@ -61,6 +61,10 @@
     (CURRENT_SENSOR_OFFSET_EXPECTED_DURATION_MS + \
      CURRENT_SENSOR_OFFSET_TIMEOUT_MARGIN_MS)
 #define ACS725_10AB_GAIN_A_PER_COUNT  ((3.3f / 4096.0f) / 0.132f)
+#define CURRENT_CONTROL_TIMING_TEST_MAX_ABS_CURRENT_A (0.5f)
+#define SPEED_CONTROL_TEST_MAX_ABS_RPM               (3000.0f)
+#define SPEED_CONTROL_TEST_RPM_TO_RAD_S              (0.104719758f)
+#define SPEED_CONTROL_TEST_RAD_S_TO_RPM              (9.54929638f)
 
 /* USER CODE END PD */
 
@@ -132,6 +136,32 @@ static volatile uint32_t adc_fast_loop_deadline_miss_count;
 static volatile uint32_t adc_fast_loop_body_cycles_last;
 static volatile uint32_t adc_fast_loop_body_cycles_max;
 
+/* Current-control fast-loop timing 시험용 Live Expressions 변수. */
+static volatile float current_control_timing_test_requested_i_q_a;
+static volatile float current_control_timing_test_applied_i_q_a;
+static volatile bool current_control_timing_test_reset_requested;
+static volatile bool current_control_timing_test_stop_requested;
+static volatile bool current_control_timing_test_is_running;
+static volatile app_status_t current_control_timing_test_command_status;
+static volatile app_status_t current_control_timing_test_stop_status;
+
+/* Speed-control hardware 시험용 Live Expressions 변수. */
+static volatile float speed_control_test_requested_rpm;
+static volatile float speed_control_test_applied_rpm;
+static volatile bool speed_control_test_start_requested;
+static volatile bool speed_control_test_ramp_to_zero_requested;
+static volatile bool speed_control_test_reset_timing_requested;
+static volatile bool speed_control_test_is_running;
+static volatile app_status_t speed_control_test_command_status;
+static volatile app_status_t speed_control_test_start_status;
+static volatile app_status_t speed_control_test_tick_status;
+static volatile uint32_t speed_control_test_tick_count;
+static volatile float speed_control_test_limited_reference_rpm;
+static volatile float speed_control_test_feedback_rpm;
+static volatile float speed_control_test_filtered_feedback_rpm;
+static volatile float speed_control_test_i_q_ref_a;
+static volatile bool speed_control_test_i_q_saturated;
+
 /* Hall sensor Live Expressions 확인용 */
 static volatile hall_driver_status_t hall_test_init_status;
 static volatile hall_driver_status_t hall_test_start_status;
@@ -193,6 +223,44 @@ static void adc_fast_loop_timing_test_init(void)
 
     adc_fast_loop_budget_cycles =
         SystemCoreClock / APP_FAST_LOOP_FREQUENCY_HZ;
+}
+
+/* 조건별 max 값을 다시 수집할 때 IRQ와 경합하지 않도록 통계를 원자적으로 지운다. */
+static void current_control_timing_test_reset_statistics(void)
+{
+    const uint32_t primask = __get_PRIMASK();
+
+    __disable_irq();
+    adc_fast_loop_cycles_last = 0U;
+    adc_fast_loop_cycles_max = 0U;
+    adc_fast_loop_deadline_miss_count = 0U;
+    adc_fast_loop_body_cycles_last = 0U;
+    adc_fast_loop_body_cycles_max = 0U;
+    if (primask == 0U) {
+        __enable_irq();
+    }
+}
+
+static float current_control_timing_test_limit_current(float i_q_a)
+{
+    if (i_q_a > CURRENT_CONTROL_TIMING_TEST_MAX_ABS_CURRENT_A) {
+        return CURRENT_CONTROL_TIMING_TEST_MAX_ABS_CURRENT_A;
+    }
+    if (i_q_a < -CURRENT_CONTROL_TIMING_TEST_MAX_ABS_CURRENT_A) {
+        return -CURRENT_CONTROL_TIMING_TEST_MAX_ABS_CURRENT_A;
+    }
+    return i_q_a;
+}
+
+static float speed_control_test_limit_rpm(float rpm)
+{
+    if (rpm > SPEED_CONTROL_TEST_MAX_ABS_RPM) {
+        return SPEED_CONTROL_TEST_MAX_ABS_RPM;
+    }
+    if (rpm < -SPEED_CONTROL_TEST_MAX_ABS_RPM) {
+        return -SPEED_CONTROL_TEST_MAX_ABS_RPM;
+    }
+    return rpm;
 }
 
 /* USER CODE END 0 */
@@ -324,6 +392,12 @@ int main(void)
           .permanent_magnet_flux_linkage_wb = 6.74e-3f,
           .is_decoupling_enabled = false,
       },
+      .speed_controller = motor_config_speed_controller,
+      .speed_reference_min_rad_s = -314.159265f,
+      .speed_reference_max_rad_s = 314.159265f,
+      .speed_reference_rise_rate_rad_s2 = 31.415927f,
+      .speed_reference_fall_rate_rad_s2 = 31.415927f,
+      .pole_pairs = 5U,
   };
 
   motor_control_test_init_status = motor_control_init(
@@ -436,6 +510,7 @@ int main(void)
       .motor_control_profile = NULL,
       .cycle_counter_reader = NULL,
       .sampling_period_s = fast_loop_sampling_period_s,
+      .speed_loop_period_s = 0.001f,
       .initial_voltage_angle_rad = 0.0f,
   };
 
@@ -515,8 +590,8 @@ int main(void)
         Error_Handler();
     }
 
-    /* 현재 command는 0 V, 0 rad/s다. 실제 구동값은 App API로 별도 설정한다. */
-    app_test_status = app_start_open_loop(&app);
+    /* 실제 current-control 경로를 0 A에서 시작한 뒤 PWM output을 활성화한다. */
+    app_test_status = app_start_current_control(&app);
     if (app_test_status != APP_STATUS_OK) {
         app_test_last_error = app_test_status;
         Error_Handler();
@@ -528,11 +603,14 @@ int main(void)
     }
 
     /* Enable 직전/도중 ADC ISR에서 fault가 발생한 경우 output을 다시 즉시 차단한다. */
-    if ((app.mode != APP_MODE_OPEN_LOOP) ||
+    if ((app.mode != APP_MODE_CURRENT) ||
         fault_manager_is_faulted(&fault_manager)) {
         (void)pwm_driver_disable(&pwm_driver);
         Error_Handler();
     }
+
+    current_control_timing_test_is_running = true;
+    current_control_timing_test_reset_statistics();
 
   /* USER CODE END 2 */
 
@@ -540,7 +618,122 @@ int main(void)
   /* USER CODE BEGIN WHILE */
   while (1)
   {
-      HAL_Delay(1);
+      if (speed_control_test_start_requested) {
+          const app_current_command_t zero_current_command = {
+              .i_dq_ref = {.d = 0.0f, .q = 0.0f},
+          };
+          const app_speed_command_t zero_speed_command = {
+              .omega_m_ref_rad_s = 0.0f,
+          };
+          const uint32_t primask = __get_PRIMASK();
+
+          __disable_irq();
+          current_control_timing_test_command_status =
+              app_set_current_command(&app, &zero_current_command);
+          current_control_timing_test_stop_status =
+              app_stop_current_control(&app);
+          speed_control_test_command_status =
+              app_set_speed_command(&app, &zero_speed_command);
+          speed_control_test_start_status =
+              (current_control_timing_test_stop_status == APP_STATUS_OK) &&
+              (speed_control_test_command_status == APP_STATUS_OK) ?
+                  app_start_speed_control(&app) : APP_STATUS_INVALID_STATE;
+          if (primask == 0U) {
+              __enable_irq();
+          }
+
+          if (speed_control_test_start_status == APP_STATUS_OK) {
+              current_control_timing_test_is_running = false;
+              speed_control_test_is_running = true;
+              speed_control_test_applied_rpm = 0.0f;
+          }
+          speed_control_test_start_requested = false;
+      } else if (speed_control_test_is_running) {
+          float requested_rpm = speed_control_test_requested_rpm;
+
+          if (speed_control_test_reset_timing_requested) {
+              current_control_timing_test_reset_statistics();
+              speed_control_test_reset_timing_requested = false;
+          }
+
+          if (speed_control_test_ramp_to_zero_requested) {
+              requested_rpm = 0.0f;
+              speed_control_test_requested_rpm = 0.0f;
+              speed_control_test_ramp_to_zero_requested = false;
+          }
+
+          requested_rpm = speed_control_test_limit_rpm(requested_rpm);
+          if (requested_rpm != speed_control_test_applied_rpm) {
+              const app_speed_command_t command = {
+                  .omega_m_ref_rad_s =
+                      requested_rpm * SPEED_CONTROL_TEST_RPM_TO_RAD_S,
+              };
+
+              speed_control_test_command_status =
+                  app_set_speed_command(&app, &command);
+              if (speed_control_test_command_status == APP_STATUS_OK) {
+                  speed_control_test_applied_rpm = requested_rpm;
+              }
+          }
+
+          if ((app.mode != APP_MODE_SPEED) ||
+              fault_manager_is_faulted(&fault_manager)) {
+              speed_control_test_is_running = false;
+          }
+      } else if (current_control_timing_test_stop_requested) {
+          const app_current_command_t zero_command = {
+              .i_dq_ref = {.d = 0.0f, .q = 0.0f},
+          };
+          const uint32_t primask = __get_PRIMASK();
+
+          current_control_timing_test_command_status =
+              app_set_current_command(&app, &zero_command);
+          pwm_test_status = pwm_driver_disable(&pwm_driver);
+
+          __disable_irq();
+          current_control_timing_test_stop_status =
+              app_stop_current_control(&app);
+          if (primask == 0U) {
+              __enable_irq();
+          }
+
+          current_control_timing_test_requested_i_q_a = 0.0f;
+          current_control_timing_test_applied_i_q_a = 0.0f;
+          current_control_timing_test_is_running = false;
+          current_control_timing_test_stop_requested = false;
+      } else if (current_control_timing_test_is_running) {
+          const float limited_i_q_a =
+              current_control_timing_test_limit_current(
+                  current_control_timing_test_requested_i_q_a
+              );
+
+          if (limited_i_q_a != current_control_timing_test_applied_i_q_a) {
+              const app_current_command_t command = {
+                  .i_dq_ref = {.d = 0.0f, .q = limited_i_q_a},
+              };
+
+              current_control_timing_test_command_status =
+                  app_set_current_command(&app, &command);
+              if (current_control_timing_test_command_status ==
+                  APP_STATUS_OK) {
+                  current_control_timing_test_applied_i_q_a =
+                      limited_i_q_a;
+              }
+          }
+
+          if (current_control_timing_test_reset_requested) {
+              current_control_timing_test_reset_statistics();
+              current_control_timing_test_reset_requested = false;
+          }
+
+          if ((app.mode != APP_MODE_CURRENT) ||
+              fault_manager_is_faulted(&fault_manager)) {
+              pwm_test_status = pwm_driver_disable(&pwm_driver);
+              current_control_timing_test_is_running = false;
+          }
+      }
+
+      HAL_Delay(1U);
     /* USER CODE END WHILE */
 
     /* USER CODE BEGIN 3 */
@@ -1287,7 +1480,10 @@ static void app_fast_loop_test_update(void)
 {
     app_fast_loop_output_t output;
 
-    app_test_status = app_motor_fast_loop_fast(&app, &output);
+    app_test_status = ((app.mode == APP_MODE_CURRENT) ||
+        (app.mode == APP_MODE_SPEED)) ?
+        app_motor_current_fast_loop_drive_fast(&app) :
+        app_motor_fast_loop_fast(&app, &output);
     if (app_test_status == APP_STATUS_ADC_NOT_READY) {
         /* 시작 직후 전압이 아직 변환되지 않은 경우 등을 관찰한다. */
         ++adc_test_not_ready_count;
@@ -1299,6 +1495,11 @@ static void app_fast_loop_test_update(void)
         if (app.last_adc_status != ADC_DRIVER_STATUS_OK) {
             adc_test_last_error = app.last_adc_status;
         }
+        return;
+    }
+
+    if ((app.mode == APP_MODE_CURRENT) || (app.mode == APP_MODE_SPEED)) {
+        ++adc_test_sample_count;
         return;
     }
 
@@ -1318,6 +1519,32 @@ static void app_fast_loop_test_update(void)
         hall_estimator_test_output = output.rotor_feedback;
         ++hall_estimator_test_update_count;
 
+    }
+}
+
+void app_speed_scheduler_tick(void)
+{
+    if ((!app.is_initialized) || (app.mode != APP_MODE_SPEED)) {
+        return;
+    }
+
+    speed_control_test_tick_status = app_speed_control_tick(&app);
+    ++speed_control_test_tick_count;
+    if (speed_control_test_tick_status == APP_STATUS_OK) {
+        speed_control_test_limited_reference_rpm =
+            app.last_speed_output.omega_m_ref_limited_rad_s *
+            SPEED_CONTROL_TEST_RAD_S_TO_RPM;
+        speed_control_test_feedback_rpm =
+            app.last_speed_output.omega_m_feedback_rad_s *
+            SPEED_CONTROL_TEST_RAD_S_TO_RPM;
+        speed_control_test_filtered_feedback_rpm =
+            app.last_speed_output.speed_controller
+                .omega_m_feedback_filtered_rad_s *
+            SPEED_CONTROL_TEST_RAD_S_TO_RPM;
+        speed_control_test_i_q_ref_a =
+            app.last_speed_output.speed_controller.i_q_ref;
+        speed_control_test_i_q_saturated =
+            app.last_speed_output.speed_controller.is_i_q_ref_saturated;
     }
 }
 

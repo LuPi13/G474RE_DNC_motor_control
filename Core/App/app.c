@@ -52,6 +52,7 @@ static inline uint32_t app_profile_end_segment(
 
     return end_cycles;
 }
+
 #else
 #define APP_PROFILE_END_SEGMENT(self_, member_, start_cycles_) \
     (start_cycles_)
@@ -61,6 +62,7 @@ static inline uint32_t app_profile_begin(app_t *self)
     (void)self;
     return 0U;
 }
+
 #endif
 
 static bool app_float_is_finite(float value)
@@ -214,11 +216,66 @@ static app_open_loop_command_t app_get_open_loop_command(const app_t *self)
 static motor_control_current_reference_target_t
 app_get_current_reference_target(const app_t *self)
 {
-    const uint32_t active_index =
-        self->active_current_command_index & 1U;
+    const bool is_speed_mode = self->mode == APP_MODE_SPEED;
+    const uint32_t active_index = is_speed_mode ?
+        (self->active_speed_current_target_index & 1U) :
+        (self->active_current_command_index & 1U);
 
     __DMB();
-    return self->current_command_buffer[active_index];
+    return is_speed_mode ? self->speed_current_target_buffer[active_index] :
+        self->current_command_buffer[active_index];
+}
+
+static bool app_is_foc_mode(app_mode_t mode)
+{
+    return (mode == APP_MODE_CURRENT) || (mode == APP_MODE_SPEED);
+}
+
+static app_speed_command_t app_get_speed_command(const app_t *self)
+{
+    const uint32_t active_index = self->active_speed_command_index & 1U;
+
+    __DMB();
+    return self->speed_command_buffer[active_index];
+}
+
+static app_speed_feedback_t app_get_speed_feedback(const app_t *self)
+{
+    const uint32_t active_index = self->active_speed_feedback_index & 1U;
+
+    __DMB();
+    return self->speed_feedback_buffer[active_index];
+}
+
+static void app_publish_speed_feedback(
+    app_t *self,
+    const hall_estimator_output_t *rotor_feedback,
+    const hall_driver_signal_feedback_t *hall_signal
+)
+{
+    const uint32_t active_index = self->active_speed_feedback_index & 1U;
+    const app_speed_feedback_t active_feedback =
+        self->speed_feedback_buffer[active_index];
+    const uint32_t inactive_index =
+        (self->active_speed_feedback_index ^ 1U) & 1U;
+    const bool has_valid_speed = rotor_feedback->has_valid_speed;
+
+    /* Hall edge/timeout으로 speed observation이 바뀔 때만 1 kHz reader에 publish한다. */
+    if ((active_feedback.capture_count == hall_signal->capture_count) &&
+        (active_feedback.has_valid_speed == has_valid_speed) &&
+        (active_feedback.is_timed_out == hall_signal->is_timed_out)) {
+        return;
+    }
+
+    self->speed_feedback_buffer[inactive_index] = (app_speed_feedback_t){
+        .omega_e_rad_s = has_valid_speed ?
+            rotor_feedback->omega_e_rad_s : 0.0f,
+        .capture_count = hall_signal->capture_count,
+        .has_valid_speed = has_valid_speed,
+        .is_timed_out = hall_signal->is_timed_out,
+    };
+    __DMB();
+    self->active_speed_feedback_index = inactive_index;
 }
 
 static bool app_commands_are_zero(const app_t *self)
@@ -227,11 +284,13 @@ static bool app_commands_are_zero(const app_t *self)
         app_get_open_loop_command(self);
     const motor_control_current_reference_target_t current_target =
         app_get_current_reference_target(self);
+    const app_speed_command_t speed_command = app_get_speed_command(self);
 
     return (open_loop_command.voltage_magnitude == 0.0f) &&
         (open_loop_command.omega_e_rad_s == 0.0f) &&
         (current_target.i_dq_ref.d == 0.0f) &&
-        (current_target.i_dq_ref.q == 0.0f);
+        (current_target.i_dq_ref.q == 0.0f) &&
+        (speed_command.omega_m_ref_rad_s == 0.0f);
 }
 
 static fault_manager_fault_mask_t app_adc_fault_mask(
@@ -255,8 +314,7 @@ static app_status_t app_disable_for_fault(app_t *self, app_status_t status)
     current_sensor_status_t current_sensor_status;
     motor_control_status_t motor_control_status;
     bool has_pwm_disable_error = false;
-    const bool should_reset_motor_control =
-        self->mode == APP_MODE_CURRENT;
+    const bool should_reset_motor_control = app_is_foc_mode(self->mode);
 
     self->mode = APP_MODE_DISABLED;
     current_sensor_status = current_sensor_get_offset_calibration_state(
@@ -359,13 +417,11 @@ static void app_process_fault_clear_request(
 
 static app_status_t app_update_rotor_feedback(
     app_t *self,
-    hall_estimator_output_t *rotor_feedback
+    const hall_estimator_output_t **rotor_feedback
 )
 {
     hall_driver_signal_feedback_t hall_signal;
-    hall_decoder_observation_t decoder_observation;
-    hall_decoder_output_t decoded_hall;
-    hall_estimator_observation_t estimator_observation;
+    const hall_decoder_output_t *decoded_hall;
 
     self->last_hall_driver_status = hall_driver_get_signal_feedback(
         self->config.hall_driver,
@@ -375,44 +431,30 @@ static app_status_t app_update_rotor_feedback(
         return APP_STATUS_HALL_FEEDBACK_ERROR;
     }
 
-    decoder_observation = (hall_decoder_observation_t){
-        .hall_state = hall_signal.hall_state,
-        .capture_count = hall_signal.capture_count,
-        .edge_interval_s = hall_signal.edge_interval_s,
-        .has_state_sample = hall_signal.has_state_sample,
-        .has_valid_interval = hall_signal.has_valid_interval,
-        .is_timed_out = hall_signal.is_timed_out,
-    };
-    self->last_hall_decoder_status = hall_decoder_update(
+    self->last_hall_decoder_status = hall_decoder_update_fast(
         self->config.hall_decoder,
-        &decoder_observation,
-        &decoded_hall
+        &hall_signal
     );
     if (self->last_hall_decoder_status != HALL_DECODER_STATUS_OK) {
         return APP_STATUS_HALL_DECODER_ERROR;
     }
+    decoded_hall = hall_decoder_get_latest_output_fast(
+        self->config.hall_decoder
+    );
 
-    estimator_observation = (hall_estimator_observation_t){
-        .theta_e_rad = decoded_hall.theta_e_rad,
-        .omega_e_rad_s = decoded_hall.omega_e_rad_s,
-        .sector_span_rad = decoded_hall.sector_span_rad,
-        .transition_count = decoded_hall.transition_count,
-        .sector = decoded_hall.sector,
-        .has_valid_state = decoded_hall.has_valid_state,
-        .has_valid_direction = decoded_hall.has_valid_direction,
-        .has_valid_angle = decoded_hall.has_valid_angle,
-        .has_valid_speed = decoded_hall.has_valid_speed,
-        .is_angle_from_edge = decoded_hall.is_angle_from_edge,
-        .is_timed_out = decoded_hall.is_timed_out,
-    };
-    self->last_hall_estimator_status = hall_estimator_update(
+    self->last_hall_estimator_status = hall_estimator_update_from_decoder_fast(
         self->config.hall_estimator,
-        &estimator_observation,
-        self->config.sampling_period_s,
-        rotor_feedback
+        decoded_hall,
+        self->config.sampling_period_s
     );
     if (self->last_hall_estimator_status != HALL_ESTIMATOR_STATUS_OK) {
         return APP_STATUS_ROTOR_ESTIMATOR_ERROR;
+    }
+    *rotor_feedback = hall_estimator_get_latest_output_fast(
+        self->config.hall_estimator
+    );
+    if (self->mode == APP_MODE_SPEED) {
+        app_publish_speed_feedback(self, *rotor_feedback, &hall_signal);
     }
 
     return APP_STATUS_OK;
@@ -428,7 +470,7 @@ static app_status_t app_update_current_sensor(
     current_sensor_offset_calibration_state_t calibration_state;
 
     *has_valid_phase_current = false;
-    if (self->mode == APP_MODE_CURRENT) {
+    if (app_is_foc_mode(self->mode)) {
         current_sensor_convert_fast(
             self->config.current_sensor,
             raw,
@@ -535,6 +577,10 @@ app_status_t app_init(app_t *self, const app_config_t *config)
             (config->cycle_counter_reader == NULL)) ||
         (!app_float_is_finite(config->sampling_period_s)) ||
         (config->sampling_period_s <= 0.0f) ||
+        (!app_float_is_finite(config->speed_loop_period_s)) ||
+        (config->speed_loop_period_s <= 0.0f) ||
+        (config->speed_loop_period_s !=
+            config->motor_control->config.speed_controller.pi.sampling_period_s) ||
         (!app_float_is_finite(config->initial_voltage_angle_rad)) ||
         (config->initial_voltage_angle_rad < 0.0f) ||
         (config->initial_voltage_angle_rad >= APP_TWO_PI_RAD)) {
@@ -560,6 +606,15 @@ app_status_t app_init(app_t *self, const app_config_t *config)
         .i_dq_ref = {0.0f, 0.0f},
         .was_saturated = false,
     };
+    const app_speed_command_t zero_speed_command = {
+        .omega_m_ref_rad_s = 0.0f,
+    };
+    const app_speed_feedback_t zero_speed_feedback = {
+        .omega_e_rad_s = 0.0f,
+        .capture_count = 0U,
+        .has_valid_speed = false,
+        .is_timed_out = false,
+    };
     const abc_t neutral_duty = app_neutral_duty();
     const app_t initialized = {
         .config = *config,
@@ -570,6 +625,15 @@ app_status_t app_init(app_t *self, const app_config_t *config)
             zero_current_target,
         },
         .active_current_command_index = 0U,
+        .speed_command_buffer = {zero_speed_command, zero_speed_command},
+        .active_speed_command_index = 0U,
+        .speed_current_target_buffer = {
+            zero_current_target,
+            zero_current_target,
+        },
+        .active_speed_current_target_index = 0U,
+        .speed_feedback_buffer = {zero_speed_feedback, zero_speed_feedback},
+        .active_speed_feedback_index = 0U,
         .voltage_angle_rad = config->initial_voltage_angle_rad,
         .last_v_alpha_beta = {0.0f, 0.0f},
         .last_duty = neutral_duty,
@@ -586,6 +650,17 @@ app_status_t app_init(app_t *self, const app_config_t *config)
         .last_fault_manager_status = FAULT_MANAGER_STATUS_OK,
         .last_fault_clear_status = FAULT_MANAGER_STATUS_OK,
         .last_status = APP_STATUS_OK,
+        .last_speed_output = {
+            .omega_m_ref_limited_rad_s = 0.0f,
+            .omega_m_feedback_rad_s = 0.0f,
+            .speed_controller = {
+                .omega_m_feedback_filtered_rad_s = 0.0f,
+                .omega_m_error_rad_s = 0.0f,
+                .i_q_ref = 0.0f,
+                .is_i_q_ref_saturated = false,
+            },
+            .current_reference_target = zero_current_target,
+        },
         .fast_loop_count = 0U,
         .duty_update_count = 0U,
         .not_ready_count = 0U,
@@ -631,6 +706,30 @@ app_status_t app_set_current_command(
     self->current_command_buffer[inactive_index] = prepared_target;
     __DMB();
     self->active_current_command_index = inactive_index;
+
+    self->last_status = APP_STATUS_OK;
+    return APP_STATUS_OK;
+}
+
+app_status_t app_set_speed_command(
+    app_t *self,
+    const app_speed_command_t *command
+)
+{
+    uint32_t inactive_index;
+
+    if ((self == NULL) || (command == NULL) ||
+        (!app_float_is_finite(command->omega_m_ref_rad_s))) {
+        return APP_STATUS_INVALID_ARGUMENT;
+    }
+    if (!self->is_initialized) {
+        return APP_STATUS_INVALID_STATE;
+    }
+
+    inactive_index = (self->active_speed_command_index ^ 1U) & 1U;
+    self->speed_command_buffer[inactive_index] = *command;
+    __DMB();
+    self->active_speed_command_index = inactive_index;
 
     self->last_status = APP_STATUS_OK;
     return APP_STATUS_OK;
@@ -771,7 +870,7 @@ app_status_t app_start_open_loop(app_t *self)
         return APP_STATUS_INVALID_STATE;
     }
 
-    if (self->mode == APP_MODE_CURRENT) {
+    if (app_is_foc_mode(self->mode)) {
         return APP_STATUS_INVALID_STATE;
     }
     if (self->mode == APP_MODE_OPEN_LOOP) {
@@ -833,7 +932,7 @@ app_status_t app_stop_open_loop(app_t *self)
         return APP_STATUS_INVALID_STATE;
     }
 
-    if (self->mode == APP_MODE_CURRENT) {
+    if (app_is_foc_mode(self->mode)) {
         return APP_STATUS_INVALID_STATE;
     }
 
@@ -877,6 +976,9 @@ app_status_t app_start_current_control(app_t *self)
     if (self->mode == APP_MODE_CURRENT) {
         self->last_status = APP_STATUS_OK;
         return APP_STATUS_OK;
+    }
+    if (self->mode == APP_MODE_SPEED) {
+        return APP_STATUS_INVALID_STATE;
     }
     if (fault_manager_is_faulted(self->config.fault_manager)) {
         self->last_status = APP_STATUS_FAULT_ACTIVE;
@@ -924,18 +1026,36 @@ app_status_t app_start_current_control(app_t *self)
 app_status_t app_stop_current_control(app_t *self)
 {
     abc_t neutral_duty;
+    const app_speed_command_t zero_speed_command = {
+        .omega_m_ref_rad_s = 0.0f,
+    };
+    const motor_control_current_reference_target_t zero_current_target = {
+        .i_dq_ref = {0.0f, 0.0f},
+        .was_saturated = false,
+    };
 
     if (self == NULL) {
         return APP_STATUS_INVALID_ARGUMENT;
     }
     if ((!self->is_initialized) ||
         (!self->config.pwm_driver->is_initialized) ||
-        (self->mode == APP_MODE_OPEN_LOOP)) {
+        (self->mode == APP_MODE_OPEN_LOOP) ||
+        (self->mode == APP_MODE_SPEED)) {
         return APP_STATUS_INVALID_STATE;
     }
 
     self->mode = APP_MODE_DISABLED;
     __DMB();
+
+    self->speed_command_buffer[
+        (self->active_speed_command_index ^ 1U) & 1U] = zero_speed_command;
+    __DMB();
+    self->active_speed_command_index ^= 1U;
+    self->speed_current_target_buffer[
+        (self->active_speed_current_target_index ^ 1U) & 1U] =
+        zero_current_target;
+    __DMB();
+    self->active_speed_current_target_index ^= 1U;
 
     self->last_motor_control_status = motor_control_reset(
         self->config.motor_control
@@ -963,6 +1083,96 @@ app_status_t app_stop_current_control(app_t *self)
 
     self->last_v_alpha_beta = (alpha_beta_t){0.0f, 0.0f};
     self->last_duty = neutral_duty;
+    self->last_status = APP_STATUS_OK;
+    return APP_STATUS_OK;
+}
+
+app_status_t app_start_speed_control(app_t *self)
+{
+    app_status_t status;
+    const motor_control_current_reference_target_t zero_current_target = {
+        .i_dq_ref = {0.0f, 0.0f},
+        .was_saturated = false,
+    };
+    uint32_t inactive_index;
+
+    if (self == NULL) {
+        return APP_STATUS_INVALID_ARGUMENT;
+    }
+    if (!self->is_initialized) {
+        return APP_STATUS_INVALID_STATE;
+    }
+    if (self->mode == APP_MODE_SPEED) {
+        self->last_status = APP_STATUS_OK;
+        return APP_STATUS_OK;
+    }
+    if (self->mode != APP_MODE_DISABLED) {
+        return APP_STATUS_INVALID_STATE;
+    }
+
+    status = app_start_current_control(self);
+    if (status != APP_STATUS_OK) {
+        return status;
+    }
+
+    inactive_index =
+        (self->active_speed_current_target_index ^ 1U) & 1U;
+    self->speed_current_target_buffer[inactive_index] = zero_current_target;
+    __DMB();
+    self->active_speed_current_target_index = inactive_index;
+    self->mode = APP_MODE_SPEED;
+    self->last_status = APP_STATUS_OK;
+    return APP_STATUS_OK;
+}
+
+app_status_t app_speed_control_tick(app_t *self)
+{
+    app_speed_command_t command;
+    app_speed_feedback_t feedback;
+    motor_control_speed_input_t input;
+    uint32_t inactive_index;
+
+    if (self == NULL) {
+        return APP_STATUS_INVALID_ARGUMENT;
+    }
+    if (!self->is_initialized) {
+        return APP_STATUS_INVALID_STATE;
+    }
+    if (self->mode != APP_MODE_SPEED) {
+        return APP_STATUS_OK;
+    }
+    if (fault_manager_is_faulted(self->config.fault_manager)) {
+        self->last_status = APP_STATUS_FAULT_ACTIVE;
+        return APP_STATUS_FAULT_ACTIVE;
+    }
+
+    command = app_get_speed_command(self);
+    feedback = app_get_speed_feedback(self);
+    input = (motor_control_speed_input_t){
+        .omega_m_requested_rad_s = command.omega_m_ref_rad_s,
+        .omega_e_feedback_rad_s = feedback.has_valid_speed ?
+            feedback.omega_e_rad_s : 0.0f,
+    };
+    self->last_motor_control_status = motor_control_update_speed(
+        self->config.motor_control,
+        &input,
+        &self->last_speed_output
+    );
+    if (self->last_motor_control_status != MOTOR_CONTROL_STATUS_OK) {
+        return app_latch_and_stop(
+            self,
+            APP_STATUS_MOTOR_CONTROL_ERROR,
+            FAULT_MANAGER_FAULT_MOTOR_CONTROL
+        );
+    }
+
+    inactive_index =
+        (self->active_speed_current_target_index ^ 1U) & 1U;
+    self->speed_current_target_buffer[inactive_index] =
+        self->last_speed_output.current_reference_target;
+    __DMB();
+    self->active_speed_current_target_index = inactive_index;
+
     self->last_status = APP_STATUS_OK;
     return APP_STATUS_OK;
 }
@@ -999,6 +1209,7 @@ static app_status_t app_motor_fast_loop_update(
 {
     app_open_loop_command_t open_loop_command = {0};
     motor_control_current_reference_target_t current_target;
+    const hall_estimator_output_t *rotor_feedback;
     app_status_t rotor_status;
     bool was_faulted;
     float sin_theta;
@@ -1104,10 +1315,9 @@ static app_status_t app_motor_fast_loop_update(
 
     rotor_status = app_update_rotor_feedback(
         self,
-        &calculated_output.rotor_feedback
+        &rotor_feedback
     );
-    if ((rotor_status != APP_STATUS_OK) &&
-        (self->mode == APP_MODE_CURRENT)) {
+    if ((rotor_status != APP_STATUS_OK) && app_is_foc_mode(self->mode)) {
         const fault_manager_fault_mask_t fault_mask =
             ((rotor_status == APP_STATUS_HALL_FEEDBACK_ERROR) ||
              (rotor_status == APP_STATUS_HALL_DECODER_ERROR)) ?
@@ -1118,6 +1328,8 @@ static app_status_t app_motor_fast_loop_update(
     }
     if (rotor_status != APP_STATUS_OK) {
         app_clear_rotor_feedback(&calculated_output.rotor_feedback);
+    } else {
+        calculated_output.rotor_feedback = *rotor_feedback;
     }
 
     profile_segment_start_cycles = APP_PROFILE_END_SEGMENT(
@@ -1161,7 +1373,7 @@ static app_status_t app_motor_fast_loop_update(
             self->last_cordic_status = CORDIC_DRIVER_STATUS_OK;
             self->last_svpwm_status = SVPWM_STATUS_OK;
         }
-    } else if (self->mode == APP_MODE_CURRENT) {
+    } else if (app_is_foc_mode(self->mode)) {
         motor_control_fast_input_t motor_control_input;
 
         if (calculated_output.v_dc <= 0.0f) {
@@ -1258,9 +1470,9 @@ static app_status_t app_motor_fast_loop_update(
         profile_control_start_cycles
     );
 
-    if ((self->mode == APP_MODE_CURRENT) ||
+    if (app_is_foc_mode(self->mode) ||
         (open_loop_command.voltage_magnitude > 0.0f)) {
-        if (self->mode == APP_MODE_CURRENT) {
+        if (app_is_foc_mode(self->mode)) {
             self->last_svpwm_status = svpwm_calculate_fast(
                 &calculated_output.v_alpha_beta,
                 calculated_output.v_dc,
@@ -1282,7 +1494,7 @@ static app_status_t app_motor_fast_loop_update(
         }
     }
 
-    if (self->mode == APP_MODE_CURRENT) {
+    if (app_is_foc_mode(self->mode)) {
         pwm_driver_set_duty_fast(
             self->config.pwm_driver,
             &calculated_output.duty
@@ -1372,4 +1584,91 @@ app_status_t app_motor_fast_loop_fast(
     }
 
     return app_motor_fast_loop_update(self, output);
+}
+
+app_status_t app_motor_current_fast_loop_drive_fast(app_t *self)
+{
+    adc_driver_raw_sample_t raw;
+    abc_t i_abc;
+    float v_dc;
+    const hall_estimator_output_t *rotor_feedback;
+    motor_control_fast_input_t control_input;
+    alpha_beta_t v_alpha_beta;
+    abc_t duty;
+    float sin_theta;
+    float cos_theta;
+    bool has_valid_phase_current;
+    app_status_t status;
+
+    if ((self == NULL) || !self->is_initialized ||
+        !app_is_foc_mode(self->mode)) {
+        return APP_STATUS_INVALID_STATE;
+    }
+    self->last_adc_status = adc_driver_read_raw(self->config.adc_driver, &raw);
+    if (self->last_adc_status == ADC_DRIVER_STATUS_NOT_READY) {
+        ++self->not_ready_count;
+        self->last_status = APP_STATUS_ADC_NOT_READY;
+        return APP_STATUS_ADC_NOT_READY;
+    }
+    if (self->last_adc_status != ADC_DRIVER_STATUS_OK) {
+        return app_latch_and_stop(self, APP_STATUS_ADC_ERROR,
+                                  app_adc_fault_mask(self->last_adc_status));
+    }
+    v_dc = voltage_sensor_convert_fast(self->config.voltage_sensor, raw.dc_link);
+    self->last_voltage_sensor_status = VOLTAGE_SENSOR_STATUS_OK;
+    status = app_update_current_sensor(
+        self,
+        &raw,
+        &i_abc,
+        &has_valid_phase_current
+    );
+    if (status != APP_STATUS_OK) {
+        return status;
+    }
+    ++self->fast_loop_count;
+    fault_manager_update_measurements_fast(self->config.fault_manager, &i_abc, v_dc);
+    self->last_fault_manager_status = FAULT_MANAGER_STATUS_OK;
+    if (fault_manager_is_faulted(self->config.fault_manager)) {
+        ++self->error_count;
+        return app_disable_for_fault(self, APP_STATUS_FAULT_ACTIVE);
+    }
+    status = app_update_rotor_feedback(self, &rotor_feedback);
+    if (status != APP_STATUS_OK) {
+        return app_latch_and_stop(self, status,
+            (status == APP_STATUS_HALL_FEEDBACK_ERROR || status == APP_STATUS_HALL_DECODER_ERROR) ?
+            FAULT_MANAGER_FAULT_HALL_FEEDBACK : FAULT_MANAGER_FAULT_ROTOR_ESTIMATOR);
+    }
+    if (v_dc <= 0.0f) {
+        return app_latch_and_stop(self, APP_STATUS_VOLTAGE_SENSOR_ERROR,
+                                  FAULT_MANAGER_FAULT_INVALID_MEASUREMENT);
+    }
+    if (!rotor_feedback->has_valid_angle) {
+        return app_latch_and_stop(self, APP_STATUS_ROTOR_ESTIMATOR_ERROR,
+                                  FAULT_MANAGER_FAULT_ROTOR_ESTIMATOR);
+    }
+    cordic_driver_sin_cos_fast(rotor_feedback->theta_e_rad, &sin_theta, &cos_theta);
+    self->last_cordic_status = CORDIC_DRIVER_STATUS_OK;
+    control_input = (motor_control_fast_input_t){
+        .i_abc = i_abc, .current_reference_target = app_get_current_reference_target(self),
+        .sin_theta = sin_theta, .cos_theta = cos_theta,
+        .omega_e_rad_s = rotor_feedback->has_valid_speed ? rotor_feedback->omega_e_rad_s : 0.0f,
+        .v_dc = v_dc,
+    };
+    self->last_motor_control_status = motor_control_update_fast_voltage(
+        self->config.motor_control, &control_input, &v_alpha_beta);
+    if (self->last_motor_control_status != MOTOR_CONTROL_STATUS_OK) {
+        return app_latch_and_stop(self, APP_STATUS_MOTOR_CONTROL_ERROR,
+                                  FAULT_MANAGER_FAULT_MOTOR_CONTROL);
+    }
+    self->last_svpwm_status = svpwm_calculate_fast(&v_alpha_beta, v_dc, &duty);
+    if (self->last_svpwm_status != SVPWM_STATUS_OK) {
+        return app_latch_and_stop(self, APP_STATUS_SVPWM_ERROR, FAULT_MANAGER_FAULT_SVPWM);
+    }
+    pwm_driver_set_duty_fast(self->config.pwm_driver, &duty);
+    self->last_pwm_status = PWM_DRIVER_STATUS_OK;
+    self->last_v_alpha_beta = v_alpha_beta;
+    self->last_duty = duty;
+    ++self->duty_update_count;
+    self->last_status = APP_STATUS_OK;
+    return APP_STATUS_OK;
 }
