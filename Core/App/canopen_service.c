@@ -1,6 +1,6 @@
 /**
  * @file canopen_service.c
- * @brief CANopenNode 기반 CiA 402 Profile Torque subset 구현.
+ * @brief CANopenNode 기반 CiA 402 Profile Torque/Profile Velocity subset 구현.
  * @ingroup app_canopen_service
  */
 
@@ -13,8 +13,11 @@
 #include "../Communication/object_dictionary/OD.h"
 #include "canopen_fdcan_adapter.h"
 
+#define CANOPEN_SERVICE_PROFILE_VELOCITY_MODE     ((int8_t)3)
 #define CANOPEN_SERVICE_PROFILE_TORQUE_MODE       ((int8_t)4)
 #define CANOPEN_SERVICE_TORQUE_PER_MILLE          (1000.0f)
+#define CANOPEN_SERVICE_RPM_PER_RAD_S \
+    (60.0f / (2.0f * 3.14159265358979323846f))
 #define CANOPEN_SERVICE_NMT_CONTROL \
     (CO_NMT_ERR_ON_ERR_REG | CO_ERR_REG_GENERIC_ERR | \
      CO_ERR_REG_COMMUNICATION)
@@ -28,6 +31,7 @@
 #define CANOPEN_SERVICE_ERROR_CODE_RPDO_TIMEOUT    (0x8250U)
 #define CANOPEN_SERVICE_OVERSPEED_CLEAR_RATIO       (0.95f)
 #define CANOPEN_SERVICE_TARGET_WINDOW_PER_MILLE     (10.0f)
+#define CANOPEN_SERVICE_VELOCITY_TARGET_WINDOW_RPM  (10.0f)
 
 #define CIA402_STATUS_READY_TO_SWITCH_ON            (1U << 0)
 #define CIA402_STATUS_SWITCHED_ON                    (1U << 1)
@@ -76,6 +80,23 @@ static uint32_t canopen_service_round_nonnegative_u32(float value)
     return (uint32_t)lroundf(value);
 }
 
+static int32_t canopen_service_clamp_i32(float value)
+{
+    if (value > 2147483520.0f) {
+        return INT32_MAX;
+    }
+    if (value < -2147483648.0f) {
+        return INT32_MIN;
+    }
+    return (int32_t)lroundf(value);
+}
+
+static bool canopen_service_is_supported_operation_mode(int8_t mode)
+{
+    return (mode == CANOPEN_SERVICE_PROFILE_TORQUE_MODE) ||
+        (mode == CANOPEN_SERVICE_PROFILE_VELOCITY_MODE);
+}
+
 static bool canopen_service_is_valid_motor_profile(
     const canopen_service_motor_profile_t *profile
 )
@@ -98,8 +119,6 @@ static void canopen_service_publish_motor_profile(
         profile->permanent_magnet_flux_linkage_wb;
     const float reference_torque_nm = torque_coefficient_nm_per_a *
         profile->torque_reference_current_peak_a;
-    const float rpm_per_rad_s = 60.0f /
-        (2.0f * 3.14159265358979323846f);
 
     OD_RAM.x2000_motorPolePairs = profile->pole_pairs;
     OD_RAM.x2001_permanentMagnetFluxLinkage =
@@ -116,7 +135,8 @@ static void canopen_service_publish_motor_profile(
         reference_torque_nm * 1000.0f
     );
     OD_RAM.x6080_maximumMotorSpeed = canopen_service_round_nonnegative_u32(
-        profile->maximum_mechanical_speed_rad_s * rpm_per_rad_s
+        profile->maximum_mechanical_speed_rad_s *
+            CANOPEN_SERVICE_RPM_PER_RAD_S
     );
 }
 
@@ -323,8 +343,10 @@ static void canopen_service_stop_drive(canopen_service_t *self)
     };
 
     if (canopen_service_owns_drive(self) &&
-        (self->config.app->drive_state ==
-         APP_DRIVE_STATE_CURRENT_RUNNING)) {
+        ((self->config.app->drive_state ==
+          APP_DRIVE_STATE_CURRENT_RUNNING) ||
+         (self->config.app->drive_state ==
+          APP_DRIVE_STATE_SPEED_RUNNING))) {
         (void)drive_command_router_execute(
             self->config.drive_command_router,
             self->config.app,
@@ -332,14 +354,17 @@ static void canopen_service_stop_drive(canopen_service_t *self)
         );
     }
     self->commanded_i_q_a = 0.0f;
+    self->commanded_omega_m_rad_s = 0.0f;
 }
 
 static bool canopen_service_start_drive(canopen_service_t *self)
 {
     const drive_command_t command = {
-        .type = DRIVE_COMMAND_START_CURRENT,
+        .type = (OD_RAM.x6060_modesOfOperation ==
+                 CANOPEN_SERVICE_PROFILE_VELOCITY_MODE) ?
+            DRIVE_COMMAND_START_SPEED : DRIVE_COMMAND_START_CURRENT,
         .i_dq_ref = {.d = 0.0f, .q = 0.0f},
-        .omega_m_ref_rad_s = 0.0f,
+        .omega_m_ref_rad_s = self->commanded_omega_m_rad_s,
     };
 
     return drive_command_router_execute(
@@ -445,8 +470,8 @@ static void canopen_service_update_drive_state(
                        controlword, 0x0087U, 0x0006U)) {
             self->drive_state =
                 CANOPEN_SERVICE_DRIVE_READY_TO_SWITCH_ON;
-        } else if ((OD_RAM.x6060_modesOfOperation ==
-                    CANOPEN_SERVICE_PROFILE_TORQUE_MODE) &&
+        } else if (canopen_service_is_supported_operation_mode(
+                       OD_RAM.x6060_modesOfOperation) &&
                    canopen_service_controlword_matches(
                        controlword, 0x008FU, 0x000FU)) {
             if (canopen_service_start_drive(self)) {
@@ -460,8 +485,8 @@ static void canopen_service_update_drive_state(
         break;
 
     case CANOPEN_SERVICE_DRIVE_OPERATION_ENABLED:
-        if (OD_RAM.x6060_modesOfOperation !=
-            CANOPEN_SERVICE_PROFILE_TORQUE_MODE) {
+        if (!canopen_service_is_supported_operation_mode(
+                OD_RAM.x6060_modesOfOperation)) {
             canopen_service_stop_drive(self);
             self->drive_state = CANOPEN_SERVICE_DRIVE_SWITCHED_ON;
         } else if (canopen_service_controlword_matches(
@@ -491,8 +516,8 @@ static void canopen_service_update_drive_state(
             canopen_service_stop_drive(self);
             self->drive_state =
                 CANOPEN_SERVICE_DRIVE_SWITCH_ON_DISABLED;
-        } else if ((OD_RAM.x6060_modesOfOperation ==
-                    CANOPEN_SERVICE_PROFILE_TORQUE_MODE) &&
+        } else if (canopen_service_is_supported_operation_mode(
+                       OD_RAM.x6060_modesOfOperation) &&
                    canopen_service_controlword_matches(
                        controlword, 0x008FU, 0x000FU)) {
             self->drive_state =
@@ -563,6 +588,47 @@ static bool canopen_service_update_torque_command(
     ) == APP_STATUS_OK;
 }
 
+static bool canopen_service_update_velocity_command(canopen_service_t *self)
+{
+    const float requested_omega_m_rad_s =
+        (float)OD_RAM.x60FF_targetVelocity /
+        CANOPEN_SERVICE_RPM_PER_RAD_S;
+    const float minimum_omega_m_rad_s = self->config.app->config
+        .motor_control->config.speed_reference_min_rad_s;
+    const float speed_reference_max_rad_s = self->config.app->config
+        .motor_control->config.speed_reference_max_rad_s;
+    const float maximum_omega_m_rad_s =
+        (self->motor_profile.maximum_mechanical_speed_rad_s <
+         speed_reference_max_rad_s) ?
+            self->motor_profile.maximum_mechanical_speed_rad_s :
+            speed_reference_max_rad_s;
+    float limited_omega_m_rad_s = requested_omega_m_rad_s;
+    drive_command_t command;
+
+    if (limited_omega_m_rad_s > maximum_omega_m_rad_s) {
+        limited_omega_m_rad_s = maximum_omega_m_rad_s;
+    } else if (limited_omega_m_rad_s < minimum_omega_m_rad_s) {
+        limited_omega_m_rad_s = minimum_omega_m_rad_s;
+    }
+    if (self->drive_state == CANOPEN_SERVICE_DRIVE_QUICK_STOP_ACTIVE) {
+        limited_omega_m_rad_s = 0.0f;
+    }
+
+    self->commanded_omega_m_rad_s = limited_omega_m_rad_s;
+    self->is_internal_limit_active =
+        (limited_omega_m_rad_s != requested_omega_m_rad_s);
+    command = (drive_command_t) {
+        .type = DRIVE_COMMAND_SET_SPEED,
+        .i_dq_ref = {.d = 0.0f, .q = 0.0f},
+        .omega_m_ref_rad_s = limited_omega_m_rad_s,
+    };
+    return drive_command_router_execute(
+        self->config.drive_command_router,
+        self->config.app,
+        &command
+    ) == APP_STATUS_OK;
+}
+
 canopen_service_status_t canopen_service_init(
     canopen_service_t *self,
     const canopen_service_config_t *config,
@@ -599,6 +665,8 @@ canopen_service_status_t canopen_service_init(
     OD_RAM.x6061_modesOfOperationDisplay = 0;
     OD_RAM.x6071_targetTorque = 0;
     OD_RAM.x6077_torqueActualValue = 0;
+    OD_RAM.x606C_velocityActualValue = 0;
+    OD_RAM.x60FF_targetVelocity = 0;
 
     canopen = CO_new(NULL, NULL);
     if (canopen == NULL) {
@@ -664,6 +732,7 @@ canopen_service_status_t canopen_service_process(
     CO_NMT_reset_cmd_t reset_command;
     bool is_nmt_operational;
     float actual_per_mille = 0.0f;
+    float actual_omega_m_rad_s = 0.0f;
 
     if ((self == NULL) || (elapsed_us == 0U) ||
         (!isfinite(i_q_feedback_a)) || (!isfinite(omega_e_rad_s))) {
@@ -686,9 +755,9 @@ canopen_service_status_t canopen_service_process(
 
     canopen_service_try_apply_motor_profile(self);
     OD_RAM.x6061_modesOfOperationDisplay =
-        (OD_RAM.x6060_modesOfOperation ==
-         CANOPEN_SERVICE_PROFILE_TORQUE_MODE) ?
-            CANOPEN_SERVICE_PROFILE_TORQUE_MODE : 0;
+        canopen_service_is_supported_operation_mode(
+            OD_RAM.x6060_modesOfOperation) ?
+            OD_RAM.x6060_modesOfOperation : 0;
     canopen_service_update_overspeed(
         self,
         omega_e_rad_s,
@@ -699,7 +768,13 @@ canopen_service_status_t canopen_service_process(
 
     if ((self->drive_state == CANOPEN_SERVICE_DRIVE_OPERATION_ENABLED) ||
         (self->drive_state == CANOPEN_SERVICE_DRIVE_QUICK_STOP_ACTIVE)) {
-        if (!canopen_service_update_torque_command(self, elapsed_us)) {
+        const bool is_command_updated =
+            (OD_RAM.x6060_modesOfOperation ==
+             CANOPEN_SERVICE_PROFILE_TORQUE_MODE) ?
+                canopen_service_update_torque_command(self, elapsed_us) :
+                canopen_service_update_velocity_command(self);
+
+        if (!is_command_updated) {
             canopen_service_stop_drive(self);
             self->drive_state = CANOPEN_SERVICE_DRIVE_FAULT;
             ++self->drive_error_count;
@@ -707,6 +782,7 @@ canopen_service_status_t canopen_service_process(
         }
     } else {
         self->commanded_i_q_a = 0.0f;
+        self->commanded_omega_m_rad_s = 0.0f;
         self->is_internal_limit_active = false;
         self->is_target_reached = false;
     }
@@ -726,18 +802,39 @@ canopen_service_status_t canopen_service_process(
             self->motor_profile.torque_reference_current_peak_a *
             CANOPEN_SERVICE_TORQUE_PER_MILLE;
     }
-    self->is_target_reached =
-        has_valid_i_q_feedback &&
-        ((self->drive_state == CANOPEN_SERVICE_DRIVE_OPERATION_ENABLED) ||
-         (self->drive_state == CANOPEN_SERVICE_DRIVE_QUICK_STOP_ACTIVE)) &&
-        (canopen_service_absolute(
-            actual_per_mille -
-            (self->commanded_i_q_a /
-             self->motor_profile.torque_reference_current_peak_a *
-             CANOPEN_SERVICE_TORQUE_PER_MILLE)
-        ) <= CANOPEN_SERVICE_TARGET_WINDOW_PER_MILLE);
+    if (has_valid_speed) {
+        actual_omega_m_rad_s = omega_e_rad_s /
+            (float)self->motor_profile.pole_pairs;
+    }
+    if (OD_RAM.x6060_modesOfOperation ==
+        CANOPEN_SERVICE_PROFILE_VELOCITY_MODE) {
+        self->is_target_reached = has_valid_speed &&
+            ((self->drive_state ==
+              CANOPEN_SERVICE_DRIVE_OPERATION_ENABLED) ||
+             (self->drive_state ==
+              CANOPEN_SERVICE_DRIVE_QUICK_STOP_ACTIVE)) &&
+            (canopen_service_absolute(
+                actual_omega_m_rad_s - self->commanded_omega_m_rad_s
+            ) * CANOPEN_SERVICE_RPM_PER_RAD_S <=
+             CANOPEN_SERVICE_VELOCITY_TARGET_WINDOW_RPM);
+    } else {
+        self->is_target_reached = has_valid_i_q_feedback &&
+            ((self->drive_state ==
+              CANOPEN_SERVICE_DRIVE_OPERATION_ENABLED) ||
+             (self->drive_state ==
+              CANOPEN_SERVICE_DRIVE_QUICK_STOP_ACTIVE)) &&
+            (canopen_service_absolute(
+                actual_per_mille -
+                (self->commanded_i_q_a /
+                 self->motor_profile.torque_reference_current_peak_a *
+                 CANOPEN_SERVICE_TORQUE_PER_MILLE)
+            ) <= CANOPEN_SERVICE_TARGET_WINDOW_PER_MILLE);
+    }
     OD_RAM.x6077_torqueActualValue = canopen_service_clamp_i16(
         actual_per_mille
+    );
+    OD_RAM.x606C_velocityActualValue = canopen_service_clamp_i32(
+        actual_omega_m_rad_s * CANOPEN_SERVICE_RPM_PER_RAD_S
     );
     OD_RAM.x6041_statusword = canopen_service_statusword(
         self,

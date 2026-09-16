@@ -51,7 +51,7 @@ OD_ATTR_RAM OD_RAM_t OD_RAM = {
         .numberOfMappedObjects = 0x03,
         .controlwordMapping = 0x60400010,
         .modesOfOperationMapping = 0x60600008,
-        .targetTorqueMapping = 0x60710010
+        .targetVelocityMapping = 0x60FF0020
     },
     .x1800_TPDOCommunicationParameter = {
         .highestSub_indexSupported = 0x06,
@@ -66,7 +66,7 @@ OD_ATTR_RAM OD_RAM_t OD_RAM = {
         .numberOfMappedObjects = 0x03,
         .statuswordMapping = 0x60410010,
         .modesDisplayMapping = 0x60610008,
-        .torqueActualValueMapping = 0x60770010
+        .velocityActualValueMapping = 0x606C0020
     },
     .x2000_motorPolePairs = 0x05,
     .x2001_permanentMagnetFluxLinkage = 0.00674,
@@ -78,13 +78,15 @@ OD_ATTR_RAM OD_RAM_t OD_RAM = {
     .x6041_statusword = 0x0040,
     .x6060_modesOfOperation = 0,
     .x6061_modesOfOperationDisplay = 0,
+    .x606C_velocityActualValue = 0,
     .x6071_targetTorque = 0,
     .x6072_maximumTorque = 0x03E8,
     .x6075_motorRatedCurrent = 0x00002710,
     .x6076_motorRatedTorque = 0x000001FA,
     .x6077_torqueActualValue = 0,
     .x6080_maximumMotorSpeed = 0x00000BB8,
-    .x6087_torqueSlope = 0x000003E8
+    .x6087_torqueSlope = 0x000003E8,
+    .x60FF_targetVelocity = 0
 };
 
 
@@ -114,6 +116,7 @@ typedef struct {
     OD_obj_var_t o_6041_statusword;
     OD_obj_var_t o_6060_modesOfOperation;
     OD_obj_var_t o_6061_modesOfOperationDisplay;
+    OD_obj_var_t o_606C_velocityActualValue;
     OD_obj_var_t o_6071_targetTorque;
     OD_obj_var_t o_6072_maximumTorque;
     OD_obj_var_t o_6075_motorRatedCurrent;
@@ -121,6 +124,7 @@ typedef struct {
     OD_obj_var_t o_6077_torqueActualValue;
     OD_obj_var_t o_6080_maximumMotorSpeed;
     OD_obj_var_t o_6087_torqueSlope;
+    OD_obj_var_t o_60FF_targetVelocity;
 } ODObjs_t;
 
 static CO_PROGMEM ODObjs_t ODObjs = {
@@ -262,7 +266,7 @@ static CO_PROGMEM ODObjs_t ODObjs = {
             .dataLength = 4
         },
         {
-            .dataOrig = &OD_RAM.x1600_RPDOMappingParameter.targetTorqueMapping,
+            .dataOrig = &OD_RAM.x1600_RPDOMappingParameter.targetVelocityMapping,
             .subIndex = 3,
             .attribute = ODA_SDO_RW | ODA_MB,
             .dataLength = 4
@@ -332,7 +336,7 @@ static CO_PROGMEM ODObjs_t ODObjs = {
             .dataLength = 4
         },
         {
-            .dataOrig = &OD_RAM.x1A00_TPDOMappingParameter.torqueActualValueMapping,
+            .dataOrig = &OD_RAM.x1A00_TPDOMappingParameter.velocityActualValueMapping,
             .subIndex = 3,
             .attribute = ODA_SDO_RW | ODA_MB,
             .dataLength = 4
@@ -388,6 +392,11 @@ static CO_PROGMEM ODObjs_t ODObjs = {
         .attribute = ODA_SDO_R | ODA_TRPDO,
         .dataLength = 1
     },
+    .o_606C_velocityActualValue = {
+        .dataOrig = &OD_RAM.x606C_velocityActualValue,
+        .attribute = ODA_SDO_R | ODA_TRPDO | ODA_MB,
+        .dataLength = 4
+    },
     .o_6071_targetTorque = {
         .dataOrig = &OD_RAM.x6071_targetTorque,
         .attribute = ODA_SDO_RW | ODA_TRPDO | ODA_MB,
@@ -422,6 +431,11 @@ static CO_PROGMEM ODObjs_t ODObjs = {
         .dataOrig = &OD_RAM.x6087_torqueSlope,
         .attribute = ODA_SDO_RW | ODA_MB,
         .dataLength = 4
+    },
+    .o_60FF_targetVelocity = {
+        .dataOrig = &OD_RAM.x60FF_targetVelocity,
+        .attribute = ODA_SDO_RW | ODA_TRPDO | ODA_MB,
+        .dataLength = 4
     }
 };
 
@@ -451,6 +465,7 @@ static OD_ATTR_OD OD_entry_t ODList[] = {
     {0x6041, 0x01, ODT_VAR, &ODObjs.o_6041_statusword, NULL},
     {0x6060, 0x01, ODT_VAR, &ODObjs.o_6060_modesOfOperation, NULL},
     {0x6061, 0x01, ODT_VAR, &ODObjs.o_6061_modesOfOperationDisplay, NULL},
+    {0x606C, 0x01, ODT_VAR, &ODObjs.o_606C_velocityActualValue, NULL},
     {0x6071, 0x01, ODT_VAR, &ODObjs.o_6071_targetTorque, NULL},
     {0x6072, 0x01, ODT_VAR, &ODObjs.o_6072_maximumTorque, NULL},
     {0x6075, 0x01, ODT_VAR, &ODObjs.o_6075_motorRatedCurrent, NULL},
@@ -458,6 +473,7 @@ static OD_ATTR_OD OD_entry_t ODList[] = {
     {0x6077, 0x01, ODT_VAR, &ODObjs.o_6077_torqueActualValue, NULL},
     {0x6080, 0x01, ODT_VAR, &ODObjs.o_6080_maximumMotorSpeed, NULL},
     {0x6087, 0x01, ODT_VAR, &ODObjs.o_6087_torqueSlope, NULL},
+    {0x60FF, 0x01, ODT_VAR, &ODObjs.o_60FF_targetVelocity, NULL},
     {0x0000, 0x00, 0, NULL, NULL}
 };
 

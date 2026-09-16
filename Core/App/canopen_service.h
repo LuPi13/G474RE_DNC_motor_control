@@ -1,6 +1,6 @@
 /**
  * @file canopen_service.h
- * @brief CANopenNode와 CiA 402 Profile Torque subset을 연결하는 App service.
+ * @brief CANopenNode와 CiA 402 Profile Torque/Profile Velocity subset을 연결하는 App service.
  * @ingroup app_canopen_service
  */
 
@@ -43,7 +43,7 @@ typedef enum {
 } canopen_service_drive_state_t;
 
 /**
- * @brief CiA 402 Profile Torque 변환과 OD 표시에 쓰는 motor profile.
+ * @brief CiA 402 Profile Torque/Profile Velocity 변환과 OD 표시에 쓰는 motor profile.
  *
  * @note torque_reference_current_peak_a는 0x6071의 1000 permille에 대응하는
  *       i_q peak [A]이다. 실제 FOC command limit과 같은 값일 필요는 없으며,
@@ -59,7 +59,7 @@ typedef struct {
 /** @brief CANopen service가 연결할 peripheral/App과 고정 network 설정. */
 typedef struct {
     fdcan_driver_t *fdcan_driver; /**< CubeMX가 500 kbit/s로 초기화한 FDCAN handle. */
-    app_t *app; /**< Current-mode command와 상태를 소유하는 App instance. */
+    app_t *app; /**< Current/speed command와 상태를 소유하는 App instance. */
     drive_command_router_t *drive_command_router; /**< PWM output enable/disable를 수행할 driver. */
     fault_manager_t *fault_manager; /**< Software fault source. */
     uint8_t node_id; /**< CANopen Node-ID, 1~127. */
@@ -73,6 +73,7 @@ typedef struct {
     void *canopen_instance;
     canopen_service_drive_state_t drive_state;
     float commanded_i_q_a;
+    float commanded_omega_m_rad_s;
     uint16_t previous_controlword;
     uint32_t process_count;
     uint32_t drive_error_count;

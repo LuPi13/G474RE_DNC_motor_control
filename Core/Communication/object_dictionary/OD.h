@@ -82,7 +82,7 @@ typedef struct {
         uint8_t numberOfMappedObjects;
         uint32_t controlwordMapping;
         uint32_t modesOfOperationMapping;
-        uint32_t targetTorqueMapping;
+        uint32_t targetVelocityMapping;
     } x1600_RPDOMappingParameter;
     struct {
         uint8_t highestSub_indexSupported;
@@ -97,7 +97,7 @@ typedef struct {
         uint8_t numberOfMappedObjects;
         uint32_t statuswordMapping;
         uint32_t modesDisplayMapping;
-        uint32_t torqueActualValueMapping;
+        uint32_t velocityActualValueMapping;
     } x1A00_TPDOMappingParameter;
     uint8_t x2000_motorPolePairs;
     float32_t x2001_permanentMagnetFluxLinkage;
@@ -109,6 +109,7 @@ typedef struct {
     uint16_t x6041_statusword;
     int8_t x6060_modesOfOperation;
     int8_t x6061_modesOfOperationDisplay;
+    int32_t x606C_velocityActualValue;
     int16_t x6071_targetTorque;
     uint16_t x6072_maximumTorque;
     uint32_t x6075_motorRatedCurrent;
@@ -116,6 +117,7 @@ typedef struct {
     int16_t x6077_torqueActualValue;
     uint32_t x6080_maximumMotorSpeed;
     uint32_t x6087_torqueSlope;
+    int32_t x60FF_targetVelocity;
 } OD_RAM_t;
 
 #ifndef OD_ATTR_RAM
@@ -153,13 +155,15 @@ extern OD_ATTR_OD OD_t *OD;
 #define OD_ENTRY_H6041 &OD->list[18]
 #define OD_ENTRY_H6060 &OD->list[19]
 #define OD_ENTRY_H6061 &OD->list[20]
-#define OD_ENTRY_H6071 &OD->list[21]
-#define OD_ENTRY_H6072 &OD->list[22]
-#define OD_ENTRY_H6075 &OD->list[23]
-#define OD_ENTRY_H6076 &OD->list[24]
-#define OD_ENTRY_H6077 &OD->list[25]
-#define OD_ENTRY_H6080 &OD->list[26]
-#define OD_ENTRY_H6087 &OD->list[27]
+#define OD_ENTRY_H606C &OD->list[21]
+#define OD_ENTRY_H6071 &OD->list[22]
+#define OD_ENTRY_H6072 &OD->list[23]
+#define OD_ENTRY_H6075 &OD->list[24]
+#define OD_ENTRY_H6076 &OD->list[25]
+#define OD_ENTRY_H6077 &OD->list[26]
+#define OD_ENTRY_H6080 &OD->list[27]
+#define OD_ENTRY_H6087 &OD->list[28]
+#define OD_ENTRY_H60FF &OD->list[29]
 
 
 /*******************************************************************************
@@ -186,13 +190,15 @@ extern OD_ATTR_OD OD_t *OD;
 #define OD_ENTRY_H6041_statusword &OD->list[18]
 #define OD_ENTRY_H6060_modesOfOperation &OD->list[19]
 #define OD_ENTRY_H6061_modesOfOperationDisplay &OD->list[20]
-#define OD_ENTRY_H6071_targetTorque &OD->list[21]
-#define OD_ENTRY_H6072_maximumTorque &OD->list[22]
-#define OD_ENTRY_H6075_motorRatedCurrent &OD->list[23]
-#define OD_ENTRY_H6076_motorRatedTorque &OD->list[24]
-#define OD_ENTRY_H6077_torqueActualValue &OD->list[25]
-#define OD_ENTRY_H6080_maximumMotorSpeed &OD->list[26]
-#define OD_ENTRY_H6087_torqueSlope &OD->list[27]
+#define OD_ENTRY_H606C_velocityActualValue &OD->list[21]
+#define OD_ENTRY_H6071_targetTorque &OD->list[22]
+#define OD_ENTRY_H6072_maximumTorque &OD->list[23]
+#define OD_ENTRY_H6075_motorRatedCurrent &OD->list[24]
+#define OD_ENTRY_H6076_motorRatedTorque &OD->list[25]
+#define OD_ENTRY_H6077_torqueActualValue &OD->list[26]
+#define OD_ENTRY_H6080_maximumMotorSpeed &OD->list[27]
+#define OD_ENTRY_H6087_torqueSlope &OD->list[28]
+#define OD_ENTRY_H60FF_targetVelocity &OD->list[29]
 
 
 /*******************************************************************************
@@ -244,4 +250,3 @@ extern OD_ATTR_OD OD_t *OD;
 #endif
 
 #endif /* OD_H */
-

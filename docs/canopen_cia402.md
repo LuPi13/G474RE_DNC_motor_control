@@ -3,8 +3,9 @@
 ## 목적과 범위
 
 이 firmware는 FDCAN2의 Classic CAN 500 kbit/s에서 CANopenNode 기반의 CiA 301과
-CiA 402 Profile Torque subset을 제공한다. 초기 범위는 Node-ID 1, NMT/heartbeat,
-SDO server, RPDO1/TPDO1, EMCY, Profile Torque mode(0x6060 = 4)다.
+CiA 402 Profile Torque/Profile Velocity subset을 제공한다. 초기 범위는 Node-ID 1,
+NMT/heartbeat, SDO server, RPDO1/TPDO1, EMCY, Profile Torque mode(0x6060 = 4),
+Profile Velocity mode(0x6060 = 3)다.
 
 현재는 transport, CANopenNode subset, object dictionary, CiA 402 service와 1 kHz
 `main.c` wiring까지 구현되어 있다. CiA 402 hardware validation은 다음 단계다.
@@ -83,9 +84,22 @@ update는 PWM-off 상태의 atomic 재초기화/validation/storage 정책을 별
 Node-ID가 `n`일 때 RPDO1은 `0x200 + n`, TPDO1은 `0x180 + n`이다.
 
 ```text
-RPDO1: 0x6040 Controlword (u16), 0x6060 Mode (i8), 0x6071 Target torque (i16)
-TPDO1: 0x6041 Statusword (u16), 0x6061 Mode display (i8), 0x6077 Actual torque (i16)
+RPDO1: 0x6040 Controlword (u16), 0x6060 Mode (i8), 0x60FF Target velocity (i32, rpm)
+TPDO1: 0x6041 Statusword (u16), 0x6061 Mode display (i8), 0x606C Actual velocity (i32, rpm)
 ```
+
+기본 PDO는 Profile Velocity를 사용한다. `0x6060 = 3`일 때 `0x60FF Target velocity`
+([rpm])가 1 kHz CANopen service를 거쳐 `DRIVE_COMMAND_START_SPEED` 또는
+`DRIVE_COMMAND_SET_SPEED`로 전달된다. App의 speed scheduler와 `motor_control`이
+기계각속도 [rad/s] 변환, 범위 제한, 변화율 제한 및 speed PI를 수행한다.
+`0x606C Velocity actual value`는 유효한 Hall speed feedback을 기계속도 [rpm]로
+변환하여 publish한다. Target velocity가 App speed-reference 범위를 넘으면
+Statusword bit 11(internal limit active)을 설정한다.
+
+Profile Torque(`0x6060 = 4`)는 SDO를 통한 `0x6071 Target torque` 설정을 계속
+지원하지만, 기본 RPDO1/TPDO1 mapping은 속도 운전을 위한 `0x60FF`/`0x606C`이다.
+Torque PDO가 필요한 장비는 CANopen의 표준 PDO 재매핑 절차로 `0x1600`/`0x1A00`을
+변경해야 한다.
 
 multi-byte PDO data는 CANopen little-endian이다. RPDO watchdog, EMCY error mapping,
 power-drive state transition은 통신 hardware test에서 별도로 검증해야 하며, raw FDCAN frame
