@@ -18,7 +18,18 @@ static uint32_t fdcan_driver_dlc_from_length(uint8_t length)
 
 static uint8_t fdcan_driver_length_from_dlc(uint32_t dlc)
 {
-    return (dlc <= FDCAN_DLC_BYTES_8) ? (uint8_t)(dlc >> 16U) : 0U;
+    static const uint32_t dlc_by_length[9] = {
+        FDCAN_DLC_BYTES_0, FDCAN_DLC_BYTES_1, FDCAN_DLC_BYTES_2,
+        FDCAN_DLC_BYTES_3, FDCAN_DLC_BYTES_4, FDCAN_DLC_BYTES_5,
+        FDCAN_DLC_BYTES_6, FDCAN_DLC_BYTES_7, FDCAN_DLC_BYTES_8,
+    };
+
+    for (uint8_t length = 0U; length <= 8U; ++length) {
+        if (dlc == dlc_by_length[length]) {
+            return length;
+        }
+    }
+    return 0U;
 }
 
 static bool fdcan_driver_is_valid_frame(const fdcan_frame_t *frame)
