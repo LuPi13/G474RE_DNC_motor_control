@@ -1,0 +1,28 @@
+var searchData=
+[
+  ['data_20flow_20and_20scheduling_0',['Runtime, Data Flow, and Scheduling',['../md_docs_2runtime__and__dataflow.html',1,'']]],
+  ['deadline_1',['Preload와 duty 반영 deadline',['../md_docs_2runtime__and__dataflow.html#autotoc_md381',1,'']]],
+  ['decision_20기록_2',['9. Architecture Decision 기록',['../md_docs_2architecture__change__policy.html#autotoc_md36',1,'']]],
+  ['definition_20of_20done_3',['20. Definition of Done',['../md_docs_2development__process.html#autotoc_md116',1,'']]],
+  ['dependency는_20다르다_4',['4. 신호 흐름과 include dependency는 다르다',['../md_docs_2file__structure.html#autotoc_md178',1,'']]],
+  ['dependency_20기본_20방향_5',['3. Dependency 기본 방향',['../md_docs_2file__structure.html#autotoc_md176',1,'']]],
+  ['dependency_20예_6',['11. 금지 dependency 예',['../md_docs_2file__structure.html#autotoc_md193',1,'']]],
+  ['dependency_20제거_7',['3. FOC hardware dependency 제거',['../md_docs_2legacy__migration__notes.html#autotoc_md270',1,'']]],
+  ['dependency_20rules_8',['File Structure and Dependency Rules',['../md_docs_2file__structure.html',1,'']]],
+  ['development_20process_9',['Development Process',['../md_docs_2development__process.html',1,'']]],
+  ['diagnostics_10',['17. Stage 13 — State Machine / Communication / Diagnostics',['../md_docs_2development__process.html#autotoc_md110',1,'']]],
+  ['direction_11',['8. &lt;span class=&quot;tt&quot;&gt;@param&lt;/span&gt; direction',['../md_docs_2doxygen__comment__convention.html#autotoc_md145',1,'']]],
+  ['disabled_12',['Require 48MHz for RNG | Disabled',['../system__stm32g4xx_8c.html#autotoc_md264',1,'']]],
+  ['dnc_20motor_20control_13',['STM32G474RE DNC Motor Control',['../index.html',1,'']]],
+  ['done_14',['20. Definition of Done',['../md_docs_2development__process.html#autotoc_md116',1,'']]],
+  ['doxygen_15',['Doxygen',['../md_docs_2doxygen__comment__convention.html#autotoc_md135',1,'5. 구조체 Doxygen'],['../md_docs_2doxygen__comment__convention.html#autotoc_md138',1,'6. Enum Doxygen'],['../md_docs_2doxygen__comment__convention.html#autotoc_md140',1,'7. 함수 Doxygen']]],
+  ['doxygen_20comment_20convention_16',['Doxygen Comment Convention',['../md_docs_2doxygen__comment__convention.html',1,'']]],
+  ['drive_20lifecycle과_20fault_17',['Drive lifecycle과 fault',['../md_docs_2canopen__cia402.html#autotoc_md45',1,'']]],
+  ['drive_20mode_20연결_18',['현재 App drive-mode 연결',['../md_docs_2runtime__and__dataflow.html#autotoc_md382',1,'']]],
+  ['driver_19',['Driver',['../md_docs_2development__process.html#autotoc_md60',1,'5. Stage 1 — PWM Driver'],['../md_docs_2development__process.html#autotoc_md78',1,'9. Stage 5 — CORDIC Driver']]],
+  ['driver_20',['예: hardware driver',['../md_docs_2doxygen__comment__convention.html#autotoc_md143',1,'']]],
+  ['driver_20분리_20가능성_21',['driver 분리 가능성',['../md_docs_2legacy__migration__notes.html#autotoc_md284',1,'10. ADC driver 분리 가능성'],['../md_docs_2legacy__migration__notes.html#autotoc_md286',1,'11. Hall driver 분리 가능성']]],
+  ['driver_20재사용_20시_20설정_20책임_22',['Driver 재사용 시 설정 책임',['../md_docs_2file__structure.html#autotoc_md174',1,'']]],
+  ['driver_20pwm_20synchronization_23',['6. Stage 2 — ADC Driver + PWM Synchronization',['../md_docs_2development__process.html#autotoc_md65',1,'']]],
+  ['duty_20반영_20deadline_24',['Preload와 duty 반영 deadline',['../md_docs_2runtime__and__dataflow.html#autotoc_md381',1,'']]]
+];

@@ -8,6 +8,11 @@ Profile Torque/Profile Velocity subset을 제공한다.
 최상위 안내서다. 모듈 설계와 런타임 규칙은 [docs/README.md](docs/README.md)를
 source of truth로 사용한다.
 
+## 코드 로직/API 참고
+
+제어 로직, module public API 또는 source-level 동작을 수정하기 전에는
+[Doxygen API 문서](docs/api/html/index.html)를 참고한다.
+
 ## 빠른 변경표
 
 | 변경하려는 것 | 먼저 바꿀 곳 | 반드시 같이 확인할 곳 |

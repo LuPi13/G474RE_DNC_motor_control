@@ -1,0 +1,19 @@
+var searchData=
+[
+  ['period_0',['period',['../structpwm__driver__t.html#abc456702621adb5fe782c87d0715fa24',1,'pwm_driver_t']]],
+  ['permanent_5fmagnet_5fflux_5flinkage_5fwb_1',['permanent_magnet_flux_linkage_wb',['../structcanopen__service__motor__profile__t.html#ae1f8d63e4d1e3281fea25f0c35ea9a8b',1,'canopen_service_motor_profile_t::permanent_magnet_flux_linkage_wb'],['../structfoc__config__t.html#a72620f3b218efc1b7eb1c391beecf6bf',1,'foc_config_t::permanent_magnet_flux_linkage_wb'],['../structfoc__t.html#ab65a82d4c7bc15f86701be422fb31c69',1,'foc_t::permanent_magnet_flux_linkage_wb']]],
+  ['phase_5fa_2',['phase_a',['../structadc__driver__config__t.html#ab1ce0122b1e9d18e93df0225ea5f9eac',1,'adc_driver_config_t::phase_a'],['../structadc__driver__raw__sample__t.html#a8f333f8c96b9ec9971e9541677549dfe',1,'adc_driver_raw_sample_t::phase_a'],['../structpwm__driver__config__t.html#abc2decb0c9c360e0efd654dc4132367e',1,'pwm_driver_config_t::phase_a']]],
+  ['phase_5fa_5fsum_5fcounts_3',['phase_a_sum_counts',['../structcurrent__sensor__t.html#a92b24055ebf09560ab82b4f7b2bd272d',1,'current_sensor_t']]],
+  ['phase_5fb_4',['phase_b',['../structadc__driver__config__t.html#a88b3ef237b11fc93f285820ad0000460',1,'adc_driver_config_t::phase_b'],['../structadc__driver__raw__sample__t.html#a7347565f503887fa8328407ce2051c90',1,'adc_driver_raw_sample_t::phase_b'],['../structpwm__driver__config__t.html#a1eaeb7df1e88b05a9ffbf699a6fcd973',1,'pwm_driver_config_t::phase_b']]],
+  ['phase_5fb_5fsum_5fcounts_5',['phase_b_sum_counts',['../structcurrent__sensor__t.html#a11ee637054e6ab49956912f674632392',1,'current_sensor_t']]],
+  ['phase_5fc_6',['phase_c',['../structadc__driver__config__t.html#af70adeca7885a0ac8da29e6742c82a5c',1,'adc_driver_config_t::phase_c'],['../structadc__driver__raw__sample__t.html#a2c516a32710508b69d5c8af1337c5202',1,'adc_driver_raw_sample_t::phase_c'],['../structpwm__driver__config__t.html#a987074cd066284d78e5b4cb3617ac660',1,'pwm_driver_config_t::phase_c']]],
+  ['phase_5fc_5fsum_5fcounts_7',['phase_c_sum_counts',['../structcurrent__sensor__t.html#ae4d16fb7c1694aa3dbafe806e5906dc3',1,'current_sensor_t']]],
+  ['phase_5fcurrent_5fclear_5fabs_5fa_8',['phase_current_clear_abs_a',['../structfault__manager__config__t.html#a467d83c1886fbf512eef64ac532fc58e',1,'fault_manager_config_t']]],
+  ['phase_5fcurrent_5ftrip_5fabs_5fa_9',['phase_current_trip_abs_a',['../structfault__manager__config__t.html#ae1a9cc3b578a60817b873f59679f43d2',1,'fault_manager_config_t']]],
+  ['pi_10',['pi',['../structfoc__profile__t.html#a6a6456901ed233fedb16ec6df2a266a0',1,'foc_profile_t::pi'],['../structspeed__controller__config__t.html#a7d6b5a99a56e688701f8c9934aca4671',1,'speed_controller_config_t::pi'],['../structspeed__controller__t.html#a1278b6a563131c2e66d5816d3de32ca3',1,'speed_controller_t::pi']]],
+  ['pin_11',['pin',['../structhall__driver__input__config__t.html#a25fb7b4388088f46e52c6be45da25934',1,'hall_driver_input_config_t']]],
+  ['pole_5fpairs_12',['pole_pairs',['../structcanopen__service__motor__profile__t.html#aa6c731168fce7b6936df6a0bb9c8a551',1,'canopen_service_motor_profile_t::pole_pairs'],['../structmotor__control__config__t.html#a30c569c62d37150ffb44e85e68936a3b',1,'motor_control_config_t::pole_pairs']]],
+  ['port_13',['port',['../structhall__driver__input__config__t.html#af1c6334b6c01b3b2d0fc467bfc19a34a',1,'hall_driver_input_config_t']]],
+  ['profile_14',['profile',['../structhall__decoder__t.html#ac5e4e12528a1745f5663020adc4adb2a',1,'hall_decoder_t']]],
+  ['pwm_5fdriver_15',['pwm_driver',['../structapp__config__t.html#a967a01cbf4a34d590547edaaf323d8cd',1,'app_config_t']]]
+];

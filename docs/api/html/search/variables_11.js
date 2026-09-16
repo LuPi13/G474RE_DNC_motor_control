@@ -1,0 +1,28 @@
+var searchData=
+[
+  ['sampling_5fperiod_5fs_0',['sampling_period_s',['../structapp__config__t.html#abda0c14a7afc438d232a7255b792eeaa',1,'app_config_t::sampling_period_s'],['../structmotor__control__config__t.html#a97ef4378c836e6962c875a6d902b336e',1,'motor_control_config_t::sampling_period_s'],['../structfilter__low__pass__config__t.html#a048a3642bcab1d19b68709af691f7470',1,'filter_low_pass_config_t::sampling_period_s'],['../structpi__controller__config__t.html#afddb332ec22d21c9d718e901db2f998a',1,'pi_controller_config_t::sampling_period_s'],['../structrate__limiter__config__t.html#a056cea08be8c62680ae1865efb94d0ad',1,'rate_limiter_config_t::sampling_period_s']]],
+  ['sector_1',['sector',['../structhall__decoder__output__t.html#acacb37ae35b86bf56fcb68431525bd32',1,'hall_decoder_output_t::sector'],['../structhall__estimator__observation__t.html#aa2af2934eff8124a5a7f765906be4d42',1,'hall_estimator_observation_t::sector']]],
+  ['sector_5fby_5fstate_2',['sector_by_state',['../structhall__decoder__profile__t.html#a5dedd9226ac89f1822c3509957769000',1,'hall_decoder_profile_t']]],
+  ['sector_5fcenter_5fangle_5frad_3',['sector_center_angle_rad',['../structhall__decoder__t.html#a7268cdedd825c2c151821ebe51a34cb1',1,'hall_decoder_t']]],
+  ['sector_5fspan_5frad_4',['sector_span_rad',['../structhall__decoder__output__t.html#a075e01daecd28482a5f470c08377ebca',1,'hall_decoder_output_t::sector_span_rad'],['../structhall__decoder__t.html#af11258c893815d618dc166d0722a0509',1,'hall_decoder_t::sector_span_rad'],['../structhall__estimator__observation__t.html#a8f66a8c675a207ca31aa0d23e26842ce',1,'hall_estimator_observation_t::sector_span_rad']]],
+  ['sensing_5',['sensing',['../structapp__fast__loop__profile__t.html#a5d05cbad606b5157e1f4e37dcda994a1',1,'app_fast_loop_profile_t']]],
+  ['settled_5fsample_5fcount_6',['settled_sample_count',['../structcurrent__sensor__t.html#abb08abbde6093d7ab7d8df564081a865',1,'current_sensor_t']]],
+  ['settling_5fsample_5fcount_7',['settling_sample_count',['../structcurrent__sensor__config__t.html#a5aa451d94e549af3f2054b92db36fbf3',1,'current_sensor_config_t']]],
+  ['sin_5ftheta_8',['sin_theta',['../structfoc__input__t.html#aea050f7ff1954e97ce45c164f4b40de9',1,'foc_input_t::sin_theta'],['../structmotor__control__input__t.html#a7cd51ebea1ad550cb408ff8b2d69f287',1,'motor_control_input_t::sin_theta'],['../structmotor__control__fast__input__t.html#a874fa8d8113485b5ee6ba2da999239ba',1,'motor_control_fast_input_t::sin_theta']]],
+  ['speed_5fcommand_5fbuffer_9',['speed_command_buffer',['../structapp__t.html#a29cf3f9bf535441fc7a3409d8f35f3f3',1,'app_t']]],
+  ['speed_5fcontroller_10',['speed_controller',['../structmotor__control__config__t.html#a2720d571d44a6669a63eb831f0ba0760',1,'motor_control_config_t::speed_controller'],['../structmotor__control__speed__output__t.html#a2bbe8d695a6b234b026f86d4a263c1c7',1,'motor_control_speed_output_t::speed_controller'],['../structmotor__control__t.html#a714efca7c72faa419bf63f54187b0847',1,'motor_control_t::speed_controller']]],
+  ['speed_5fcurrent_5ftarget_5fbuffer_11',['speed_current_target_buffer',['../structapp__t.html#a953793fbccd9a7045624566a0c564281',1,'app_t']]],
+  ['speed_5ffeedback_5fbuffer_12',['speed_feedback_buffer',['../structapp__t.html#a6b7b0d0fac3c5b71cf16a0377a6d9531',1,'app_t']]],
+  ['speed_5floop_5fperiod_5fs_13',['speed_loop_period_s',['../structapp__config__t.html#a57ca857ee38f2512c0a25bd24163521d',1,'app_config_t']]],
+  ['speed_5freference_5ffall_5frate_5frad_5fs2_14',['speed_reference_fall_rate_rad_s2',['../structmotor__control__config__t.html#a51db473cd2b7dee748b2774b48e7ade4',1,'motor_control_config_t']]],
+  ['speed_5freference_5fmax_5frad_5fs_15',['speed_reference_max_rad_s',['../structmotor__control__config__t.html#abcbaeb34e7df859839d6baec334933ba',1,'motor_control_config_t']]],
+  ['speed_5freference_5fmin_5frad_5fs_16',['speed_reference_min_rad_s',['../structmotor__control__config__t.html#a855db1039eac499493450fc4141140e0',1,'motor_control_config_t']]],
+  ['speed_5freference_5frate_5flimiter_17',['speed_reference_rate_limiter',['../structmotor__control__t.html#a1cb60133536a7395a946a5a3e0039188',1,'motor_control_t']]],
+  ['speed_5freference_5frise_5frate_5frad_5fs2_18',['speed_reference_rise_rate_rad_s2',['../structmotor__control__config__t.html#ab334f07589d396766ddf0055821a4a06',1,'motor_control_config_t']]],
+  ['speed_5fstop_5fdwell_5fms_19',['speed_stop_dwell_ms',['../structapp__config__t.html#a2f0708edcf6fdd9f1baa355d88bc24a6',1,'app_config_t']]],
+  ['speed_5fstop_5flow_5fspeed_5felapsed_5fms_20',['speed_stop_low_speed_elapsed_ms',['../structapp__t.html#ae544884d9d0fa34668490341abd64f17',1,'app_t']]],
+  ['speed_5fstop_5fomega_5fm_5fthreshold_5frad_5fs_21',['speed_stop_omega_m_threshold_rad_s',['../structapp__config__t.html#af04a24df20e02e26c6105f64ef28108c',1,'app_config_t']]],
+  ['standard_5fid_22',['standard_id',['../structfdcan__frame__t.html#addf34498303dd181ef5afa8121619550',1,'fdcan_frame_t']]],
+  ['start_5frequested_23',['start_requested',['../structdrive__debug__command__source__t.html#ad5f90c22734097dc42fc70fc173bca86',1,'drive_debug_command_source_t']]],
+  ['stop_5frequested_24',['stop_requested',['../structdrive__debug__command__source__t.html#a0f236f34522473349e1b6f5bba1b0963',1,'drive_debug_command_source_t']]]
+];

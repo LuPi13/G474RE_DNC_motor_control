@@ -1,0 +1,6 @@
+var searchData=
+[
+  ['voltage_5fsensor_5fconvert_0',['voltage_sensor_convert',['../group__platform__voltage__sensor.html#gab65e455dd226dd9e698a1f10d92145f1',1,'voltage_sensor_convert(const voltage_sensor_t *self, uint16_t raw_counts, float *v_dc):&#160;voltage_sensor.c'],['../group__platform__voltage__sensor.html#gab65e455dd226dd9e698a1f10d92145f1',1,'voltage_sensor_convert(const voltage_sensor_t *self, uint16_t raw_counts, float *v_dc):&#160;voltage_sensor.c']]],
+  ['voltage_5fsensor_5fconvert_5ffast_1',['voltage_sensor_convert_fast',['../group__platform__voltage__sensor.html#gadc16240f72b5e2a67eedb2da3dba4465',1,'voltage_sensor_convert_fast(const voltage_sensor_t *self, uint16_t raw_counts):&#160;voltage_sensor.c'],['../group__platform__voltage__sensor.html#gadc16240f72b5e2a67eedb2da3dba4465',1,'voltage_sensor_convert_fast(const voltage_sensor_t *self, uint16_t raw_counts):&#160;voltage_sensor.c']]],
+  ['voltage_5fsensor_5finit_2',['voltage_sensor_init',['../group__platform__voltage__sensor.html#ga406f89febc81aec20bf59f600441c480',1,'voltage_sensor_init(voltage_sensor_t *self, const voltage_sensor_config_t *config):&#160;voltage_sensor.c'],['../group__platform__voltage__sensor.html#ga406f89febc81aec20bf59f600441c480',1,'voltage_sensor_init(voltage_sensor_t *self, const voltage_sensor_config_t *config):&#160;voltage_sensor.c']]]
+];

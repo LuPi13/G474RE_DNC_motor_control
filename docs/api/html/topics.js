@@ -1,0 +1,25 @@
+var topics =
+[
+    [ "Motor-drive App", "group__app__motor__drive.html", "group__app__motor__drive" ],
+    [ "CANopen service", "group__app__canopen__service.html", "group__app__canopen__service" ],
+    [ "Fault manager", "group__app__fault__manager.html", "group__app__fault__manager" ],
+    [ "FOC", "group__control__foc.html", "group__control__foc" ],
+    [ "Hall decoder", "group__control__hall__decoder.html", "group__control__hall__decoder" ],
+    [ "Hall estimator", "group__control__hall__estimator.html", "group__control__hall__estimator" ],
+    [ "Motor control", "group__control__motor__control.html", "group__control__motor__control" ],
+    [ "Speed controller", "group__control__speed__controller.html", "group__control__speed__controller" ],
+    [ "Filter", "group__algorithm__filter.html", "group__algorithm__filter" ],
+    [ "Limiter", "group__algorithm__limiter.html", "group__algorithm__limiter" ],
+    [ "PI controller", "group__algorithm__pi__controller.html", "group__algorithm__pi__controller" ],
+    [ "Rate limiter", "group__algorithm__rate__limiter.html", "group__algorithm__rate__limiter" ],
+    [ "SVPWM", "group__algorithm__svpwm.html", "group__algorithm__svpwm" ],
+    [ "Transform", "group__algorithm__transform.html", "group__algorithm__transform" ],
+    [ "ADC driver", "group__platform__adc__driver.html", "group__platform__adc__driver" ],
+    [ "CORDIC driver", "group__platform__cordic__driver.html", "group__platform__cordic__driver" ],
+    [ "Current sensor", "group__platform__current__sensor.html", "group__platform__current__sensor" ],
+    [ "Hall driver", "group__platform__hall__driver.html", "group__platform__hall__driver" ],
+    [ "PWM driver", "group__platform__pwm__driver.html", "group__platform__pwm__driver" ],
+    [ "Voltage sensor", "group__platform__voltage__sensor.html", "group__platform__voltage__sensor" ],
+    [ "Motor configuration", "group__config__motor.html", "group__config__motor" ],
+    [ "CMSIS", "group___c_m_s_i_s.html", "group___c_m_s_i_s" ]
+];
