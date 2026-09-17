@@ -31,6 +31,10 @@ API HTML은 GitHub Actions가 `main` 변경 시 생성해 GitHub Pages에 배포
 | Hall pin 또는 배선 순서 | `.ioc`/GPIO 설정과 `main.c`의 `hall_config` | `motor_config_hall_profile`, TIM2 clock/prescaler, 정·역방향 검증 |
 | CAN pin, bit rate, Node-ID | `.ioc`/FDCAN2 설정과 `main.c`의 `canopen_config` | CANopen master의 bit rate/COB-ID/PDO 설정 |
 
+전류/속도 PI, 모터 model, 지령 제한의 runtime source of truth는 이제 `Core/Config/drive_parameters.c`의
+compile default 또는 유효한 Flash record다. `main.c`의 `motor_control_config`은 `drive_parameters_t`에서
+생성된 적용 결과이며 직접 수정하지 않는다.
+
 ## 설정 소유권
 
 설정은 한 파일에 모두 있지 않다. 아래 순서를 지켜야 같은 물리량의 설정이
@@ -72,6 +76,24 @@ CANopen RPDO / SDO
 
 통신 ISR은 frame을 CANopenNode RX buffer에 전달만 한다. CANopen service는 PWM/FOC를
 직접 호출하지 않는다.
+
+## Flash parameter tuning and persistence
+
+Motor model, FOC/current/speed PI, command limits, feedforward enable, and CANopen torque conversion scale are now
+owned by `drive_parameters_t`, not a hand-edited `motor_control_config` initializer in `main.c`. At boot, the latest
+valid Flash record is loaded before `motor_control` initialization; an erased, corrupted, or schema-incompatible record
+falls back to compile-time defaults.
+
+Use `drive_parameter_debug` through Live Expression only while the drive is READY and PWM output is disabled:
+
+1. Edit `working_set`.
+2. Increment `apply_request` and confirm `last_status == DRIVE_PARAMETER_MANAGER_STATUS_APPLIED`.
+3. Verify operation.
+4. Increment `save_request` to persist the applied set.
+
+`load_request`, `defaults_request`, and `erase_request` are explicit actions; none changes an active controller without
+an `apply_request`. Flash writes never run in the 40 kHz loop. See
+[Flash parameter storage](docs/flash_parameter_storage.md) for the record layout, recovery behavior, and host test.
 
 ## Debug 관측: Live Expression / SWV
 

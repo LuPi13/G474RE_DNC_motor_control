@@ -29,6 +29,8 @@
 #include "drive_debug_command_source.h"
 #include "drive_debug_observer.h"
 #include "drive_command.h"
+#include "drive_parameter_manager.h"
+#include "drive_parameters.h"
 #include "fault_manager.h"
 #include "fdcan_driver.h"
 #include "hall_decoder.h"
@@ -105,6 +107,9 @@ static fdcan_driver_t fdcan_driver;
 static app_t app;
 static canopen_service_t canopen_service;
 static drive_command_router_t canopen_drive_command_router;
+static drive_parameter_manager_t drive_parameter_manager;
+static motor_control_config_t motor_control_config;
+static float fast_loop_sampling_period_s;
 
 static uint32_t canopen_service_last_tick_ms;
 
@@ -131,6 +136,48 @@ static void MX_CORDIC_Init(void);
 
 /* Private user code ---------------------------------------------------------*/
 /* USER CODE BEGIN 0 */
+static bool main_apply_drive_parameters(
+    void *context,
+    const drive_parameters_t *parameters
+)
+{
+  motor_control_config_t next_config;
+  const uint32_t primask = __get_PRIMASK();
+
+  (void)context;
+  if (!drive_parameters_build_motor_control_config(
+          parameters,
+          fast_loop_sampling_period_s,
+          0.001f,
+          &next_config)) {
+      return false;
+  }
+
+  /* READY/PWM-off main context에서만 호출된다. ADC ISR과 instance write가 겹치지 않게 한다. */
+  __disable_irq();
+  const motor_control_status_t status = motor_control_init(
+      &motor_control,
+      &next_config
+  );
+  if (primask == 0U) {
+      __enable_irq();
+  }
+  if (status != MOTOR_CONTROL_STATUS_OK) {
+      return false;
+  }
+
+  motor_control_config = next_config;
+  if (canopen_service.is_initialized) {
+      canopen_service.motor_profile.pole_pairs = parameters->pole_pairs;
+      canopen_service.motor_profile.permanent_magnet_flux_linkage_wb =
+          parameters->permanent_magnet_flux_linkage_wb;
+      canopen_service.motor_profile.torque_reference_current_peak_a =
+          parameters->canopen_torque_reference_current_peak_a;
+      canopen_service.motor_profile.maximum_mechanical_speed_rad_s =
+          parameters->speed_reference_max_rad_s;
+  }
+  return true;
+}
 /* USER CODE END 0 */
 
 /**
@@ -229,49 +276,21 @@ int main(void)
       Error_Handler();
   }
 
-  const float fast_loop_sampling_period_s =
+  fast_loop_sampling_period_s =
       1.0f / (float)APP_FAST_LOOP_FREQUENCY_HZ;
-  const motor_control_config_t motor_control_config = {
-      .current_reference_min = {.d = -2.0f, .q = -2.0f},
-      .current_reference_max = {.d = 2.0f, .q = 2.0f},
-      .current_reference_rise_rate_per_s = {.d = 100.0f, .q = 100.0f},
-      .current_reference_fall_rate_per_s = {.d = 100.0f, .q = 100.0f},
-      .current_reference_magnitude_limit = 2.0f,
-      .sampling_period_s = fast_loop_sampling_period_s,
-      .foc = {
-          .d_axis_pi = {
-              .kp = 1.71530959f,
-              .ki = 2623.22987f,
-              .anti_windup_gain_per_s = 1529.30403f,
-              .sampling_period_s = fast_loop_sampling_period_s,
-              .output_min = -100.0f,
-              .output_max = 100.0f,
-          },
-          .q_axis_pi = {
-              .kp = 1.85982285f,
-              .ki = 2623.22987f,
-              .anti_windup_gain_per_s = 1410.47297f,
-              .sampling_period_s = fast_loop_sampling_period_s,
-              .output_min = -100.0f,
-              .output_max = 100.0f,
-          },
-          .current_filter = {
-              .cutoff_frequency_hz = 5000.0f,
-              .sampling_period_s = fast_loop_sampling_period_s,
-          },
-          .voltage_utilization = 0.9f,
-          .d_axis_inductance_h = 546.0e-6f,
-          .q_axis_inductance_h = 592.0e-6f,
-          .permanent_magnet_flux_linkage_wb = 6.74e-3f,
-          .is_decoupling_enabled = false,
-      },
-      .speed_controller = motor_config_speed_controller,
-      .speed_reference_min_rad_s = -314.159265f,
-      .speed_reference_max_rad_s = 314.159265f,
-      .speed_reference_rise_rate_rad_s2 = 31.415927f,
-      .speed_reference_fall_rate_rad_s2 = 31.415927f,
-      .pole_pairs = 5U,
-  };
+  drive_parameters_t default_drive_parameters;
+  drive_parameters_get_defaults(&default_drive_parameters);
+  drive_parameter_manager_init(
+      &drive_parameter_manager,
+      &default_drive_parameters
+  );
+  if (!drive_parameters_build_motor_control_config(
+          (const drive_parameters_t *)&drive_parameter_debug.active_set,
+          fast_loop_sampling_period_s,
+          0.001f,
+          &motor_control_config)) {
+      Error_Handler();
+  }
 
   if (motor_control_init(
       &motor_control,
@@ -428,7 +447,7 @@ int main(void)
       .permanent_magnet_flux_linkage_wb =
           motor_control_config.foc.permanent_magnet_flux_linkage_wb,
       .torque_reference_current_peak_a =
-          motor_config_canopen_torque_reference_current_peak_a,
+          drive_parameter_debug.active_set.canopen_torque_reference_current_peak_a,
       .maximum_mechanical_speed_rad_s =
           motor_control_config.speed_reference_max_rad_s,
   };
@@ -458,6 +477,14 @@ int main(void)
   while (1)
   {
       (void)app_drive_update(&app);
+
+      drive_parameter_manager_process(
+          &drive_parameter_manager,
+          (app.drive_state == APP_DRIVE_STATE_READY) &&
+              !pwm_driver.is_enabled,
+          main_apply_drive_parameters,
+          NULL
+      );
 
       drive_debug_command_source_update(&app);
 
