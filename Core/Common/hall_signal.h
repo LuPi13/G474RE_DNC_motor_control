@@ -18,7 +18,8 @@
  */
 typedef struct {
     uint8_t hall_state;       /**< A/B/C = bit 2/1/0인 raw state, 범위 [0, 7]. */
-    uint32_t capture_count;   /**< Hall edge마다 증가하는 capture sequence. */
+    uint32_t capture_count;   /**< 수락한 Hall state transition마다 증가하는 capture sequence. */
+    uint32_t invalid_capture_count; /**< State 불일치, 0 tick 또는 overcapture raw event 누적 횟수. */
     float edge_interval_s;    /**< 유효할 때 직전 edge부터 현재 edge까지의 시간 [s]. */
     bool has_state_sample;    /**< hall_state가 실제 GPIO sample임. */
     bool has_valid_interval;  /**< edge_interval_s를 speed 계산에 사용할 수 있음. */

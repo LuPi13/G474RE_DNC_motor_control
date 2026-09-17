@@ -336,10 +336,16 @@ buffer 방식으로 publish한다. ADC reader는 선점 시점에 따라 이전 
   `hall_estimator_get_latest_output_fast()`의 읽기 전용 포인터만 소비한다. Generic fast-loop의
   diagnostic output은 필요할 때만 이 결과를 복사하며, decoder와 estimator 사이에 새 runtime
   source of truth를 만들지 않는다.
-- Valid raw Hall state의 `HALL_DECODER_STATUS_INVALID_TRANSITION`도 Hall feedback fault로 처리한다.
+- Valid raw Hall state의 `HALL_DECODER_STATUS_INVALID_CAPTURE` 또는
+  `HALL_DECODER_STATUS_INVALID_TRANSITION`도 Hall feedback fault로 처리한다.
   decoder는 진단 state를 resync하지만 App은 정상 전이 순서가 보장되지 않은 상태에서 FOC를 계속 실행하지
   않는다. `000`/`111` profile-invalid state, capture 누락, driver 오류 및 estimator 오류도 즉시 기존
   fault 경로를 사용한다.
+- TIM capture 시점의 GPIO raw state가 직전 publish state와 같거나 capture tick이 0 또는 TIM CC1
+  overcapture가 발생하면 실제 Hall transition으로 수락하지 않는다. `capture_count`를 증가시키지 않고
+  interval 기준을 무효화하며, `hall_driver.invalid_capture_count`를 decoder에 전달해 FOC 운전 중 Hall feedback fault로
+  처리한다. Same-state 원인은 `same_state_capture_count`, TIM CC1 overcapture 원인은
+  `overcapture_count`에 별도로 누적한다.
 - Timeout 뒤 첫 Hall edge의 capture 시간은 완전한 edge-to-edge 간격이 아니므로 속도를
   계산하지 않는다. 다음 유효 edge부터 속도 계산을 재개한다.
 - Priority 관계나 실행 문맥을 바꾸면 double buffer의 single-writer/reader 선점 전제를

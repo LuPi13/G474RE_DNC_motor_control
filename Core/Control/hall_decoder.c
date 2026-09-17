@@ -204,6 +204,7 @@ hall_decoder_status_t hall_decoder_reset(hall_decoder_t *self)
 
     hall_decoder_clear_output(&self->output);
     self->last_capture_count = 0U;
+    self->last_invalid_capture_count = 0U;
     self->invalid_state_count = 0U;
     self->invalid_transition_count = 0U;
     self->missed_capture_count = 0U;
@@ -221,18 +222,24 @@ static hall_decoder_status_t hall_decoder_update_unchecked(
         hall_decoder_set_invalid_state(self, observation);
         self->has_observation = true;
         self->last_capture_count = observation->capture_count;
+        self->last_invalid_capture_count = observation->invalid_capture_count;
         return HALL_DECODER_STATUS_INVALID_OBSERVATION;
     }
 
     const bool is_first_observation = !self->has_observation;
     const uint32_t capture_delta = observation->capture_count -
         self->last_capture_count;
+    const uint32_t invalid_capture_delta = observation->invalid_capture_count -
+        self->last_invalid_capture_count;
     const bool has_new_capture = !is_first_observation &&
         (capture_delta != 0U);
+    const bool has_new_invalid_capture = !is_first_observation &&
+        (invalid_capture_delta != 0U);
     const bool has_timeout_change = is_first_observation ||
         (observation->is_timed_out != self->output.is_timed_out);
 
-    if (!is_first_observation && !has_new_capture && !has_timeout_change) {
+    if (!is_first_observation && !has_new_capture && !has_new_invalid_capture &&
+        !has_timeout_change) {
         return self->output.has_valid_state ?
             HALL_DECODER_STATUS_OK :
             HALL_DECODER_STATUS_INVALID_HALL_STATE;
@@ -240,6 +247,7 @@ static hall_decoder_status_t hall_decoder_update_unchecked(
 
     self->has_observation = true;
     self->last_capture_count = observation->capture_count;
+    self->last_invalid_capture_count = observation->invalid_capture_count;
 
     const uint8_t sector =
         self->profile.sector_by_state[observation->hall_state];
@@ -247,6 +255,16 @@ static hall_decoder_status_t hall_decoder_update_unchecked(
         hall_decoder_set_invalid_state(self, observation);
         ++self->invalid_state_count;
         return HALL_DECODER_STATUS_INVALID_HALL_STATE;
+    }
+
+    if (has_new_invalid_capture) {
+        hall_decoder_resynchronize(
+            self,
+            observation->hall_state,
+            sector,
+            observation->is_timed_out
+        );
+        return HALL_DECODER_STATUS_INVALID_CAPTURE;
     }
 
     if (is_first_observation || !self->output.has_valid_state) {

@@ -34,7 +34,7 @@ typedef enum {
     HALL_DRIVER_STATUS_INVALID_ARGUMENT, /**< NULL 또는 다른 TIM handle. */
     HALL_DRIVER_STATUS_INVALID_CONFIG, /**< GPIO/clock/CubeMX TIM 설정 오류. */
     HALL_DRIVER_STATUS_INVALID_STATE, /**< 실행 상태가 요청과 맞지 않음. */
-    HALL_DRIVER_STATUS_INVALID_CAPTURE, /**< CH1이 아니거나 capture tick이 0임. */
+    HALL_DRIVER_STATUS_INVALID_CAPTURE, /**< CH1이 아니거나 capture integrity 오류임. */
     HALL_DRIVER_STATUS_HAL_ERROR /**< HAL start/stop 실패. */
 } hall_driver_status_t;
 
@@ -64,8 +64,8 @@ typedef struct {
     uint8_t hall_state;       /**< A/B/C = bit 2/1/0인 raw state, 범위 [0, 7]. */
     uint32_t capture_ticks;   /**< 최신 TIM CH1 capture 값 [counter tick]. */
     float edge_interval_s;    /**< 직전 edge부터 현재 edge까지의 시간 [s]. */
-    uint32_t capture_count;   /**< 수락한 CH1 Hall capture 누적 횟수. */
-    uint32_t invalid_capture_count; /**< 0 tick 등 interval을 사용할 수 없던 capture 횟수. */
+    uint32_t capture_count;   /**< 수락한 Hall state transition 누적 횟수. */
+    uint32_t invalid_capture_count; /**< State 불일치, 0 tick 또는 overcapture raw event 누적 횟수. */
     uint32_t timeout_count;   /**< Hall edge timeout 진입 횟수. */
     bool has_state_sample;    /**< hall_state가 실제 GPIO에서 읽힌 값임. */
     bool has_valid_interval;  /**< edge_interval_s를 사용할 수 있음. */
@@ -82,6 +82,8 @@ typedef struct {
     float timeout_s; /**< Auto-reload가 나타내는 timeout [s]. */
     volatile hall_driver_feedback_t feedback_buffer[2]; /**< ISR publish용 완성 snapshot 두 벌. */
     volatile uint32_t active_feedback_index; /**< Reader에 공개된 buffer index. */
+    volatile uint32_t same_state_capture_count; /**< GPIO state가 이전과 같아 transition으로 수락하지 않은 capture 횟수. */
+    volatile uint32_t overcapture_count; /**< TIM CC1 overcapture 감지 횟수. */
     volatile bool has_valid_interval_reference; /**< 다음 capture interval의 시작 edge가 있음. */
     volatile bool capture_with_pending_timeout; /**< Capture와 overflow가 같은 IRQ에 pending이었음. */
     volatile bool is_initialized; /**< Mapping/TIM 검증 완료 여부. */
@@ -127,10 +129,13 @@ hall_driver_status_t hall_driver_stop(hall_driver_t *self);
  * @param[in,out] self 실행 중인 driver instance.
  * @param[in] htim HAL_TIM_IC_CaptureCallback()에서 받은 TIM handle.
  * @note Raw state 000/111을 포함한 모든 3-bit 조합을 그대로 publish한다.
- * @retval HALL_DRIVER_STATUS_OK Raw state와 capture interval publish 완료.
+ * @note 이전 snapshot과 같은 raw state, capture tick 0 또는 TIM CC1 overcapture는
+ *       state transition으로 수락하지 않는다. invalid_capture_count를 증가시켜 decoder/App의
+ *       Hall fault 경로로 전달하고 다음 실제 transition의 interval도 무효화한다.
+ * @retval HALL_DRIVER_STATUS_OK 수락한 raw state transition과 capture interval publish 완료.
  * @retval HALL_DRIVER_STATUS_INVALID_ARGUMENT NULL, 초기화되지 않은 instance 또는 다른 TIM.
  * @retval HALL_DRIVER_STATUS_INVALID_STATE Driver가 실행 중이 아님.
- * @retval HALL_DRIVER_STATUS_INVALID_CAPTURE CH1 callback이 아니거나 capture tick이 0임.
+ * @retval HALL_DRIVER_STATUS_INVALID_CAPTURE CH1 callback이 아니거나 capture integrity 오류임.
  */
 hall_driver_status_t hall_driver_handle_capture(
     hall_driver_t *self,

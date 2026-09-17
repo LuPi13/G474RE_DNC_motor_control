@@ -189,6 +189,8 @@ hall_driver_status_t hall_driver_init(
         &self->feedback_buffer[1]
     );
     self->active_feedback_index = 0U;
+    self->same_state_capture_count = 0U;
+    self->overcapture_count = 0U;
     self->has_valid_interval_reference = false;
     self->capture_with_pending_timeout = false;
     self->is_running = false;
@@ -222,7 +224,7 @@ hall_driver_status_t hall_driver_start(hall_driver_t *self)
     __HAL_TIM_SET_COUNTER(self->config.timer, 0U);
     __HAL_TIM_CLEAR_FLAG(
         self->config.timer,
-        TIM_FLAG_CC1 | TIM_FLAG_UPDATE
+        TIM_FLAG_CC1 | TIM_FLAG_CC1OF | TIM_FLAG_UPDATE
     );
 
     self->is_running = true;
@@ -252,7 +254,7 @@ hall_driver_status_t hall_driver_stop(hall_driver_t *self)
     );
     __HAL_TIM_CLEAR_FLAG(
         self->config.timer,
-        TIM_FLAG_CC1 | TIM_FLAG_UPDATE
+        TIM_FLAG_CC1 | TIM_FLAG_CC1OF | TIM_FLAG_UPDATE
     );
     self->has_valid_interval_reference = false;
     self->capture_with_pending_timeout = false;
@@ -288,35 +290,56 @@ hall_driver_status_t hall_driver_handle_capture(
         htim,
         TIM_CHANNEL_1
     );
+    const bool has_overcapture =
+        __HAL_TIM_GET_FLAG(htim, TIM_FLAG_CC1OF) != RESET;
     const bool has_pending_timeout =
         (__HAL_TIM_GET_FLAG(htim, TIM_FLAG_UPDATE) != RESET) &&
         (__HAL_TIM_GET_IT_SOURCE(htim, TIM_IT_UPDATE) != RESET);
+    const uint8_t hall_state = hall_driver_read_state(self);
+
+    if (has_overcapture) {
+        __HAL_TIM_CLEAR_FLAG(htim, TIM_FLAG_CC1OF);
+        ++self->overcapture_count;
+    }
 
     hall_driver_feedback_t feedback;
     hall_driver_load_active_feedback(self, &feedback);
-    feedback.hall_state = hall_driver_read_state(self);
+    const bool is_same_state = feedback.has_state_sample &&
+        (hall_state == feedback.hall_state);
+    const bool is_invalid_capture = (capture_ticks == 0U) ||
+        has_overcapture || is_same_state;
+
+    if (is_same_state) {
+        ++self->same_state_capture_count;
+    }
+
+    if (!is_same_state) {
+        feedback.hall_state = hall_state;
+        feedback.has_state_sample = true;
+    }
     feedback.capture_ticks = capture_ticks;
     feedback.edge_interval_s = 0.0f;
-    feedback.has_state_sample = true;
     feedback.has_valid_interval = false;
     feedback.is_timed_out = false;
-    ++feedback.capture_count;
 
     self->capture_with_pending_timeout = has_pending_timeout;
-    if ((capture_ticks > 0U) && self->has_valid_interval_reference &&
+    if (!is_invalid_capture && self->has_valid_interval_reference &&
         !has_pending_timeout) {
         feedback.edge_interval_s = (float)capture_ticks /
             self->counter_frequency_hz;
         feedback.has_valid_interval = true;
     }
 
-    self->has_valid_interval_reference = true;
-    if (capture_ticks == 0U) {
+    if (is_invalid_capture) {
         ++feedback.invalid_capture_count;
+        self->has_valid_interval_reference = false;
+    } else {
+        ++feedback.capture_count;
+        self->has_valid_interval_reference = true;
     }
     hall_driver_publish_feedback(self, &feedback);
 
-    return (capture_ticks == 0U) ?
+    return is_invalid_capture ?
         HALL_DRIVER_STATUS_INVALID_CAPTURE : HALL_DRIVER_STATUS_OK;
 }
 
@@ -384,6 +407,7 @@ hall_driver_status_t hall_driver_get_signal_feedback(
 
     feedback->hall_state = source->hall_state;
     feedback->capture_count = source->capture_count;
+    feedback->invalid_capture_count = source->invalid_capture_count;
     feedback->edge_interval_s = source->edge_interval_s;
     feedback->has_state_sample = source->has_state_sample;
     feedback->has_valid_interval = source->has_valid_interval;

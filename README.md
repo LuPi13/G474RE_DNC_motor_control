@@ -306,6 +306,12 @@ Hall polarity 또는 motor가 바뀌면 다음을 모두 검토한다.
 
 Valid Hall state라도 비인접 transition, `000`/`111` raw state, capture 누락, Hall driver 오류는
 Hall feedback fault로 즉시 정지한다. 정상 전이 순서가 보장되지 않은 상태에서 FOC를 계속 실행하지 않는다.
+TIM capture가 발생했지만 GPIO raw state가 이전과 같거나 capture tick이 0 또는 TIM overcapture가
+발생하면 실제 Hall state transition으로 전달하지 않는다. 이 경우 interval 기준을 폐기하고
+`hall_driver.invalid_capture_count`를 decoder/App에 전달하여 FOC 운전 중 Hall feedback fault로 정지한다. PWM 인가 시
+문제가 재현되면 `hall_driver.same_state_capture_count`와 `hall_driver.overcapture_count`를 확인한다.
+첫 값이 증가하면 state 변화 없이 capture만 발생한 것이고, 두 번째 값이 증가하면 ISR 처리 전에 추가
+capture가 발생한 것이다.
 
 ### FDCAN / CANopen
 

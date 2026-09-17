@@ -40,6 +40,7 @@ typedef enum {
     HALL_DECODER_STATUS_INVALID_CONFIG, /**< Profile mapping 또는 경계각 오류. */
     HALL_DECODER_STATUS_INVALID_STATE, /**< 초기화되지 않은 instance. */
     HALL_DECODER_STATUS_INVALID_OBSERVATION, /**< Raw observation field 조합 오류. */
+    HALL_DECODER_STATUS_INVALID_CAPTURE, /**< Driver가 capture integrity 오류를 보고함. */
     HALL_DECODER_STATUS_INVALID_HALL_STATE, /**< Profile에서 invalid인 raw state. */
     HALL_DECODER_STATUS_INVALID_TRANSITION, /**< 인접하지 않은 sector transition. */
     HALL_DECODER_STATUS_MISSED_CAPTURE /**< Fast loop 사이에 둘 이상의 edge가 발생함. */
@@ -90,6 +91,7 @@ typedef struct {
     float sector_span_rad[HALL_DECODER_SECTOR_COUNT]; /**< Precomputed sector 폭 [rad]. */
     hall_decoder_output_t output; /**< 가장 최근 decoded output. */
     uint32_t last_capture_count; /**< 마지막으로 처리한 raw capture sequence. */
+    uint32_t last_invalid_capture_count; /**< 마지막으로 처리한 capture integrity error sequence. */
     uint32_t invalid_state_count; /**< Profile-invalid raw state 관측 횟수. */
     uint32_t invalid_transition_count; /**< 비인접 sector transition 횟수. */
     uint32_t missed_capture_count; /**< 누락된 것으로 판정한 capture 수. */
@@ -127,12 +129,13 @@ hall_decoder_status_t hall_decoder_reset(hall_decoder_t *self);
  * @param[out] output 성공 시 또는 sensor 오류 resync 후 최신 decoded state.
  * @post 새 인접 edge에서 transition_count가 증가하고 calibrated edge angle로 동기화된다.
  * @note Capture가 없는 일반 fast-loop에서는 precomputed output만 복사한다.
- * @note INVALID_HALL_STATE, INVALID_TRANSITION과 MISSED_CAPTURE에서도 진단용 runtime state를
+ * @note INVALID_CAPTURE, INVALID_HALL_STATE, INVALID_TRANSITION과 MISSED_CAPTURE에서도 진단용 runtime state를
  *       현재 raw state 기준으로 갱신한 뒤 오류를 반환한다.
  * @retval HALL_DECODER_STATUS_OK 정상 관측 또는 새 capture가 없는 정상 fast-loop 처리.
  * @retval HALL_DECODER_STATUS_INVALID_ARGUMENT NULL 인자.
  * @retval HALL_DECODER_STATUS_INVALID_STATE 초기화되지 않은 instance.
  * @retval HALL_DECODER_STATUS_INVALID_OBSERVATION Field 범위 또는 validity 조합 오류.
+ * @retval HALL_DECODER_STATUS_INVALID_CAPTURE Driver가 state 불일치, 0 tick 또는 overcapture를 보고함.
  * @retval HALL_DECODER_STATUS_INVALID_HALL_STATE Profile에서 invalid인 raw state.
  * @retval HALL_DECODER_STATUS_INVALID_TRANSITION 인접하지 않은 sector transition.
  * @retval HALL_DECODER_STATUS_MISSED_CAPTURE 두 observation 사이 capture 누락.
@@ -153,7 +156,7 @@ hall_decoder_status_t hall_decoder_update(
  * @pre @p self와 @p observation은 NULL이 아니며 @p self는 초기화되어야 한다.
  * @pre @p observation은 hall_driver_get_signal_feedback()의 정상 반환값으로 만들어져야 한다.
  * @note pointer, 초기화, raw field 범위와 interval 조합 검사는 생략한다. 다만 state sample
- *       부재, profile-invalid state, capture 누락, 비인접 transition은 계속 검출한다.
+ *       부재, driver capture integrity 오류, profile-invalid state, capture 누락, 비인접 transition은 계속 검출한다.
  * @warning 범용 입력 또는 unit test에는 hall_decoder_update()를 사용한다.
  */
 hall_decoder_status_t hall_decoder_update_fast(
