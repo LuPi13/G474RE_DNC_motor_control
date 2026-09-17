@@ -99,12 +99,22 @@ an `apply_request`. Flash writes never run in the 40 kHz loop. See
 
 `drive_debug_command_source`는 debugger에서 전류/속도 지령과 start/stop을 입력하는 bring-up 전용
 경로다. 결과 관측에는 전역 `drive_debug_snapshot`을 사용한다. ADC fast loop가 40번째 유효 sample마다
-(현재 40 kHz / 1 kHz) `Idq`, `Vdq`, 3상 전류, DC-link 전압, duty, electrical/mechanical speed,
-speed PI 결과, mode/state/fault를 한 묶음으로 갱신한다.
+(현재 40 kHz / 1 kHz) 3상 전류, DC-link 전압, duty, electrical/mechanical speed, mode/state/fault를
+한 묶음으로 갱신한다. current/speed mode에서는 여기에 `Idq`, `Vdq`, speed PI 결과도 포함한다. disabled와
+open-loop에서는 FOC를 실행하지 않으므로 해당 FOC/speed PI field는 0이며, sensor와 rotor feedback은 계속
+갱신된다.
 
 - **Live Expression**: `drive_debug_snapshot`을 펼쳐 원하는 필드를 읽는다. 값은 debugger에서 쓰지 않는다.
 - **SWV Data Trace**: `i_q_ref_a`/`i_q_a`, `v_q_applied_v`, `omega_m_rad_s`, `v_dc_v`처럼 필요한 소수의
   field만 선택한다. snapshot 갱신률은 1 kHz다.
+- **실행시간**: Debug build에서는 `fast_loop_body_cycles`와 그 reset 이후 최대값
+  `fast_loop_body_cycles_max`를 함께 제공한다. 이는 App fast loop 진입부터 PWM duty write 뒤, observer
+  복사 전까지의 CPU cycle이며 170 MHz에서는 `cycles / 170`이 대략적인 us다. ADC IRQ 진입부터 ISR 복귀까지의
+  전체 deadline 측정값은 아니므로 이 값만으로 40 kHz timing 통과를 판단하지 않는다. Release build에서는 둘 다 0이다.
+- **Fault 관측**: latched fault 뒤에도 다음 유효 ADC sample부터 snapshot은 1 kHz로 계속 갱신된다. 이때
+  `mode = APP_MODE_DISABLED`, `drive_state = APP_DRIVE_STATE_FAULTED`, `fault_mask`는 최신값이고 FOC/speed PI는
+  0이다. Hall feedback은 `has_valid_angle`/`has_valid_speed`가 false이며, phase current의 유효성은
+  `has_valid_phase_current`으로 구분한다.
 - **일관성 확인**: `drive_debug_snapshot_sequence`이 짝수이고 snapshot 읽기 전후 같은 값이면 완성된
   snapshot이다.
 - **위치의 범위**: `theta_e_rad`는 electrical angle이고
@@ -293,6 +303,9 @@ Hall polarity 또는 motor가 바뀌면 다음을 모두 검토한다.
 3. `motor_config_hall_profile.sector_by_state`
 4. `motor_config_hall_profile.forward_edge_angle_rad`
 5. 정방향/역방향 sector sequence, speed sign, timeout, electrical angle 검증
+
+Valid Hall state라도 비인접 transition, `000`/`111` raw state, capture 누락, Hall driver 오류는
+Hall feedback fault로 즉시 정지한다. 정상 전이 순서가 보장되지 않은 상태에서 FOC를 계속 실행하지 않는다.
 
 ### FDCAN / CANopen
 

@@ -181,7 +181,7 @@ typedef struct {
     motor_control_t *motor_control; /**< 초기화된 current-mode coordinator instance. */
     app_fast_loop_profile_t *fast_loop_profile; /**< NULL 가능 선택형 구간 계측 결과. */
     motor_control_profile_t *motor_control_profile; /**< NULL 가능 control 내부 계측 결과. */
-    app_cycle_counter_reader_t cycle_counter_reader; /**< Profile 사용 시 필수 cycle reader. */
+    app_cycle_counter_reader_t cycle_counter_reader; /**< Profile 또는 debug body-cycle 관측에 쓸 선택형 cycle reader. */
     float sampling_period_s;        /**< 고정 fast-loop 호출 주기 [s], 양의 유한값. */
     float speed_loop_period_s;       /**< SysTick speed scheduler 고정 주기 [s]. */
     uint32_t current_offset_calibration_timeout_ms; /**< 무전류 offset 보정 deadline [ms]. */
@@ -287,6 +287,8 @@ typedef struct {
     motor_control_speed_output_t last_speed_output; /**< 마지막 1 kHz speed PI 결과. */
 
     uint32_t fast_loop_count;   /**< Raw ADC와 필요한 sensor 처리를 완료한 fast-loop 횟수. */
+    uint32_t fast_loop_body_cycles; /**< 마지막 성공 App fast-loop body 실행시간 [CPU cycle], reader 미연결 시 0. */
+    uint32_t fast_loop_body_cycles_max; /**< App 초기화 뒤 성공 body 실행시간 최대값 [CPU cycle], reader 미연결 시 0. */
     uint32_t duty_update_count; /**< PWM duty 기록까지 성공한 횟수. */
     uint32_t not_ready_count;   /**< ADC NOT_READY로 건너뛴 횟수. */
     uint32_t error_count;       /**< NOT_READY를 제외한 runtime 오류 횟수. */

@@ -26,6 +26,8 @@
  */
 typedef struct {
     uint32_t fast_loop_count; /**< 이 snapshot을 만든 누적 fast-loop 횟수. */
+    uint32_t fast_loop_body_cycles; /**< Observer 복사 직전까지의 마지막 성공 App body 실행시간 [CPU cycle]. */
+    uint32_t fast_loop_body_cycles_max; /**< App 초기화 뒤 성공 sample에서 관찰된 body 최대 실행시간 [CPU cycle]. */
     uint32_t fault_mask; /**< Publish 시점의 latched fault bitmask. */
     uint32_t mode; /**< Publish 시점의 @c app_mode_t 값. */
     uint32_t drive_state; /**< Publish 시점의 @c app_drive_state_t 값. */
@@ -70,6 +72,7 @@ typedef struct {
 
     bool has_valid_angle; /**< Rotor angle이 유효하면 true. */
     bool has_valid_speed; /**< Rotor speed가 유효하면 true. */
+    bool has_valid_phase_current; /**< 이번 snapshot의 phase-current feedback이 유효하면 true. */
     bool is_voltage_saturated; /**< FOC 전압 원형 제한이 개입했으면 true. */
     bool is_current_reference_rate_limited; /**< 이번 FOC sample에 current slew 제한이 개입했으면 true. */
     bool is_current_reference_saturated; /**< 이번 FOC sample에 current axis/vector 제한이 개입했으면 true. */
@@ -91,9 +94,12 @@ typedef struct {
     const motor_control_speed_output_t *speed_control; /**< 마지막 1 kHz speed-loop output. */
     uint8_t pole_pairs; /**< electrical/mechanical 변환에 사용할 pole pair 수. */
     uint32_t fast_loop_count; /**< Publish 시점의 누적 fast-loop 횟수. */
+    uint32_t fast_loop_body_cycles; /**< 이번 성공 sample의 App body 실행시간 [CPU cycle]. */
+    uint32_t fast_loop_body_cycles_max; /**< App 초기화 뒤 body 실행시간 최대값 [CPU cycle]. */
     fault_manager_fault_mask_t fault_mask; /**< Publish 시점의 latched fault mask. */
     uint32_t mode; /**< @c app_mode_t를 uint32_t로 변환한 값. */
     uint32_t drive_state; /**< @c app_drive_state_t를 uint32_t로 변환한 값. */
+    bool has_valid_phase_current; /**< 이번 sample의 phase-current feedback이 유효하면 true. */
 } drive_debug_observer_fast_input_t;
 
 /**

@@ -207,8 +207,10 @@ SINE function의 반복 검사를 생략한다.
 감소했다. Hard deadline 4250 cycles는 만족하지만 bring-up 목표 3200 cycles는 20 cycles,
 당시 body 설계 목표 2800 cycles는 125 cycles 초과하므로 최적화 완료 기준으로 간주하지 않는다.
 기능 확인에 사용한 자동 지령 주입과 800-sample 판정 코드는 측정 후 `main.c`에서 제거했다.
-이후 product `main.c`에서도 전체/body cycle 및 deadline miss 계측을 제거했으므로, 후속 실구동
-검증은 선택형 App profile 또는 별도 timing test build에서 수행한다.
+Release build의 `main.c`는 전체/body cycle 및 deadline miss 계측을 연결하지 않는다. Debug build의
+`drive_debug_snapshot.fast_loop_body_cycles`와 최대값은 App body 추세를 관측하는 경량 진단일 뿐 전체
+IRQ deadline 또는 deadline miss counter를 대체하지 않는다. 후속 실구동 deadline 검증은 선택형 App profile
+또는 별도 timing test build에서 수행한다.
 
 이 측정 뒤 Hall 해석을 Platform driver에서 Control의 motor별 `hall_decoder`로 분리했다.
 따라서 위 `3220 cycles`는 변경 전 기준선이며 현재 binary의 timing 통과 근거로 재사용하지

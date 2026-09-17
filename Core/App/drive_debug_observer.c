@@ -76,6 +76,9 @@ void drive_debug_observer_publish_fast(
     __atomic_thread_fence(__ATOMIC_RELEASE);
 
     drive_debug_snapshot.fast_loop_count = input->fast_loop_count;
+    drive_debug_snapshot.fast_loop_body_cycles = input->fast_loop_body_cycles;
+    drive_debug_snapshot.fast_loop_body_cycles_max =
+        input->fast_loop_body_cycles_max;
     drive_debug_snapshot.fault_mask = input->fault_mask;
     drive_debug_snapshot.mode = input->mode;
     drive_debug_snapshot.drive_state = input->drive_state;
@@ -119,6 +122,7 @@ void drive_debug_observer_publish_fast(
     drive_debug_snapshot.speed_i_q_ref_a = speed_controller->i_q_ref;
     drive_debug_snapshot.has_valid_angle = input->rotor_feedback->has_valid_angle;
     drive_debug_snapshot.has_valid_speed = input->rotor_feedback->has_valid_speed;
+    drive_debug_snapshot.has_valid_phase_current = input->has_valid_phase_current;
     drive_debug_snapshot.is_voltage_saturated = foc->is_voltage_saturated;
     drive_debug_snapshot.is_current_reference_rate_limited =
         input->motor_control->is_current_reference_rate_limited;

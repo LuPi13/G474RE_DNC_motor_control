@@ -24,6 +24,7 @@
 #include "adc_driver.h"
 #include "app.h"
 #include "canopen_service.h"
+#include "cycle_counter_driver.h"
 #include "cordic_driver.h"
 #include "current_sensor.h"
 #include "drive_debug_command_source.h"
@@ -223,6 +224,12 @@ int main(void)
       Error_Handler();
   }
 
+#if defined(DEBUG)
+  if (!cycle_counter_driver_init()) {
+      Error_Handler();
+  }
+#endif
+
   const fdcan_driver_config_t fdcan_config = {
       .hfdcan = &hfdcan2,
       .receive_callback = NULL,
@@ -394,7 +401,11 @@ int main(void)
       .motor_control = &motor_control,
       .fast_loop_profile = NULL,
       .motor_control_profile = NULL,
+#if defined(DEBUG)
+      .cycle_counter_reader = cycle_counter_driver_read,
+#else
       .cycle_counter_reader = NULL,
+#endif
       .sampling_period_s = fast_loop_sampling_period_s,
       .speed_loop_period_s = 0.001f,
       .current_offset_calibration_timeout_ms =

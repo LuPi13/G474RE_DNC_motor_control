@@ -94,6 +94,30 @@ static abc_t app_neutral_duty(void)
     return duty;
 }
 
+static uint32_t app_fast_loop_body_begin_cycles(const app_t *self)
+{
+    return (self->config.cycle_counter_reader == NULL) ? 0U :
+        self->config.cycle_counter_reader();
+}
+
+static void app_fast_loop_record_body_cycles(
+    app_t *self,
+    uint32_t start_cycles
+)
+{
+    uint32_t elapsed_cycles;
+
+    if (self->config.cycle_counter_reader == NULL) {
+        return;
+    }
+
+    elapsed_cycles = self->config.cycle_counter_reader() - start_cycles;
+    self->fast_loop_body_cycles = elapsed_cycles;
+    if (elapsed_cycles > self->fast_loop_body_cycles_max) {
+        self->fast_loop_body_cycles_max = elapsed_cycles;
+    }
+}
+
 static void app_copy_motor_control_output(
     motor_control_output_t *destination,
     const motor_control_output_t *source
@@ -161,6 +185,70 @@ static void app_clear_rotor_feedback(hall_estimator_output_t *output)
     output->has_edge_reference = false;
     output->is_sector_limited = false;
     output->is_timed_out = false;
+}
+
+/*
+ * Snapshot은 ADC ISR이 만든 한 sample의 지역 결과를 바로 복사해야 한다.
+ * disabled/open-loop에서는 caller가 FOC output을 0으로 초기화해 전달한다.
+ */
+static void app_publish_debug_snapshot_fast(
+    const app_t *self,
+    const abc_t *i_abc,
+    float v_dc_v,
+    const hall_estimator_output_t *rotor_feedback,
+    const motor_control_output_t *motor_control,
+    const abc_t *duty,
+    bool has_valid_phase_current
+)
+{
+    const motor_control_speed_output_t inactive_speed_control = {0};
+    const motor_control_speed_output_t *speed_control =
+        (self->mode == APP_MODE_SPEED) ?
+        &self->last_speed_output : &inactive_speed_control;
+    const drive_debug_observer_fast_input_t debug_input = {
+        .i_abc = i_abc,
+        .v_dc_v = v_dc_v,
+        .rotor_feedback = rotor_feedback,
+        .motor_control = motor_control,
+        .duty = duty,
+        .speed_control = speed_control,
+        .pole_pairs = self->config.motor_control->config.pole_pairs,
+        .fast_loop_count = self->fast_loop_count,
+        .fast_loop_body_cycles = self->fast_loop_body_cycles,
+        .fast_loop_body_cycles_max = self->fast_loop_body_cycles_max,
+        .fault_mask = self->config.fault_manager->latched_fault_mask,
+        .mode = (uint32_t)self->mode,
+        .drive_state = (uint32_t)self->drive_state,
+        .has_valid_phase_current = has_valid_phase_current,
+    };
+
+    drive_debug_observer_publish_fast(&debug_input);
+}
+
+static void app_publish_fault_debug_snapshot_fast(
+    const app_t *self,
+    const abc_t *i_abc,
+    float v_dc_v,
+    bool has_valid_phase_current
+)
+{
+    const hall_estimator_output_t invalid_rotor_feedback = {0};
+    const motor_control_output_t inactive_motor_control = {0};
+    const abc_t neutral_duty = app_neutral_duty();
+
+    if (!drive_debug_observer_is_capture_due_fast()) {
+        return;
+    }
+
+    app_publish_debug_snapshot_fast(
+        self,
+        i_abc,
+        v_dc_v,
+        &invalid_rotor_feedback,
+        &inactive_motor_control,
+        &neutral_duty,
+        has_valid_phase_current
+    );
 }
 
 static void app_copy_fast_loop_output(
@@ -588,8 +676,8 @@ app_status_t app_init(app_t *self, const app_config_t *config)
         (config->hall_decoder == NULL) ||
         (config->hall_estimator == NULL) ||
         (config->motor_control == NULL) ||
-        (((config->fast_loop_profile == NULL) &&
-            (config->motor_control_profile == NULL)) !=
+        (((config->fast_loop_profile != NULL) ||
+            (config->motor_control_profile != NULL)) &&
             (config->cycle_counter_reader == NULL)) ||
         (!app_float_is_finite(config->sampling_period_s)) ||
         (config->sampling_period_s <= 0.0f) ||
@@ -682,6 +770,8 @@ app_status_t app_init(app_t *self, const app_config_t *config)
             .current_reference_target = zero_current_target,
         },
         .fast_loop_count = 0U,
+        .fast_loop_body_cycles = 0U,
+        .fast_loop_body_cycles_max = 0U,
         .duty_update_count = 0U,
         .not_ready_count = 0U,
         .error_count = 0U,
@@ -1623,9 +1713,11 @@ static app_status_t app_motor_fast_loop_update(
     bool was_faulted;
     float sin_theta;
     float cos_theta;
+    uint32_t fast_loop_body_start_cycles;
     uint32_t profile_segment_start_cycles;
     uint32_t profile_control_start_cycles;
 
+    fast_loop_body_start_cycles = app_fast_loop_body_begin_cycles(self);
     profile_segment_start_cycles = app_profile_begin(self);
 
     self->last_adc_status = adc_driver_read_raw(
@@ -1706,12 +1798,26 @@ static app_status_t app_motor_fast_loop_update(
         if (app_disable_for_fault(
                 self,
                 APP_STATUS_FAULT_ACTIVE) == APP_STATUS_PWM_ERROR) {
+            app_fast_loop_record_body_cycles(self, fast_loop_body_start_cycles);
+            app_publish_fault_debug_snapshot_fast(
+                self,
+                &calculated_output.i_abc,
+                calculated_output.v_dc,
+                calculated_output.has_valid_phase_current
+            );
             return APP_STATUS_PWM_ERROR;
         }
         app_process_fault_clear_request(self);
 
         if (fault_manager_is_faulted(self->config.fault_manager)) {
             self->last_status = APP_STATUS_FAULT_ACTIVE;
+            app_fast_loop_record_body_cycles(self, fast_loop_body_start_cycles);
+            app_publish_fault_debug_snapshot_fast(
+                self,
+                &calculated_output.i_abc,
+                calculated_output.v_dc,
+                calculated_output.has_valid_phase_current
+            );
             return APP_STATUS_FAULT_ACTIVE;
         }
     }
@@ -1753,6 +1859,18 @@ static app_status_t app_motor_fast_loop_update(
         (self->mode == APP_MODE_DISABLED)) {
         app_clear_motor_control_output(&calculated_output.motor_control);
         self->last_status = APP_STATUS_OK;
+        app_fast_loop_record_body_cycles(self, fast_loop_body_start_cycles);
+        if (drive_debug_observer_is_capture_due_fast()) {
+            app_publish_debug_snapshot_fast(
+                self,
+                &calculated_output.i_abc,
+                calculated_output.v_dc,
+                &calculated_output.rotor_feedback,
+                &calculated_output.motor_control,
+                &calculated_output.duty,
+                calculated_output.has_valid_phase_current
+            );
+        }
         return APP_STATUS_OK;
     }
 
@@ -1942,6 +2060,19 @@ static app_status_t app_motor_fast_loop_update(
 
     calculated_output.has_applied_duty = true;
     self->last_status = APP_STATUS_OK;
+    app_fast_loop_record_body_cycles(self, fast_loop_body_start_cycles);
+
+    if (drive_debug_observer_is_capture_due_fast()) {
+        app_publish_debug_snapshot_fast(
+            self,
+            &calculated_output.i_abc,
+            calculated_output.v_dc,
+            &calculated_output.rotor_feedback,
+            &calculated_output.motor_control,
+            &calculated_output.duty,
+            calculated_output.has_valid_phase_current
+        );
+    }
 
     (void)APP_PROFILE_END_SEGMENT(
         self,
@@ -2009,12 +2140,14 @@ app_status_t app_motor_current_fast_loop_drive_fast(app_t *self)
     float cos_theta;
     bool has_valid_phase_current;
     bool is_debug_capture;
+    uint32_t fast_loop_body_start_cycles;
     app_status_t status;
 
     if ((self == NULL) || !self->is_initialized ||
         !app_is_foc_mode(self->mode)) {
         return APP_STATUS_INVALID_STATE;
     }
+    fast_loop_body_start_cycles = app_fast_loop_body_begin_cycles(self);
     self->last_adc_status = adc_driver_read_raw(self->config.adc_driver, &raw);
     if (self->last_adc_status == ADC_DRIVER_STATUS_NOT_READY) {
         ++self->not_ready_count;
@@ -2094,22 +2227,17 @@ app_status_t app_motor_current_fast_loop_drive_fast(app_t *self)
     self->last_duty = duty;
     ++self->duty_update_count;
     self->last_status = APP_STATUS_OK;
+    app_fast_loop_record_body_cycles(self, fast_loop_body_start_cycles);
     if (is_debug_capture) {
-        const drive_debug_observer_fast_input_t debug_input = {
-            .i_abc = &i_abc,
-            .v_dc_v = v_dc,
-            .rotor_feedback = rotor_feedback,
-            .motor_control = &motor_control_output,
-            .duty = &duty,
-            .speed_control = &self->last_speed_output,
-            .pole_pairs = self->config.motor_control->config.pole_pairs,
-            .fast_loop_count = self->fast_loop_count,
-            .fault_mask = self->config.fault_manager->latched_fault_mask,
-            .mode = (uint32_t)self->mode,
-            .drive_state = (uint32_t)self->drive_state,
-        };
-
-        drive_debug_observer_publish_fast(&debug_input);
+        app_publish_debug_snapshot_fast(
+            self,
+            &i_abc,
+            v_dc,
+            rotor_feedback,
+            &motor_control_output,
+            &duty,
+            has_valid_phase_current
+        );
     }
     return APP_STATUS_OK;
 }

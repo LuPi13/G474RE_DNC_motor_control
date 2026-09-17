@@ -649,11 +649,23 @@ PWM output 또는 App drive lifecycle을 변경하지 않는다.
 기본값은 0/false이므로 자동 기동하지 않는다.
 
 `drive_debug_observer`는 이 입력 경로와 별도로, Live Expression/SWV가 읽는 전역
-`drive_debug_snapshot`을 제공한다. 40 kHz current/speed fast-loop는 매 sample telemetry를 복사하지
-않고, 초기화 시 정한 정확한 분주 주기(현재 40 kHz / 1 kHz = 40 sample)마다 한 번만 상세 FOC output을
-계산해 snapshot을 publish한다. 정상 sample은 계속 전압만 반환하는 fast API를 사용한다. 따라서 observer는
-제어값의 owner가 아니며 debugger가 snapshot을 쓰면 안 된다. `drive_debug_snapshot_sequence`이 짝수이고
-읽기 전후 같은 값일 때 snapshot은 일관된 값이다.
+`drive_debug_snapshot`을 제공한다. 모든 ADC fast-loop mode는 매 sample telemetry를 복사하지 않고,
+초기화 시 정한 정확한 분주 주기(현재 40 kHz / 1 kHz = 40 sample)마다 한 번만 snapshot을 publish한다.
+current/speed mode는 해당 sample의 상세 FOC output을 포함하고, disabled/open-loop mode는 FOC를 실행하지
+않으므로 그 field를 0으로 두되 sensor와 rotor feedback은 publish한다. 정상 current/speed sample은 계속
+전압만 반환하는 fast API를 사용한다. 따라서 observer는 제어값의 owner가 아니며 debugger가 snapshot을
+쓰면 안 된다. `drive_debug_snapshot_sequence`이 짝수이고 읽기 전후 같은 값일 때 snapshot은 일관된 값이다.
+
+Debug build는 DWT cycle counter를 사용해 `fast_loop_body_cycles`와 reset 이후 최대값
+`fast_loop_body_cycles_max`도 publish한다. 측정 범위는 App fast-loop body 진입부터 PWM duty write 뒤,
+observer copy 직전까지이며, mode별로 PWM write가 없는 정상 반환은 해당 mode 처리 끝까지다. 이 값은 App body
+진단용이며 ADC IRQ entry/HAL 처리/interrupt return을 포함하는 전체 deadline 판정값이 아니다. Release build는
+cycle reader를 연결하지 않아 두 field가 0이다.
+
+Fault latch가 남아 있어도 다음 유효 ADC sample부터 observer는 1 kHz publish를 계속한다. Fault snapshot은
+`APP_MODE_DISABLED`/`APP_DRIVE_STATE_FAULTED`, 최신 `fault_mask`, neutral duty 및 0 FOC/speed PI output을
+명시한다. rotor feedback은 0 및 invalid으로 표시하며, `has_valid_phase_current`으로 전류 feedback의 유효성을
+분리한다. ADC sample 자체가 들어오지 않으면 fast loop가 실행되지 않으므로 snapshot도 갱신할 수 없다.
 
 `theta_e_rad`는 wrapped electrical angle이다. `theta_m_rad_per_electrical_cycle`은 이를 pole-pair
 수로 나눈 한 electrical cycle 내 기계각 성분일 뿐, multi-turn position이나 전원 재인가 뒤에도 유지되는
