@@ -648,6 +648,19 @@ PWM output 또는 App drive lifecycle을 변경하지 않는다.
 `stop_requested`를 Live Expression 입력으로 제공한다. 기본 mode는 speed이고 모든 reference와 request의
 기본값은 0/false이므로 자동 기동하지 않는다.
 
+`drive_debug_observer`는 이 입력 경로와 별도로, Live Expression/SWV가 읽는 전역
+`drive_debug_snapshot`을 제공한다. 40 kHz current/speed fast-loop는 매 sample telemetry를 복사하지
+않고, 초기화 시 정한 정확한 분주 주기(현재 40 kHz / 1 kHz = 40 sample)마다 한 번만 상세 FOC output을
+계산해 snapshot을 publish한다. 정상 sample은 계속 전압만 반환하는 fast API를 사용한다. 따라서 observer는
+제어값의 owner가 아니며 debugger가 snapshot을 쓰면 안 된다. `drive_debug_snapshot_sequence`이 짝수이고
+읽기 전후 같은 값일 때 snapshot은 일관된 값이다.
+
+`theta_e_rad`는 wrapped electrical angle이다. `theta_m_rad_per_electrical_cycle`은 이를 pole-pair
+수로 나눈 한 electrical cycle 내 기계각 성분일 뿐, multi-turn position이나 전원 재인가 뒤에도 유지되는
+absolute position이 아니다. 그런 위치 기능에는 encoder 또는 homing 기준이 필요하다. SWV에는 필요한
+신호 몇 개만 선택해 사용하며, 40 kHz switching ripple, ADC sampling timing 또는 cycle-level transient는
+SWV 문자열 출력 대신 oscilloscope 또는 별도 triggered fast-sample capture로 검증한다.
+
 정상 정지는 reference가 0이 되었다는 사실만으로 PWM을 끄지 않는다. `RAMP_TO_ZERO`에서 Hall timeout 또는
 기계속도 절댓값이 `speed_stop_omega_m_threshold_rad_s` 이하임을 한 번 확인한 뒤
 `speed_stop_dwell_ms` 동안 능동 감속하고 PWM을 비활성화한다. 저속 확인 뒤에는 다음 Hall edge의 양자화된

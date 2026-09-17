@@ -73,6 +73,25 @@ CANopen RPDO / SDO
 통신 ISR은 frame을 CANopenNode RX buffer에 전달만 한다. CANopen service는 PWM/FOC를
 직접 호출하지 않는다.
 
+## Debug 관측: Live Expression / SWV
+
+`drive_debug_command_source`는 debugger에서 전류/속도 지령과 start/stop을 입력하는 bring-up 전용
+경로다. 결과 관측에는 전역 `drive_debug_snapshot`을 사용한다. ADC fast loop가 40번째 유효 sample마다
+(현재 40 kHz / 1 kHz) `Idq`, `Vdq`, 3상 전류, DC-link 전압, duty, electrical/mechanical speed,
+speed PI 결과, mode/state/fault를 한 묶음으로 갱신한다.
+
+- **Live Expression**: `drive_debug_snapshot`을 펼쳐 원하는 필드를 읽는다. 값은 debugger에서 쓰지 않는다.
+- **SWV Data Trace**: `i_q_ref_a`/`i_q_a`, `v_q_applied_v`, `omega_m_rad_s`, `v_dc_v`처럼 필요한 소수의
+  field만 선택한다. snapshot 갱신률은 1 kHz다.
+- **일관성 확인**: `drive_debug_snapshot_sequence`이 짝수이고 snapshot 읽기 전후 같은 값이면 완성된
+  snapshot이다.
+- **위치의 범위**: `theta_e_rad`는 electrical angle이고
+  `theta_m_rad_per_electrical_cycle`은 한 electrical cycle 내 기계각 성분이다. multi-turn/absolute
+  mechanical position은 encoder 또는 homing이 추가되기 전에는 제공하지 않는다.
+
+40 kHz switching ripple, ADC sampling timing 및 한 PWM 주기의 과도현상은 이 observer 대신
+oscilloscope 또는 추후 fault-triggered fast capture로 확인한다.
+
 ## 모터와 제어기 설정
 
 ### Current command 및 FOC

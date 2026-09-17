@@ -27,6 +27,7 @@
 #include "cordic_driver.h"
 #include "current_sensor.h"
 #include "drive_debug_command_source.h"
+#include "drive_debug_observer.h"
 #include "drive_command.h"
 #include "fault_manager.h"
 #include "fdcan_driver.h"
@@ -386,6 +387,10 @@ int main(void)
   };
 
   if (app_init(&app, &app_config) != APP_STATUS_OK) {
+      Error_Handler();
+  }
+
+  if (!drive_debug_observer_init(APP_FAST_LOOP_FREQUENCY_HZ, 1000U)) {
       Error_Handler();
   }
 

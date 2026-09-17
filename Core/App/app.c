@@ -5,6 +5,8 @@
 
 #include "app.h"
 
+#include "drive_debug_observer.h"
+
 #include <float.h>
 #include <stddef.h>
 
@@ -2000,11 +2002,13 @@ app_status_t app_motor_current_fast_loop_drive_fast(app_t *self)
     float v_dc;
     const hall_estimator_output_t *rotor_feedback;
     motor_control_fast_input_t control_input;
+    motor_control_output_t motor_control_output;
     alpha_beta_t v_alpha_beta;
     abc_t duty;
     float sin_theta;
     float cos_theta;
     bool has_valid_phase_current;
+    bool is_debug_capture;
     app_status_t status;
 
     if ((self == NULL) || !self->is_initialized ||
@@ -2053,6 +2057,7 @@ app_status_t app_motor_current_fast_loop_drive_fast(app_t *self)
         return app_latch_and_stop(self, APP_STATUS_ROTOR_ESTIMATOR_ERROR,
                                   FAULT_MANAGER_FAULT_ROTOR_ESTIMATOR);
     }
+    is_debug_capture = drive_debug_observer_is_capture_due_fast();
     cordic_driver_sin_cos_fast(rotor_feedback->theta_e_rad, &sin_theta, &cos_theta);
     self->last_cordic_status = CORDIC_DRIVER_STATUS_OK;
     control_input = (motor_control_fast_input_t){
@@ -2061,8 +2066,20 @@ app_status_t app_motor_current_fast_loop_drive_fast(app_t *self)
         .omega_e_rad_s = rotor_feedback->has_valid_speed ? rotor_feedback->omega_e_rad_s : 0.0f,
         .v_dc = v_dc,
     };
-    self->last_motor_control_status = motor_control_update_fast_voltage(
-        self->config.motor_control, &control_input, &v_alpha_beta);
+    if (is_debug_capture) {
+        self->last_motor_control_status = motor_control_update_fast(
+            self->config.motor_control,
+            &control_input,
+            &motor_control_output
+        );
+        v_alpha_beta = motor_control_output.foc.v_alpha_beta_ref;
+    } else {
+        self->last_motor_control_status = motor_control_update_fast_voltage(
+            self->config.motor_control,
+            &control_input,
+            &v_alpha_beta
+        );
+    }
     if (self->last_motor_control_status != MOTOR_CONTROL_STATUS_OK) {
         return app_latch_and_stop(self, APP_STATUS_MOTOR_CONTROL_ERROR,
                                   FAULT_MANAGER_FAULT_MOTOR_CONTROL);
@@ -2077,5 +2094,22 @@ app_status_t app_motor_current_fast_loop_drive_fast(app_t *self)
     self->last_duty = duty;
     ++self->duty_update_count;
     self->last_status = APP_STATUS_OK;
+    if (is_debug_capture) {
+        const drive_debug_observer_fast_input_t debug_input = {
+            .i_abc = &i_abc,
+            .v_dc_v = v_dc,
+            .rotor_feedback = rotor_feedback,
+            .motor_control = &motor_control_output,
+            .duty = &duty,
+            .speed_control = &self->last_speed_output,
+            .pole_pairs = self->config.motor_control->config.pole_pairs,
+            .fast_loop_count = self->fast_loop_count,
+            .fault_mask = self->config.fault_manager->latched_fault_mask,
+            .mode = (uint32_t)self->mode,
+            .drive_state = (uint32_t)self->drive_state,
+        };
+
+        drive_debug_observer_publish_fast(&debug_input);
+    }
     return APP_STATUS_OK;
 }
