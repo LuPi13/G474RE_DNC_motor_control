@@ -11,7 +11,10 @@ source of truth로 사용한다.
 ## 코드 로직/API 참고
 
 제어 로직, module public API 또는 source-level 동작을 수정하기 전에는
-[Doxygen API 문서](https://LuPi13.github.io/G474RE_DNC_motor_control/api/html/index.html)를 참고한다.
+[Doxygen API 문서](https://lupi13.github.io/G474RE_DNC_motor_control/api/html/index.html)를 참고한다.
+
+API HTML은 GitHub Actions가 `main` 변경 시 생성해 GitHub Pages에 배포한다. 생성물인
+`docs/api/`와 로컬 출력 경로 `build/doxygen/`은 Git에 추가하지 않는다.
 
 ## 빠른 변경표
 

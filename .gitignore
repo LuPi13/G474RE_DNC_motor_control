@@ -5,6 +5,8 @@ Release/
 
 # Build output
 build/
+# Legacy Doxygen output. GitHub Actions generates and publishes the API site.
+docs/api/
 *.o
 *.elf
 *.hex
