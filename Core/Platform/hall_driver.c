@@ -22,22 +22,42 @@ static bool hall_driver_is_same_input(
 
 static uint8_t hall_driver_read_state(const hall_driver_t *self)
 {
+    const uint32_t primask = __get_PRIMASK();
+    uint32_t input_data;
     uint8_t state = 0U;
 
-    if (HAL_GPIO_ReadPin(
-            self->config.hall_a.port,
-            self->config.hall_a.pin) == GPIO_PIN_SET) {
+    /*
+     * 현재 보드는 A/B/C가 모두 GPIOA에 있으므로 IDR 한 번의 read가 3-bit
+     * snapshot이다. 다른 port 조합도 지원해야 하므로 그 경우만 짧게 IRQ를
+     * 막고 세 IDR read를 하나의 software critical section으로 묶는다.
+     */
+    if ((self->config.hall_a.port == self->config.hall_b.port) &&
+        (self->config.hall_a.port == self->config.hall_c.port)) {
+        input_data = self->config.hall_a.port->IDR;
+        if ((input_data & self->config.hall_a.pin) != 0U) {
+            state |= 0x4U;
+        }
+        if ((input_data & self->config.hall_b.pin) != 0U) {
+            state |= 0x2U;
+        }
+        if ((input_data & self->config.hall_c.pin) != 0U) {
+            state |= 0x1U;
+        }
+        return state;
+    }
+
+    __disable_irq();
+    if ((self->config.hall_a.port->IDR & self->config.hall_a.pin) != 0U) {
         state |= 0x4U;
     }
-    if (HAL_GPIO_ReadPin(
-            self->config.hall_b.port,
-            self->config.hall_b.pin) == GPIO_PIN_SET) {
+    if ((self->config.hall_b.port->IDR & self->config.hall_b.pin) != 0U) {
         state |= 0x2U;
     }
-    if (HAL_GPIO_ReadPin(
-            self->config.hall_c.port,
-            self->config.hall_c.pin) == GPIO_PIN_SET) {
+    if ((self->config.hall_c.port->IDR & self->config.hall_c.pin) != 0U) {
         state |= 0x1U;
+    }
+    if (primask == 0U) {
+        __enable_irq();
     }
 
     return state;
