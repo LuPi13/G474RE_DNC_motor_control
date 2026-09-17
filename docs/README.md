@@ -36,6 +36,9 @@
 - [`legacy_migration_notes.md`](legacy_migration_notes.md)  
   기존 `legacy_code.zip`에서 확인된 문제와 신규 구조로의 migration 기준.
 
+- [`flash_parameter_storage.md`](flash_parameter_storage.md)
+  Flash parameter slots, CRC/power-loss recovery, and debugger apply/save workflow.
+
 - [`canopen_cia402.md`](canopen_cia402.md)  
   CANopenNode, FDCAN transport, CiA 402 Profile Torque 통합 경계와 검증 기준.
 
