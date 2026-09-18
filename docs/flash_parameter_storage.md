@@ -1,5 +1,16 @@
 # Flash Drive Parameter Storage
 
+## Maintenance window
+
+`READY`와 PWM output disabled는 저장을 위한 필요조건이지만 ADC trigger까지 멈춘 상태를 뜻하지는 않는다.
+`apply_request`, `save_request`, `erase_request`는 main context에서 HRTIM counter를 먼저 정지하고
+ADC injected/regular group을 stop한 maintenance window에서 처리한다. 처리가 끝나면 ADC flag를 정리한 뒤
+ADC를 trigger 대기 상태로 재시작하고 HRTIM counter를 동기 reset 후 재개한다.
+
+Flash erase/program 또는 controller 재초기화 동안 global IRQ를 막더라도 ADC trigger가 계속 발생하면
+ADC1 regular DR overrun이 발생할 수 있다. 따라서 `pwm_driver_disable()`만 호출한 상태에서는 이 작업을
+수행하지 않는다. maintenance window는 PWM output을 다시 활성화하지 않는다.
+
 ## 목적과 범위
 
 `drive_parameters_t`는 모터 모델, current/speed PI, reference 제한, 속도 제한 및 CANopen torque

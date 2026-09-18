@@ -34,6 +34,14 @@ static bool drive_parameter_manager_read_latest(drive_parameters_t *parameters, 
     return drive_parameter_record_select_latest(slot_a, slot_b, parameters, selection) == DRIVE_PARAMETER_RECORD_STATUS_OK;
 }
 
+static flash_storage_slot_t drive_parameter_manager_to_flash_slot(
+    drive_parameter_slot_t slot
+)
+{
+    return (slot == DRIVE_PARAMETER_SLOT_A) ?
+        FLASH_STORAGE_SLOT_A : FLASH_STORAGE_SLOT_B;
+}
+
 void drive_parameter_manager_init(drive_parameter_manager_t *self, const drive_parameters_t *defaults)
 {
     drive_parameters_t loaded;
@@ -63,11 +71,18 @@ static bool drive_parameter_manager_save_active(drive_parameter_manager_t *self)
     uint8_t record[DRIVE_PARAMETER_RECORD_SIZE_BYTES];
     const drive_parameter_slot_t target = (self->active_slot == DRIVE_PARAMETER_SLOT_A) ?
         DRIVE_PARAMETER_SLOT_B : DRIVE_PARAMETER_SLOT_A;
+    const flash_storage_slot_t target_flash_slot =
+        drive_parameter_manager_to_flash_slot(target);
     const uint32_t next_generation = drive_parameter_debug.active_generation + 1U;
     if (!drive_parameter_record_encode((const drive_parameters_t *)&drive_parameter_debug.active_set, next_generation, record)) return false;
-    if ((flash_storage_driver_erase((flash_storage_slot_t)target) != FLASH_STORAGE_STATUS_OK) ||
-        (flash_storage_driver_program((flash_storage_slot_t)target, 0U, record, DRIVE_PARAMETER_RECORD_BODY_SIZE_BYTES) != FLASH_STORAGE_STATUS_OK) ||
-        (flash_storage_driver_program((flash_storage_slot_t)target, DRIVE_PARAMETER_RECORD_BODY_SIZE_BYTES, &record[DRIVE_PARAMETER_RECORD_BODY_SIZE_BYTES], 8U) != FLASH_STORAGE_STATUS_OK)) return false;
+    const uint64_t commit_marker = drive_parameter_record_commit_marker();
+    for (uint32_t index = 0U; index < 8U; ++index) {
+        record[DRIVE_PARAMETER_RECORD_BODY_SIZE_BYTES + index] =
+            (uint8_t)(commit_marker >> (8U * index));
+    }
+    if ((flash_storage_driver_erase(target_flash_slot) != FLASH_STORAGE_STATUS_OK) ||
+        (flash_storage_driver_program(target_flash_slot, 0U, record, DRIVE_PARAMETER_RECORD_BODY_SIZE_BYTES) != FLASH_STORAGE_STATUS_OK) ||
+        (flash_storage_driver_program(target_flash_slot, DRIVE_PARAMETER_RECORD_BODY_SIZE_BYTES, &record[DRIVE_PARAMETER_RECORD_BODY_SIZE_BYTES], 8U) != FLASH_STORAGE_STATUS_OK)) return false;
     self->active_slot = target;
     drive_parameter_debug.active_generation = next_generation;
     drive_parameter_debug.is_flash_record_valid = true;

@@ -232,6 +232,16 @@ adc_driver_status_t adc_driver_start(adc_driver_t *self)
     }
 
     self->is_sample_ready = false;
+    __HAL_ADC_CLEAR_FLAG(
+        self->config.dc_link.adc,
+        ADC_FLAG_EOC | ADC_FLAG_EOS | ADC_FLAG_OVR
+    );
+    for (uint32_t i = 0U; i < ADC_DRIVER_PHASE_COUNT; ++i) {
+        __HAL_ADC_CLEAR_FLAG(
+            adc_driver_get_phase(&self->config, i)->adc,
+            ADC_FLAG_JEOC | ADC_FLAG_JEOS
+        );
+    }
 
     /* HAL의 중간 실패로 ADC만 활성화된 경우도 정리 대상에 포함한다. */
     self->active_mask |= ADC_DRIVER_VOLTAGE_MASK;
@@ -299,6 +309,16 @@ adc_driver_status_t adc_driver_stop(adc_driver_t *self)
     }
     if (self->active_mask == 0U) {
         self->has_sync_error = false;
+    }
+    __HAL_ADC_CLEAR_FLAG(
+        self->config.dc_link.adc,
+        ADC_FLAG_EOC | ADC_FLAG_EOS | ADC_FLAG_OVR
+    );
+    for (uint32_t i = 0U; i < ADC_DRIVER_PHASE_COUNT; ++i) {
+        __HAL_ADC_CLEAR_FLAG(
+            adc_driver_get_phase(&self->config, i)->adc,
+            ADC_FLAG_JEOC | ADC_FLAG_JEOS
+        );
     }
     return status;
 }

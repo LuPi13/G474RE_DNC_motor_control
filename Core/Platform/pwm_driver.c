@@ -356,6 +356,45 @@ pwm_driver_status_t pwm_driver_disable(pwm_driver_t *self)
     return PWM_DRIVER_STATUS_OK;
 }
 
+pwm_driver_status_t pwm_driver_stop_counter(pwm_driver_t *self)
+{
+    if ((self == NULL) || !self->is_initialized || self->is_enabled) {
+        return PWM_DRIVER_STATUS_INVALID_ARGUMENT;
+    }
+    if (HAL_HRTIM_WaveformCountStop(
+            self->config.hrtim,
+            self->timer_mask) != HAL_OK) {
+        return PWM_DRIVER_STATUS_HAL_ERROR;
+    }
+    return PWM_DRIVER_STATUS_OK;
+}
+
+pwm_driver_status_t pwm_driver_start_counter(pwm_driver_t *self)
+{
+    if ((self == NULL) || !self->is_initialized || self->is_enabled) {
+        return PWM_DRIVER_STATUS_INVALID_ARGUMENT;
+    }
+    const uint32_t timer_reset_mask =
+        pwm_driver_get_timer_reset_mask(self->config.phase_a.timer_index) |
+        pwm_driver_get_timer_reset_mask(self->config.phase_b.timer_index) |
+        pwm_driver_get_timer_reset_mask(self->config.phase_c.timer_index);
+    if (HAL_HRTIM_WaveformCountStart(
+            self->config.hrtim,
+            self->timer_mask) != HAL_OK) {
+        return PWM_DRIVER_STATUS_HAL_ERROR;
+    }
+    if (HAL_HRTIM_SoftwareReset(
+            self->config.hrtim,
+            timer_reset_mask) != HAL_OK) {
+        (void)HAL_HRTIM_WaveformCountStop(
+            self->config.hrtim,
+            self->timer_mask
+        );
+        return PWM_DRIVER_STATUS_HAL_ERROR;
+    }
+    return PWM_DRIVER_STATUS_OK;
+}
+
 pwm_driver_status_t pwm_driver_set_duty(
     pwm_driver_t *self,
     const abc_t *duty

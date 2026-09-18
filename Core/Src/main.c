@@ -143,7 +143,6 @@ static bool main_apply_drive_parameters(
 )
 {
   motor_control_config_t next_config;
-  const uint32_t primask = __get_PRIMASK();
 
   (void)context;
   if (!drive_parameters_build_motor_control_config(
@@ -155,14 +154,10 @@ static bool main_apply_drive_parameters(
   }
 
   /* READY/PWM-off main context에서만 호출된다. ADC ISR과 instance write가 겹치지 않게 한다. */
-  __disable_irq();
   const motor_control_status_t status = motor_control_init(
       &motor_control,
       &next_config
   );
-  if (primask == 0U) {
-      __enable_irq();
-  }
   if (status != MOTOR_CONTROL_STATUS_OK) {
       return false;
   }
@@ -178,6 +173,70 @@ static bool main_apply_drive_parameters(
           parameters->speed_reference_max_rad_s;
   }
   return true;
+}
+static bool main_drive_parameter_update_is_pending(void)
+{
+    return (drive_parameter_debug.apply_request !=
+            drive_parameter_manager.handled_apply_request) ||
+           (drive_parameter_debug.save_request !=
+            drive_parameter_manager.handled_save_request) ||
+           (drive_parameter_debug.erase_request !=
+            drive_parameter_manager.handled_erase_request);
+}
+
+static bool main_stop_sampling_for_drive_parameter_update(void)
+{
+    if (pwm_driver_stop_counter(&pwm_driver) != PWM_DRIVER_STATUS_OK) {
+        return false;
+    }
+
+    /* Counter 정지 뒤에는 새 ADC trigger가 발생하지 않는다. */
+    adc_fast_loop_pending = false;
+    return adc_driver_stop(&adc_driver) == ADC_DRIVER_STATUS_OK;
+}
+
+static bool main_restart_sampling_after_drive_parameter_update(void)
+{
+    if (adc_driver_start(&adc_driver) != ADC_DRIVER_STATUS_OK) {
+        return false;
+    }
+
+    return pwm_driver_start_counter(&pwm_driver) == PWM_DRIVER_STATUS_OK;
+}
+
+static void main_process_drive_parameters(void)
+{
+    const bool is_safe_state = (app.drive_state == APP_DRIVE_STATE_READY) &&
+                               !pwm_driver.is_enabled;
+    const bool needs_maintenance_window = is_safe_state &&
+        main_drive_parameter_update_is_pending();
+
+    if (!needs_maintenance_window) {
+        drive_parameter_manager_process(
+            &drive_parameter_manager,
+            is_safe_state,
+            main_apply_drive_parameters,
+            NULL
+        );
+        return;
+    }
+
+    if (!main_stop_sampling_for_drive_parameter_update()) {
+        Error_Handler();
+        return;
+    }
+
+    drive_parameter_manager_process(
+        &drive_parameter_manager,
+        true,
+        main_apply_drive_parameters,
+        NULL
+    );
+
+    if (!main_restart_sampling_after_drive_parameter_update()) {
+        Error_Handler();
+        return;
+    }
 }
 /* USER CODE END 0 */
 
@@ -489,13 +548,7 @@ int main(void)
   {
       (void)app_drive_update(&app);
 
-      drive_parameter_manager_process(
-          &drive_parameter_manager,
-          (app.drive_state == APP_DRIVE_STATE_READY) &&
-              !pwm_driver.is_enabled,
-          main_apply_drive_parameters,
-          NULL
-      );
+      main_process_drive_parameters();
 
       drive_debug_command_source_update(&app);
 

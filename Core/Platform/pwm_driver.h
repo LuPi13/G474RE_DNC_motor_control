@@ -176,6 +176,32 @@ pwm_driver_status_t pwm_driver_disable(
 );
 
 /**
+ * @brief PWM 출력은 유지한 채 ADC trigger를 발생시키는 HRTIM counter를 정지한다.
+ *
+ * @param[in,out] self 초기화된 PWM driver instance.
+ * @retval PWM_DRIVER_STATUS_OK counter 정지 완료.
+ * @retval PWM_DRIVER_STATUS_INVALID_ARGUMENT PWM output이 활성 상태이거나 instance가 유효하지 않음.
+ *
+ * @pre PWM output이 비활성 상태여야 한다.
+ * @note 이 함수는 ADC stop보다 먼저 호출하여 새 ADC trigger가 발생하지 않게 한다.
+ */
+pwm_driver_status_t pwm_driver_stop_counter(pwm_driver_t *self);
+
+/**
+ * @brief 정지된 HRTIM counter를 동기 reset 후 다시 시작한다.
+ *
+ * @param[in,out] self 초기화된 PWM driver instance.
+ * @retval PWM_DRIVER_STATUS_OK counter 시작 완료.
+ * @retval PWM_DRIVER_STATUS_INVALID_ARGUMENT PWM output이 활성 상태이거나 instance가 유효하지 않음.
+ *
+ * @pre PWM output이 비활성 상태여야 한다.
+ * @pre ADC가 trigger 대기 상태로 준비되어 있어야 한다.
+ * @note 이 함수는 PWM output을 활성화하지 않는다.
+ * @warning Software reset 직후 ADC trigger가 발생할 수 있으므로 ADC start 이후에 호출해야 한다.
+ */
+pwm_driver_status_t pwm_driver_start_counter(pwm_driver_t *self);
+
+/**
  * @brief 다음 PWM update에 사용할 3상 duty command를 적용한다.
  *
  * @param[in] self 초기화된 PWM driver instance. 내부 상태 필드는 변경하지 않음.
