@@ -34,9 +34,9 @@ const hall_decoder_profile_t motor_config_hall_profile = {
 
 const speed_controller_config_t motor_config_speed_controller = {
     .pi = {
-        .kp = 0.0567f,
-        .ki = 1.259f,
-        .anti_windup_gain_per_s = 22.2f,
+        .kp = 0.1f,
+        .ki = 0.1f,
+        .anti_windup_gain_per_s = 1.0f,
         .sampling_period_s = 0.001f,
         .output_min = -5.0f,
         .output_max = 5.0f,

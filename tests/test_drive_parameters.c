@@ -19,6 +19,15 @@ static void test_round_trip(void)
     drive_parameters_get_defaults(&defaults);
     assert(drive_parameters_is_valid(&defaults));
     assert(defaults.current_reference_magnitude_limit_a == 5.0f);
+    assert(defaults.d_axis_kp == 0.927f);
+    assert(defaults.d_axis_ki == 370.7f);
+    assert(defaults.d_axis_anti_windup_gain_per_s == 399.9f);
+    assert(defaults.q_axis_kp == 0.977f);
+    assert(defaults.q_axis_ki == 370.7f);
+    assert(defaults.q_axis_anti_windup_gain_per_s == 379.4f);
+    assert(defaults.speed_kp == 0.1f);
+    assert(defaults.speed_ki == 0.1f);
+    assert(defaults.speed_anti_windup_gain_per_s == 1.0f);
     assert(defaults.speed_i_q_output_min_a == -5.0f);
     assert(defaults.speed_i_q_output_max_a == 5.0f);
     assert(defaults.speed_reference_min_rad_s == -314.159265f);

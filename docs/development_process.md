@@ -888,12 +888,10 @@ default current-reference magnitude limit: 5.0 A peak
 validated parameter ceiling: 7.0 A peak
 ```
 
-Motor rotor inertia는 `8.6e-6 kg*m^2`, 초기 최대 load inertia는 그 5배로 두어 총 관성을
-`5.16e-5 kg*m^2`로 사용한다. Pole-pair 4와
-`K_t = 1.5 * pole_pairs * lambda_f = 0.04044 N*m/A`를 사용하고 5 Hz, damping ratio 약
-0.707을 적용한 초기 speed PI 후보는 `Kp = 0.0567 A/(rad/s)`, `Ki = 1.259 A/rad`,
-`Kaw = 22.2 1/s`다. 실제 발전기 부하와 관성 변화에 따라 config에서
-gain과 reference rate를 교체할 수 있어야 한다.
+현재 motor에 적용하는 speed PI 기본값은 `Kp = 0.1 A/(rad/s)`, `Ki = 0.1 A/rad`,
+`Kaw = 1.0 1/s`다. 전류 PI 기본값은 d축 `(Kp, Ki, Kaw) = (0.927, 370.7, 399.9)`,
+q축 `(Kp, Ki, Kaw) = (0.977, 370.7, 379.4)`다. 실제 발전기 부하와 관성 변화에 따라
+config에서 gain과 reference rate를 교체할 수 있어야 한다.
 
 Speed PI는 40 kHz ADC ISR에 직접 추가하지 않고 SysTick 1 kHz scheduler context에서 실행하여
 double-buffered q축 current target을 publish한다. ADC ISR은 Hall speed feedback snapshot의
