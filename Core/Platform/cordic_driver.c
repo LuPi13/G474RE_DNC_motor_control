@@ -47,6 +47,11 @@ static int32_t cordic_driver_float_to_q31(float value)
     return (int32_t)(value * CORDIC_DRIVER_Q31_SCALE);
 }
 
+static inline int32_t cordic_driver_float_to_q31_fast(float value)
+{
+    return (int32_t)(value * CORDIC_DRIVER_Q31_SCALE);
+}
+
 static float cordic_driver_q31_to_float(int32_t value)
 {
     return (float)value * CORDIC_DRIVER_Q31_TO_FLOAT;
@@ -163,7 +168,7 @@ void cordic_driver_sin_cos_fast(
         theta_rad -= CORDIC_DRIVER_TWO_PI_RAD;
     }
 
-    const int32_t angle_q31 = cordic_driver_float_to_q31(
+    const int32_t angle_q31 = cordic_driver_float_to_q31_fast(
         theta_rad * CORDIC_DRIVER_INV_PI
     );
     LL_CORDIC_WriteData(CORDIC, (uint32_t)angle_q31);

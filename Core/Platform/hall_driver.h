@@ -16,7 +16,7 @@
 
 /**
  * @defgroup platform_hall_driver Hall driver
- * @brief 3개 Hall GPIO의 raw state와 TIM edge interval을 일관된 snapshot으로 제공한다.
+ * @brief 3개 Hall GPIO의 raw state와 TIM edge timing을 일관된 snapshot으로 제공한다.
  *
  * CubeMX는 TIM Hall Sensor Interface, GPIO alternate function, input filter, prescaler,
  * auto-reload와 NVIC를 설정한다. Driver는 GPIO/TIM mapping을 검증하고 capture/timeout을
@@ -56,19 +56,19 @@ typedef struct {
 /**
  * @brief 최신 raw Hall signal과 hardware diagnostic snapshot.
  *
- * edge_interval_s는 직전 capture부터 현재 capture까지의 실제 시간이며
- * has_valid_interval이 true일 때만 decoder의 speed 계산에 사용한다. Start, timeout,
- * capture tick 0 또는 overflow와 capture가 겹친 경우에는 interval을 무효화한다.
+ * edge_rate_hz는 직전 capture interval의 역수이며 has_valid_edge_rate가 true일 때만
+ * decoder의 speed 계산에 사용한다. Start, timeout, capture tick 0 또는 overflow와 capture가
+ * 겹친 경우에는 edge rate를 무효화한다.
  */
 typedef struct {
     uint8_t hall_state;       /**< A/B/C = bit 2/1/0인 raw state, 범위 [0, 7]. */
     uint32_t capture_ticks;   /**< 최신 TIM CH1 capture 값 [counter tick]. */
-    float edge_interval_s;    /**< 직전 edge부터 현재 edge까지의 시간 [s]. */
+    float edge_rate_hz;       /**< 직전 edge interval의 역수 [Hz]. */
     uint32_t capture_count;   /**< 수락한 Hall state transition 누적 횟수. */
     uint32_t invalid_capture_count; /**< State 불일치, 0 tick 또는 overcapture raw event 누적 횟수. */
     uint32_t timeout_count;   /**< Hall edge timeout 진입 횟수. */
     bool has_state_sample;    /**< hall_state가 실제 GPIO에서 읽힌 값임. */
-    bool has_valid_interval;  /**< edge_interval_s를 사용할 수 있음. */
+    bool has_valid_edge_rate; /**< edge_rate_hz를 사용할 수 있음. */
     bool is_timed_out;        /**< Hall edge 없이 timer overflow가 발생함. */
 } hall_driver_feedback_t;
 
@@ -125,14 +125,14 @@ hall_driver_status_t hall_driver_start(hall_driver_t *self);
 hall_driver_status_t hall_driver_stop(hall_driver_t *self);
 
 /**
- * @brief TIM CH1 Hall capture에서 raw state와 edge interval을 수집한다.
+ * @brief TIM CH1 Hall capture에서 raw state와 edge timing을 수집한다.
  * @param[in,out] self 실행 중인 driver instance.
  * @param[in] htim HAL_TIM_IC_CaptureCallback()에서 받은 TIM handle.
  * @note Raw state 000/111을 포함한 모든 3-bit 조합을 그대로 publish한다.
  * @note 이전 snapshot과 같은 raw state, capture tick 0 또는 TIM CC1 overcapture는
  *       state transition으로 수락하지 않는다. invalid_capture_count를 증가시켜 decoder/App의
  *       Hall fault 경로로 전달하고 다음 실제 transition의 interval도 무효화한다.
- * @retval HALL_DRIVER_STATUS_OK 수락한 raw state transition과 capture interval publish 완료.
+ * @retval HALL_DRIVER_STATUS_OK 수락한 raw state transition과 edge rate publish 완료.
  * @retval HALL_DRIVER_STATUS_INVALID_ARGUMENT NULL, 초기화되지 않은 instance 또는 다른 TIM.
  * @retval HALL_DRIVER_STATUS_INVALID_STATE Driver가 실행 중이 아님.
  * @retval HALL_DRIVER_STATUS_INVALID_CAPTURE CH1 callback이 아니거나 capture integrity 오류임.
@@ -178,6 +178,20 @@ hall_driver_status_t hall_driver_get_feedback(
  * @retval HALL_DRIVER_STATUS_INVALID_ARGUMENT NULL 또는 초기화되지 않은 instance.
  */
 hall_driver_status_t hall_driver_get_signal_feedback(
+    const hall_driver_t *self,
+    hall_driver_signal_feedback_t *feedback
+);
+
+/**
+ * @brief 검증 완료된 fast-loop에서 최신 raw Hall signal snapshot을 복사한다.
+ *
+ * @param[in] self 초기화되어 실행 중인 Hall driver instance.
+ * @param[out] feedback 최신 경량 signal snapshot.
+ * @pre 모든 pointer와 instance 상태가 유효해야 한다.
+ * @note Active index와 memory barrier를 사용한 ISR snapshot 일관성은 일반 API와 동일하게
+ *       유지하며 pointer/초기화 검증만 생략한다.
+ */
+void hall_driver_get_signal_feedback_fast(
     const hall_driver_t *self,
     hall_driver_signal_feedback_t *feedback
 );

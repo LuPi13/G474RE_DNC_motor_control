@@ -271,6 +271,24 @@ adc_driver_status_t adc_driver_handle_injected_complete(
 );
 
 /**
+ * @brief 검증 완료된 completion ADC IRQ에서 세 injected 전류를 일괄 수집한다.
+ *
+ * @param[in,out] self 실행 중인 ADC driver instance.
+ * @pre @p self는 초기화되어 실행 중이고, configured completion ADC의 JEOC IRQ 안에서
+ *      정확히 한 번 호출해야 한다.
+ * @post 성공 시 새 전류 묶음이 준비되며 adc_driver_read_raw_fast()로 같은 IRQ에서 소비한다.
+ * @note Instance/pointer/completion ADC 검사는 생략하지만 동기 오류, follower JEOC와 sample
+ *       범위 검사는 adc_driver_handle_injected_complete()와 동일하게 수행한다.
+ *
+ * @retval ADC_DRIVER_STATUS_OK 세 전류 수집 완료.
+ * @retval ADC_DRIVER_STATUS_SYNC_ERROR follower 미완료, 이전 묶음 미소비 또는 기존 동기 오류.
+ * @retval ADC_DRIVER_STATUS_INVALID_SAMPLE 전류 code가 지원 범위를 벗어남.
+ */
+adc_driver_status_t adc_driver_handle_injected_complete_fast(
+    adc_driver_t *self
+);
+
+/**
  * @brief 준비된 3상 전류와 읽지 않은 DC 전압 결과를 하나의 raw sample로 반환한다.
  *
  * @param[in,out] self 실행 중이며 세 전류가 준비된 instance.
@@ -295,6 +313,20 @@ adc_driver_status_t adc_driver_handle_injected_complete(
  * @retval ADC_DRIVER_STATUS_INVALID_SAMPLE 전압 code가 [0, 4095]를 벗어남. 해당 묶음은 폐기됨.
  */
 adc_driver_status_t adc_driver_read_raw(
+    adc_driver_t *self,
+    adc_driver_raw_sample_t *sample
+);
+
+/**
+ * @brief 검증 완료된 fast-loop에서 준비된 전류와 DC-link 전압 raw sample을 소비한다.
+ *
+ * @param[in,out] self 실행 중이며 전류 묶음이 준비된 ADC driver instance.
+ * @param[out] sample 성공 시 갱신할 raw sample.
+ * @pre 모든 pointer와 instance 상태가 유효하고 같은 IRQ에서 injected 완료 처리가 성공해야 한다.
+ * @note Pointer/초기화/실행 상태 검사는 생략하지만 ready, sync, voltage EOC/OVR 및 sample
+ *       범위 검사는 adc_driver_read_raw()와 동일하게 수행한다.
+ */
+adc_driver_status_t adc_driver_read_raw_fast(
     adc_driver_t *self,
     adc_driver_raw_sample_t *sample
 );

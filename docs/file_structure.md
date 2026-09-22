@@ -467,7 +467,7 @@ voltage_sensor.c
 분리 기준은 파일 길이가 아니라 **peripheral access와 sensor calibration/conversion이 독립적으로 변하기 시작하는지**다.
 Raw offset과 보정 누적 상태는 `current_sensor`만 소유하며 App이나 `adc_driver`에 복제하지 않는다.
 
-`hall_driver`는 GPIO/TIM capture와 timeout을 처리하여 raw 3-bit Hall state, edge interval과
+`hall_driver`는 GPIO/TIM capture와 timeout을 처리하여 raw 3-bit Hall state, edge rate와
 capture sequence를 일관된 snapshot으로 제공한다. 어떤 raw state가 유효한지, 어느 sector인지,
 정방향이 어느 순서인지와 rotor electrical angle이 얼마인지는 판단하지 않는다.
 
@@ -501,7 +501,7 @@ hardware interrupt 경계의 snapshot 전달 책임이며 Control의 중복 roto
 
 ```text
 hall_driver
-  : GPIO / timer / raw Hall state / edge interval / timeout snapshot
+  : GPIO / timer / raw Hall state / edge rate / timeout snapshot
 
 hall_decoder
   : motor profile / sector / direction / edge angle / edge speed / sector span

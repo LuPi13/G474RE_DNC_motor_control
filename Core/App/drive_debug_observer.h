@@ -118,6 +118,14 @@ extern volatile drive_debug_snapshot_t drive_debug_snapshot;
 extern volatile uint32_t drive_debug_snapshot_sequence;
 
 /**
+ * @brief Debugger에서 snapshot 생성을 일시 정지하거나 재개하는 runtime switch.
+ *
+ * true이면 설정된 publish 주기로 snapshot을 생성하고, false이면 fast-loop에서 snapshot을
+ * 건너뛴다. Cycle 측정 시 false로 변경할 수 있으며 command source 동작에는 영향을 주지 않는다.
+ */
+extern volatile bool drive_debug_observer_enabled;
+
+/**
  * @brief Debug observer의 fast-loop 분주기를 초기화한다.
  *
  * @param fast_loop_frequency_hz ADC fast-loop 주파수 [Hz].

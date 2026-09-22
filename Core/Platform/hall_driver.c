@@ -70,12 +70,12 @@ static void hall_driver_copy_feedback_from_shared(
 {
     destination->hall_state = source->hall_state;
     destination->capture_ticks = source->capture_ticks;
-    destination->edge_interval_s = source->edge_interval_s;
+    destination->edge_rate_hz = source->edge_rate_hz;
     destination->capture_count = source->capture_count;
     destination->invalid_capture_count = source->invalid_capture_count;
     destination->timeout_count = source->timeout_count;
     destination->has_state_sample = source->has_state_sample;
-    destination->has_valid_interval = source->has_valid_interval;
+    destination->has_valid_edge_rate = source->has_valid_edge_rate;
     destination->is_timed_out = source->is_timed_out;
 }
 
@@ -86,12 +86,12 @@ static void hall_driver_copy_feedback_to_shared(
 {
     destination->hall_state = source->hall_state;
     destination->capture_ticks = source->capture_ticks;
-    destination->edge_interval_s = source->edge_interval_s;
+    destination->edge_rate_hz = source->edge_rate_hz;
     destination->capture_count = source->capture_count;
     destination->invalid_capture_count = source->invalid_capture_count;
     destination->timeout_count = source->timeout_count;
     destination->has_state_sample = source->has_state_sample;
-    destination->has_valid_interval = source->has_valid_interval;
+    destination->has_valid_edge_rate = source->has_valid_edge_rate;
     destination->is_timed_out = source->is_timed_out;
 }
 
@@ -172,12 +172,12 @@ hall_driver_status_t hall_driver_init(
     const hall_driver_feedback_t initial_feedback = {
         .hall_state = 0U,
         .capture_ticks = 0U,
-        .edge_interval_s = 0.0f,
+        .edge_rate_hz = 0.0f,
         .capture_count = 0U,
         .invalid_capture_count = 0U,
         .timeout_count = 0U,
         .has_state_sample = false,
-        .has_valid_interval = false,
+        .has_valid_edge_rate = false,
         .is_timed_out = false,
     };
     hall_driver_copy_feedback_to_shared(
@@ -212,9 +212,9 @@ hall_driver_status_t hall_driver_start(hall_driver_t *self)
     hall_driver_load_active_feedback(self, &feedback);
     feedback.hall_state = hall_driver_read_state(self);
     feedback.capture_ticks = 0U;
-    feedback.edge_interval_s = 0.0f;
+    feedback.edge_rate_hz = 0.0f;
     feedback.has_state_sample = true;
-    feedback.has_valid_interval = false;
+    feedback.has_valid_edge_rate = false;
     feedback.is_timed_out = false;
     hall_driver_publish_feedback(self, &feedback);
 
@@ -261,8 +261,8 @@ hall_driver_status_t hall_driver_stop(hall_driver_t *self)
 
     hall_driver_feedback_t feedback;
     hall_driver_load_active_feedback(self, &feedback);
-    feedback.edge_interval_s = 0.0f;
-    feedback.has_valid_interval = false;
+    feedback.edge_rate_hz = 0.0f;
+    feedback.has_valid_edge_rate = false;
     feedback.is_timed_out = false;
     hall_driver_publish_feedback(self, &feedback);
 
@@ -318,16 +318,16 @@ hall_driver_status_t hall_driver_handle_capture(
         feedback.has_state_sample = true;
     }
     feedback.capture_ticks = capture_ticks;
-    feedback.edge_interval_s = 0.0f;
-    feedback.has_valid_interval = false;
+    feedback.edge_rate_hz = 0.0f;
+    feedback.has_valid_edge_rate = false;
     feedback.is_timed_out = false;
 
     self->capture_with_pending_timeout = has_pending_timeout;
     if (!is_invalid_capture && self->has_valid_interval_reference &&
         !has_pending_timeout) {
-        feedback.edge_interval_s = (float)capture_ticks /
-            self->counter_frequency_hz;
-        feedback.has_valid_interval = true;
+        feedback.edge_rate_hz = self->counter_frequency_hz /
+            (float)capture_ticks;
+        feedback.has_valid_edge_rate = true;
     }
 
     if (is_invalid_capture) {
@@ -361,8 +361,8 @@ hall_driver_status_t hall_driver_handle_timeout(
     if (!feedback.is_timed_out || self->capture_with_pending_timeout) {
         ++feedback.timeout_count;
     }
-    feedback.edge_interval_s = 0.0f;
-    feedback.has_valid_interval = false;
+    feedback.edge_rate_hz = 0.0f;
+    feedback.has_valid_edge_rate = false;
 
     if (self->capture_with_pending_timeout) {
         feedback.is_timed_out = false;
@@ -391,6 +391,25 @@ hall_driver_status_t hall_driver_get_feedback(
     return HALL_DRIVER_STATUS_OK;
 }
 
+static void hall_driver_copy_signal_feedback(
+    const hall_driver_t *self,
+    hall_driver_signal_feedback_t *feedback
+)
+{
+    const uint32_t active_index = self->active_feedback_index;
+    __DMB();
+    const volatile hall_driver_feedback_t *source =
+        &self->feedback_buffer[active_index];
+
+    feedback->hall_state = source->hall_state;
+    feedback->capture_count = source->capture_count;
+    feedback->invalid_capture_count = source->invalid_capture_count;
+    feedback->edge_rate_hz = source->edge_rate_hz;
+    feedback->has_state_sample = source->has_state_sample;
+    feedback->has_valid_edge_rate = source->has_valid_edge_rate;
+    feedback->is_timed_out = source->is_timed_out;
+}
+
 hall_driver_status_t hall_driver_get_signal_feedback(
     const hall_driver_t *self,
     hall_driver_signal_feedback_t *feedback
@@ -400,18 +419,14 @@ hall_driver_status_t hall_driver_get_signal_feedback(
         return HALL_DRIVER_STATUS_INVALID_ARGUMENT;
     }
 
-    const uint32_t active_index = self->active_feedback_index;
-    __DMB();
-    const volatile hall_driver_feedback_t *source =
-        &self->feedback_buffer[active_index];
-
-    feedback->hall_state = source->hall_state;
-    feedback->capture_count = source->capture_count;
-    feedback->invalid_capture_count = source->invalid_capture_count;
-    feedback->edge_interval_s = source->edge_interval_s;
-    feedback->has_state_sample = source->has_state_sample;
-    feedback->has_valid_interval = source->has_valid_interval;
-    feedback->is_timed_out = source->is_timed_out;
-
+    hall_driver_copy_signal_feedback(self, feedback);
     return HALL_DRIVER_STATUS_OK;
+}
+
+void hall_driver_get_signal_feedback_fast(
+    const hall_driver_t *self,
+    hall_driver_signal_feedback_t *feedback
+)
+{
+    hall_driver_copy_signal_feedback(self, feedback);
 }

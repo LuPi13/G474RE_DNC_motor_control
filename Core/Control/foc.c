@@ -780,8 +780,13 @@ foc_status_t foc_update_fast(
 
 foc_status_t foc_update_fast_voltage(
     foc_t *self,
-    const foc_input_t *input,
-    alpha_beta_t *v_alpha_beta_ref
+    const abc_t *i_abc,
+    const dq_t *i_dq_ref,
+    alpha_beta_t *v_alpha_beta_ref,
+    float sin_theta,
+    float cos_theta,
+    float omega_e_rad_s,
+    float v_dc
 )
 {
     alpha_beta_t i_alpha_beta;
@@ -794,8 +799,8 @@ foc_status_t foc_update_fast_voltage(
     dq_t v_dq_applied;
     bool is_voltage_saturated;
 
-    transform_clarke(&input->i_abc, &i_alpha_beta);
-    transform_park(&i_alpha_beta, input->sin_theta, input->cos_theta,
+    transform_clarke(i_abc, &i_alpha_beta);
+    transform_park(&i_alpha_beta, sin_theta, cos_theta,
                    &i_dq_unfiltered);
 
     if (!self->is_feedback_initialized) {
@@ -812,16 +817,16 @@ foc_status_t foc_update_fast_voltage(
             &self->q_axis_current_filter, i_dq_unfiltered.q);
     }
 
-    i_dq_error.d = input->i_dq_ref.d - i_dq_feedback.d;
-    i_dq_error.q = input->i_dq_ref.q - i_dq_feedback.q;
+    i_dq_error.d = i_dq_ref->d - i_dq_feedback.d;
+    i_dq_error.q = i_dq_ref->q - i_dq_feedback.q;
     v_dq_pi.d = pi_controller_update_fast(&self->d_axis_pi, i_dq_error.d);
     v_dq_pi.q = pi_controller_update_fast(&self->q_axis_pi, i_dq_error.q);
     foc_calculate_feedforward_fast(self, &i_dq_feedback,
-                                   input->omega_e_rad_s,
+                                   omega_e_rad_s,
                                    &v_dq_feedforward);
     requested_voltage.d = v_dq_pi.d + v_dq_feedforward.d;
     requested_voltage.q = v_dq_pi.q + v_dq_feedforward.q;
-    foc_limit_voltage_fast(&requested_voltage, input->v_dc,
+    foc_limit_voltage_fast(&requested_voltage, v_dc,
                            self->voltage_utilization, &v_dq_applied,
                            &is_voltage_saturated);
 
@@ -832,7 +837,7 @@ foc_status_t foc_update_fast_voltage(
             &self->q_axis_pi, v_dq_applied.q - v_dq_feedforward.q);
     }
 
-    transform_inverse_park(&v_dq_applied, input->sin_theta, input->cos_theta,
+    transform_inverse_park(&v_dq_applied, sin_theta, cos_theta,
                            v_alpha_beta_ref);
     if ((!foc_float_is_finite(v_alpha_beta_ref->alpha)) ||
         (!foc_float_is_finite(v_alpha_beta_ref->beta))) {

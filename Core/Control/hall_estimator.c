@@ -215,52 +215,51 @@ static hall_estimator_status_t hall_estimator_update_unchecked(
         return HALL_ESTIMATOR_STATUS_INVALID_OBSERVATION;
     }
 
-    hall_estimator_output_t next_output = self->output;
-    next_output.is_timed_out = observation->is_timed_out;
+    hall_estimator_output_t *const next_output = &self->output;
+    next_output->is_timed_out = observation->is_timed_out;
 
     if (!observation->has_valid_state ||
         !observation->has_valid_angle) {
         /* 마지막 숫자는 diagnostic을 위해 보존하지만 Control이 사용하지 못하게 한다. */
-        next_output.omega_e_rad_s = 0.0f;
-        next_output.has_valid_angle = false;
-        next_output.has_valid_speed = false;
-        next_output.has_edge_reference = false;
-        next_output.is_sector_limited = false;
+        next_output->omega_e_rad_s = 0.0f;
+        next_output->has_valid_angle = false;
+        next_output->has_valid_speed = false;
+        next_output->has_edge_reference = false;
+        next_output->is_sector_limited = false;
         self->edge_reference_theta_e_rad = 0.0f;
         self->edge_travel_rad = 0.0f;
         self->edge_travel_limit_rad = 0.0f;
     } else {
         if (observation->has_valid_speed) {
-            next_output.omega_e_rad_s = observation->omega_e_rad_s;
-            next_output.has_valid_speed = true;
+            next_output->omega_e_rad_s = observation->omega_e_rad_s;
+            next_output->has_valid_speed = true;
         } else {
             /* 첫 edge, resync 또는 오류 뒤에는 이전 속도로 계속 적분하지 않는다. */
-            next_output.omega_e_rad_s = 0.0f;
-            next_output.has_valid_speed = false;
+            next_output->omega_e_rad_s = 0.0f;
+            next_output->has_valid_speed = false;
         }
 
         const bool should_synchronize_angle =
             is_first_observation ||
             has_new_transition ||
             !observation->is_angle_from_edge ||
-            !next_output.has_valid_angle;
+            !next_output->has_valid_angle;
 
         if (should_synchronize_angle) {
             /*
              * 새 Hall edge 또는 resync sector 중심각으로 즉시 맞춘다. Timeout flag만
              * 변한 경우에는 이미 적분한 각도를 과거 Hall edge로 되돌리지 않는다.
              */
-            next_output.theta_e_rad = observation->theta_e_rad;
-            next_output.has_valid_angle = true;
-            next_output.has_edge_reference = observation->is_angle_from_edge;
-            next_output.is_sector_limited = false;
+            next_output->theta_e_rad = observation->theta_e_rad;
+            next_output->has_valid_angle = true;
+            next_output->has_edge_reference = observation->is_angle_from_edge;
+            next_output->is_sector_limited = false;
             self->edge_reference_theta_e_rad = observation->theta_e_rad;
             self->edge_travel_rad = 0.0f;
             self->edge_travel_limit_rad = observation->sector_span_rad;
         }
     }
 
-    self->output = next_output;
     self->last_transition_count = observation->transition_count;
     self->last_sector = observation->sector;
     self->last_observation_flags = observation_flags;
@@ -295,21 +294,7 @@ hall_estimator_status_t hall_estimator_update_from_decoder_fast(
     float elapsed_s
 )
 {
-    const hall_estimator_observation_t observation = {
-        .theta_e_rad = decoded_hall->theta_e_rad,
-        .omega_e_rad_s = decoded_hall->omega_e_rad_s,
-        .sector_span_rad = decoded_hall->sector_span_rad,
-        .transition_count = decoded_hall->transition_count,
-        .sector = decoded_hall->sector,
-        .has_valid_state = decoded_hall->has_valid_state,
-        .has_valid_direction = decoded_hall->has_valid_direction,
-        .has_valid_angle = decoded_hall->has_valid_angle,
-        .has_valid_speed = decoded_hall->has_valid_speed,
-        .is_angle_from_edge = decoded_hall->is_angle_from_edge,
-        .is_timed_out = decoded_hall->is_timed_out,
-    };
-
-    return hall_estimator_update_unchecked(self, &observation, elapsed_s);
+    return hall_estimator_update_unchecked(self, decoded_hall, elapsed_s);
 }
 
 const hall_estimator_output_t *hall_estimator_get_latest_output_fast(

@@ -323,23 +323,11 @@ adc_driver_status_t adc_driver_stop(adc_driver_t *self)
     return status;
 }
 
-adc_driver_status_t adc_driver_handle_injected_complete(
+static adc_driver_status_t adc_driver_collect_injected(
     adc_driver_t *self,
-    ADC_HandleTypeDef *hadc,
-    bool *is_complete
+    ADC_HandleTypeDef *completion_adc
 )
 {
-    if (is_complete == NULL) {
-        return ADC_DRIVER_STATUS_INVALID_ARGUMENT;
-    }
-    *is_complete = false;
-    if ((self == NULL) || (hadc == NULL) || !self->is_initialized ||
-        (hadc != self->config.injected_completion_adc)) {
-        return ADC_DRIVER_STATUS_INVALID_ARGUMENT;
-    }
-    if (!self->is_running) {
-        return ADC_DRIVER_STATUS_INVALID_STATE;
-    }
     if (self->has_sync_error) {
         return ADC_DRIVER_STATUS_SYNC_ERROR;
     }
@@ -383,32 +371,60 @@ adc_driver_status_t adc_driver_handle_injected_complete(
     self->current_raw[1] = (uint16_t)phase_b;
     self->current_raw[2] = (uint16_t)phase_c;
 
-    if (phase_a_adc != hadc) {
+    if (phase_a_adc != completion_adc) {
         __HAL_ADC_CLEAR_FLAG(phase_a_adc, ADC_FLAG_JEOC | ADC_FLAG_JEOS);
     }
-    if (phase_b_adc != hadc) {
+    if (phase_b_adc != completion_adc) {
         __HAL_ADC_CLEAR_FLAG(phase_b_adc, ADC_FLAG_JEOC | ADC_FLAG_JEOS);
     }
-    if (phase_c_adc != hadc) {
+    if (phase_c_adc != completion_adc) {
         __HAL_ADC_CLEAR_FLAG(phase_c_adc, ADC_FLAG_JEOC | ADC_FLAG_JEOS);
     }
 
     self->is_sample_ready = true;
-    *is_complete = true;
     return ADC_DRIVER_STATUS_OK;
 }
 
-adc_driver_status_t adc_driver_read_raw(
+adc_driver_status_t adc_driver_handle_injected_complete(
     adc_driver_t *self,
-    adc_driver_raw_sample_t *sample
+    ADC_HandleTypeDef *hadc,
+    bool *is_complete
 )
 {
-    if ((self == NULL) || (sample == NULL) || !self->is_initialized) {
+    if (is_complete == NULL) {
+        return ADC_DRIVER_STATUS_INVALID_ARGUMENT;
+    }
+    *is_complete = false;
+    if ((self == NULL) || (hadc == NULL) || !self->is_initialized ||
+        (hadc != self->config.injected_completion_adc)) {
         return ADC_DRIVER_STATUS_INVALID_ARGUMENT;
     }
     if (!self->is_running) {
         return ADC_DRIVER_STATUS_INVALID_STATE;
     }
+
+    const adc_driver_status_t status = adc_driver_collect_injected(self, hadc);
+    if (status == ADC_DRIVER_STATUS_OK) {
+        *is_complete = true;
+    }
+    return status;
+}
+
+adc_driver_status_t adc_driver_handle_injected_complete_fast(
+    adc_driver_t *self
+)
+{
+    return adc_driver_collect_injected(
+        self,
+        self->config.injected_completion_adc
+    );
+}
+
+static adc_driver_status_t adc_driver_read_ready_sample(
+    adc_driver_t *self,
+    adc_driver_raw_sample_t *sample
+)
+{
     if (self->has_sync_error) {
         return ADC_DRIVER_STATUS_SYNC_ERROR;
     }
@@ -423,7 +439,7 @@ adc_driver_status_t adc_driver_read_raw(
         return ADC_DRIVER_STATUS_NOT_READY;
     }
 
-    const uint32_t voltage = HAL_ADC_GetValue(adc);
+    const uint32_t voltage = LL_ADC_REG_ReadConversionData12(adc->Instance);
     const bool overrun = ((flags | READ_REG(adc->Instance->ISR)) & ADC_FLAG_OVR) != 0U;
     /* DR 읽기는 EOC를 해제한다. 단일 regular의 EOS/OVR은 여기서 소비한다. */
     __HAL_ADC_CLEAR_FLAG(adc, ADC_FLAG_EOS | ADC_FLAG_OVR);
@@ -441,4 +457,26 @@ adc_driver_status_t adc_driver_read_raw(
         .dc_link = (uint16_t)voltage,
     };
     return ADC_DRIVER_STATUS_OK;
+}
+
+adc_driver_status_t adc_driver_read_raw(
+    adc_driver_t *self,
+    adc_driver_raw_sample_t *sample
+)
+{
+    if ((self == NULL) || (sample == NULL) || !self->is_initialized) {
+        return ADC_DRIVER_STATUS_INVALID_ARGUMENT;
+    }
+    if (!self->is_running) {
+        return ADC_DRIVER_STATUS_INVALID_STATE;
+    }
+    return adc_driver_read_ready_sample(self, sample);
+}
+
+adc_driver_status_t adc_driver_read_raw_fast(
+    adc_driver_t *self,
+    adc_driver_raw_sample_t *sample
+)
+{
+    return adc_driver_read_ready_sample(self, sample);
 }

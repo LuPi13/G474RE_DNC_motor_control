@@ -372,11 +372,28 @@ motor_control_status_t motor_control_update_fast(
     motor_control_output_t *output
 );
 
-/** @brief ISR에서 full diagnostic snapshot 없이 alpha-beta 전압 지령만 계산한다. */
+/**
+ * @brief ISR에서 중간 input snapshot 없이 alpha-beta 전압 지령만 계산한다.
+ *
+ * @param[in,out] self 초기화된 motor-control instance.
+ * @param[in] i_abc App에서 검증한 a/b/c상 전류 [A].
+ * @param[in] current_reference_target 명령 경로에서 준비한 current target.
+ * @param[out] v_alpha_beta_ref 계산한 alpha-beta 전압 지령 [V].
+ * @param[in] sin_theta 검증된 rotor electrical angle의 sine.
+ * @param[in] cos_theta 같은 각도의 cosine.
+ * @param[in] omega_e_rad_s signed electrical angular velocity [rad/s].
+ * @param[in] v_dc 검증된 양의 DC-link 전압 [V].
+ * @pre 모든 pointer와 값은 motor_control_update_fast()의 fast 입력 계약을 만족해야 한다.
+ */
 motor_control_status_t motor_control_update_fast_voltage(
     motor_control_t *self,
-    const motor_control_fast_input_t *input,
-    alpha_beta_t *v_alpha_beta_ref
+    const abc_t *i_abc,
+    const motor_control_current_reference_target_t *current_reference_target,
+    alpha_beta_t *v_alpha_beta_ref,
+    float sin_theta,
+    float cos_theta,
+    float omega_e_rad_s,
+    float v_dc
 );
 
 /**

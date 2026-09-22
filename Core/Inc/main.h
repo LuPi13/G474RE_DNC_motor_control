@@ -70,22 +70,16 @@ void Error_Handler(void);
 /* USER CODE BEGIN EFP */
 
 /**
- * @brief Completion ADC IRQ 진입 시 현재 3상 수집 묶음의 cycle 측정을 시작한다.
- * @note ADC3_IRQHandler()의 USER CODE 0에서 호출한다.
- */
-void app_adc_irq_prologue(void);
-
-/**
- * @brief 정상 injected 완료 IRQ를 경량 경로로 수집하고 현재 완료 flag를 정리한다.
+ * @brief 정상 injected 완료 IRQ를 수집하고 fast loop까지 경량 경로로 실행한다.
  * @param[in] hadc IRQ가 발생한 ADC handle.
  * @return 정상 completion ADC JEOC를 처리했으면 true, HAL fallback이 필요하면 false.
- * @note true 반환 뒤 같은 IRQ에서 app_adc_irq_epilogue()를 호출한다.
+ * @note true이면 현재 완료 flag 정리, App fast loop와 IRQ cycle 기록까지 완료한 상태다.
  */
-bool app_adc_injected_irq_try_handle_fast(ADC_HandleTypeDef *hadc);
+bool app_adc_injected_irq_handle_fast(ADC_HandleTypeDef *hadc);
 
 /**
- * @brief ADC 완료 flag가 정리된 뒤 pending fast-loop를 실행한다.
- * @note ADC3_IRQHandler()의 USER CODE 영역에서 호출한다.
+ * @brief HAL fallback callback이 남긴 pending fast-loop를 실행한다.
+ * @note 정상 JEOC 경로는 app_adc_injected_irq_handle_fast()에서 직접 완료한다.
  */
 void app_adc_irq_epilogue(void);
 

@@ -28,6 +28,15 @@
 #define APP_FAST_LOOP_DETAILED_PROFILING_ENABLED  (0U)
 #endif
 
+#ifndef APP_FAST_LOOP_DEBUG_SNAPSHOT_ENABLED
+/** @brief 1이면 주기적인 전체 debug snapshot 생성을 fast-loop에 포함한다. */
+#if defined(DEBUG)
+#define APP_FAST_LOOP_DEBUG_SNAPSHOT_ENABLED  (1U)
+#else
+#define APP_FAST_LOOP_DEBUG_SNAPSHOT_ENABLED  (0U)
+#endif
+#endif
+
 /**
  * @defgroup app_motor_drive Motor-drive App
  * @brief ADC, rotor feedback, motor control, fault, SVPWM과 PWM을 연결하는 fast-loop orchestration.

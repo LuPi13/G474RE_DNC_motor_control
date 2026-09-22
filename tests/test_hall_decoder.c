@@ -4,6 +4,7 @@
  */
 
 #include <assert.h>
+#include <math.h>
 #include <stdio.h>
 
 #include "hall_decoder.h"
@@ -41,11 +42,43 @@ static hall_decoder_observation_t test_observation(
         .hall_state = hall_state,
         .capture_count = capture_count,
         .invalid_capture_count = invalid_capture_count,
-        .edge_interval_s = 0.0f,
+        .edge_rate_hz = 0.0f,
         .has_state_sample = true,
-        .has_valid_interval = false,
+        .has_valid_edge_rate = false,
         .is_timed_out = false,
     };
+}
+
+static void test_edge_rate_converts_to_electrical_speed(void)
+{
+    hall_decoder_t decoder = {0};
+    hall_decoder_output_t output;
+    hall_decoder_observation_t observation;
+
+    assert(hall_decoder_init(&decoder, &test_profile) ==
+           HALL_DECODER_STATUS_OK);
+
+    observation = test_observation(1U, 0U, 0U);
+    assert(hall_decoder_update(&decoder, &observation, &output) ==
+           HALL_DECODER_STATUS_OK);
+
+    observation = test_observation(2U, 1U, 0U);
+    observation.edge_rate_hz = 100.0f;
+    observation.has_valid_edge_rate = true;
+    assert(hall_decoder_update(&decoder, &observation, &output) ==
+           HALL_DECODER_STATUS_OK);
+    assert(output.has_valid_speed);
+    assert(fabsf(output.omega_e_rad_s -
+                 ((TEST_PI_F / 3.0f) * 100.0f)) < 1.0e-3f);
+
+    observation = test_observation(1U, 2U, 0U);
+    observation.edge_rate_hz = 120.0f;
+    observation.has_valid_edge_rate = true;
+    assert(hall_decoder_update(&decoder, &observation, &output) ==
+           HALL_DECODER_STATUS_OK);
+    assert(output.direction == HALL_DECODER_DIRECTION_REVERSE);
+    assert(fabsf(output.omega_e_rad_s +
+                 ((TEST_PI_F / 3.0f) * 120.0f)) < 1.0e-3f);
 }
 
 static void test_invalid_capture_resynchronizes_without_transition(void)
@@ -115,6 +148,7 @@ int main(void)
 {
     test_invalid_capture_resynchronizes_without_transition();
     test_overcapture_error_resynchronizes_current_state();
+    test_edge_rate_converts_to_electrical_speed();
     puts("hall decoder tests passed");
     return 0;
 }

@@ -61,26 +61,13 @@ typedef enum {
 } hall_estimator_status_t;
 
 /**
- * @brief Platform Hall feedback에서 추정기에 전달하는 hardware-independent 관측값.
+ * @brief Hall decoder가 검증한 hardware-independent rotor 관측값.
  *
- * Application은 하나의 hall_driver feedback snapshot에서 모든 field를 함께 복사해야 한다.
- * transition_count는 수락된 유효 Hall transition마다 증가하며 uint32_t wrap-around는 허용된다.
+ * Estimator가 사용하는 각도, 속도, sector와 validity field는 hall_decoder_output_t가
+ * 직접 소유한다. 같은 타입을 공유하여 fast-loop에서 동일한 관측값을 다시 조립하지 않는다.
+ * hall_state와 direction field는 estimator의 변경 감지에는 사용하지 않는다.
  */
-typedef struct {
-    float theta_e_rad;   /**< Hall sector 중심 또는 edge 전기각 [rad], 범위 [0, 2*pi). */
-    float omega_e_rad_s; /**< 방향 부호가 있는 edge-to-edge 전기각속도 [rad/s]. */
-    float sector_span_rad; /**< 현재 Hall sector의 calibrated electrical span [rad]. */
-
-    uint32_t transition_count; /**< 수락된 유효 Hall transition 누적 횟수. */
-    uint8_t sector;            /**< has_valid_state가 true일 때 범위 [0, 5]의 최신 Hall sector. */
-
-    bool has_valid_state;     /**< Hall state와 sector를 신뢰할 수 있음. */
-    bool has_valid_direction; /**< 최신 transition 방향을 신뢰할 수 있음. */
-    bool has_valid_angle;     /**< theta_e_rad를 사용할 수 있음. */
-    bool has_valid_speed;     /**< omega_e_rad_s를 사용할 수 있음. */
-    bool is_angle_from_edge;  /**< theta_e_rad가 임시 sector 중심이 아니라 Hall edge 기준임. */
-    bool is_timed_out;        /**< Hall 변화가 timeout되어 정지 상태로 판정됨. */
-} hall_estimator_observation_t;
+typedef hall_decoder_output_t hall_estimator_observation_t;
 
 /**
  * @brief 한 fast-loop 주기에서 사용할 연속 rotor electrical state.

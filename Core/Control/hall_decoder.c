@@ -114,15 +114,17 @@ static hall_decoder_direction_t hall_decoder_get_direction(
     uint8_t current_sector
 )
 {
-    const uint8_t delta = (uint8_t)(
-        (current_sector + HALL_DECODER_SECTOR_COUNT - previous_sector) %
-        HALL_DECODER_SECTOR_COUNT
-    );
-
-    if (delta == 1U) {
+    const uint8_t next_forward_sector =
+        (previous_sector == (HALL_DECODER_SECTOR_COUNT - 1U)) ?
+            0U : (uint8_t)(previous_sector + 1U);
+    if (current_sector == next_forward_sector) {
         return HALL_DECODER_DIRECTION_FORWARD;
     }
-    if (delta == (HALL_DECODER_SECTOR_COUNT - 1U)) {
+
+    const uint8_t next_reverse_sector =
+        (current_sector == (HALL_DECODER_SECTOR_COUNT - 1U)) ?
+            0U : (uint8_t)(current_sector + 1U);
+    if (previous_sector == next_reverse_sector) {
         return HALL_DECODER_DIRECTION_REVERSE;
     }
     return HALL_DECODER_DIRECTION_UNKNOWN;
@@ -315,7 +317,8 @@ static hall_decoder_status_t hall_decoder_update_unchecked(
     const uint8_t edge_index =
         (direction == HALL_DECODER_DIRECTION_FORWARD) ?
             sector :
-            (uint8_t)((sector + 1U) % HALL_DECODER_SECTOR_COUNT);
+            ((sector == (HALL_DECODER_SECTOR_COUNT - 1U)) ?
+                0U : (uint8_t)(sector + 1U));
 
     self->output.hall_state = observation->hall_state;
     self->output.sector = sector;
@@ -332,10 +335,13 @@ static hall_decoder_status_t hall_decoder_update_unchecked(
     self->output.is_timed_out = false;
     ++self->output.transition_count;
 
-    if (observation->has_valid_interval) {
-        self->output.omega_e_rad_s =
-            (float)direction * self->sector_span_rad[previous_sector] /
-            observation->edge_interval_s;
+    if (observation->has_valid_edge_rate) {
+        float omega_e_rad_s = self->sector_span_rad[previous_sector] *
+            observation->edge_rate_hz;
+        if (direction == HALL_DECODER_DIRECTION_REVERSE) {
+            omega_e_rad_s = -omega_e_rad_s;
+        }
+        self->output.omega_e_rad_s = omega_e_rad_s;
         self->output.has_valid_speed = true;
     }
 
@@ -372,14 +378,14 @@ hall_decoder_status_t hall_decoder_update(
         return HALL_DECODER_STATUS_INVALID_STATE;
     }
     if ((observation->hall_state >= HALL_DECODER_STATE_COUNT) ||
-        (observation->is_timed_out && observation->has_valid_interval)) {
+        (observation->is_timed_out && observation->has_valid_edge_rate)) {
         return HALL_DECODER_STATUS_INVALID_OBSERVATION;
     }
     if (observation->has_state_sample && self->has_observation &&
         (observation->capture_count != self->last_capture_count) &&
-        observation->has_valid_interval &&
-        (!isfinite(observation->edge_interval_s) ||
-         (observation->edge_interval_s <= 0.0f))) {
+        observation->has_valid_edge_rate &&
+        (!isfinite(observation->edge_rate_hz) ||
+         (observation->edge_rate_hz <= 0.0f))) {
         return HALL_DECODER_STATUS_INVALID_OBSERVATION;
     }
 

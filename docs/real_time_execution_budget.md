@@ -243,6 +243,45 @@ maximum은 `3115 cycles`, body maximum은 `2818 cycles`였고 deadline miss와 l
 0/100 rpm Hall 양자화 구간, 장시간 운전, DC-link 전 범위와 최대 speed는 이 timing 기록으로
 검증됐다고 주장하지 않는다.
 
+### 2026-09-22 fast-loop 최적화 진행 기록
+
+Speed-control 동작 중 Debug `-O3`, 상세 구간 profiler OFF 조건에서 다음 변화가 board에서
+보고되었다. 표의 평균/최대는 debugger에서 관찰한 평균과 reset 이후 maximum이다.
+시험 speed, 부하, DC-link 범위와 관찰 시간은 기록되지 않았으므로 이 표만으로 worst-case gate를
+통과했다고 판단하지 않는다.
+
+| 변경 단계 | body 평균/최대 | ADC helper 구간 평균/최대 | 보고된 miss |
+|---|---:|---:|---:|
+| Hall fast snapshot/estimator 경로 정리 뒤 | 2850 / 3039 | 3260 / 3461 | 0 |
+| motor-control 전달과 CORDIC fast 경로 정리 뒤 | 2790 / 2986 | 3210 / 3413 | 0 |
+| 정상 ADC IRQ에서 pending/epilogue 왕복 제거 뒤 | 2790 / 2986 | 3110 / 3322 | 0 |
+| FOC/motor-control의 큰 fast input 구조체 제거 뒤 | 2790 / 2969 | 3110 / 3310 | 0 |
+| Hall 전이 `% 6` 및 estimator 임시 output 복사 제거 뒤 | 2750 / 2868 | 3070 / 3196 | 미기록 |
+| Hall edge rate publish와 fast-loop division 제거 뒤 | 2750 / 2863 | 3070 / 3191 | 미기록 |
+
+마지막 변경에서는 Hall 방향/edge index의 나머지 연산을 경계 비교로 바꾸고, 새 transition의
+유효성 검사를 통과한 뒤 estimator output을 in-place로 갱신한다. Linked image 기준
+`hall_estimator_update_from_decoder_fast()`는 484 bytes에서 376 bytes로, stack usage는
+44 bytes에서 32 bytes로 감소했다. `hall_decoder_update_fast()`는 652 bytes에서 644 bytes로
+감소했다. Debug clean build는 warning/error 없이 완료됐고 Hall decoder 및 drive parameter host
+test를 통과했다.
+
+최신 `app_adc_injected_irq_handle_fast()` 구간 maximum `3191 cycles`는 3200-cycle 목표보다
+9 cycles 작고 hard deadline 대비 `1059 cycles`의 계산상 여유가 있다. 이 계측은 vector entry,
+C ISR wrapper의 helper call 이전과 exception return을 포함하지 않으므로 엄밀한 IRQ 전체값은 아니다.
+또한 body maximum `2863 cycles`는 조건부 상한
+`2850 cycles`보다 13 cycles 크며, 최신 binary의 miss count와 관찰 시간이 아직 기록되지 않았다.
+따라서 이를 최종 timing 통과로 확정하지 않고 다음 board run에서 observer OFF 여부, speed/부하,
+관찰 시간, Hall transition 포함 여부와 miss count를 함께 기록한다. `R_s` 또는 sensorless observer를
+40 kHz path에 추가하기 전 이 판정을 닫는다.
+
+최신 측정 binary는 Hall driver가 낮은 우선순위의 TIM2 capture ISR에서
+`edge_rate_hz = counter_frequency_hz / capture_ticks`를 계산해 publish한다. ADC fast-loop의 새
+Hall edge에서는 `omega_e = sector_span * edge_rate_hz`만 계산하고, 역방향은 결과의 부호를
+반전한다. 따라서 40 kHz Hall transition 경로의 float division과 direction-to-float 변환을
+제거하되, 물리적으로 같은 edge-to-edge electrical speed를 유지한다. 이 변경은 host 정·역방향
+수치 test와 Debug clean build를 통과했고 위 표의 board cycle 결과를 얻었다.
+
 ---
 
 ## 4. Fast path와 checked path

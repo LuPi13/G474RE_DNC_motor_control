@@ -67,6 +67,15 @@ static inline uint32_t app_profile_begin(app_t *self)
 
 #endif
 
+static inline bool app_debug_snapshot_is_due_fast(void)
+{
+#if APP_FAST_LOOP_DEBUG_SNAPSHOT_ENABLED
+    return drive_debug_observer_is_capture_due_fast();
+#else
+    return false;
+#endif
+}
+
 static bool app_float_is_finite(float value)
 {
     return (value <= FLT_MAX) && (value >= -FLT_MAX);
@@ -236,7 +245,7 @@ static void app_publish_fault_debug_snapshot_fast(
     const motor_control_output_t inactive_motor_control = {0};
     const abc_t neutral_duty = app_neutral_duty();
 
-    if (!drive_debug_observer_is_capture_due_fast()) {
+    if (!app_debug_snapshot_is_due_fast()) {
         return;
     }
 
@@ -527,13 +536,11 @@ static app_status_t app_update_rotor_feedback(
     hall_driver_signal_feedback_t hall_signal;
     const hall_decoder_output_t *decoded_hall;
 
-    self->last_hall_driver_status = hall_driver_get_signal_feedback(
+    hall_driver_get_signal_feedback_fast(
         self->config.hall_driver,
         &hall_signal
     );
-    if (self->last_hall_driver_status != HALL_DRIVER_STATUS_OK) {
-        return APP_STATUS_HALL_FEEDBACK_ERROR;
-    }
+    self->last_hall_driver_status = HALL_DRIVER_STATUS_OK;
 
     self->last_hall_decoder_status = hall_decoder_update_fast(
         self->config.hall_decoder,
@@ -1860,7 +1867,7 @@ static app_status_t app_motor_fast_loop_update(
         app_clear_motor_control_output(&calculated_output.motor_control);
         self->last_status = APP_STATUS_OK;
         app_fast_loop_record_body_cycles(self, fast_loop_body_start_cycles);
-        if (drive_debug_observer_is_capture_due_fast()) {
+        if (app_debug_snapshot_is_due_fast()) {
             app_publish_debug_snapshot_fast(
                 self,
                 &calculated_output.i_abc,
@@ -2062,7 +2069,7 @@ static app_status_t app_motor_fast_loop_update(
     self->last_status = APP_STATUS_OK;
     app_fast_loop_record_body_cycles(self, fast_loop_body_start_cycles);
 
-    if (drive_debug_observer_is_capture_due_fast()) {
+    if (app_debug_snapshot_is_due_fast()) {
         app_publish_debug_snapshot_fast(
             self,
             &calculated_output.i_abc,
@@ -2138,9 +2145,13 @@ app_status_t app_motor_current_fast_loop_drive_fast(app_t *self)
     abc_t duty;
     float sin_theta;
     float cos_theta;
+    float omega_e_rad_s;
+    motor_control_current_reference_target_t current_reference_target;
     bool has_valid_phase_current;
     bool is_debug_capture;
     uint32_t fast_loop_body_start_cycles;
+    uint32_t profile_segment_start_cycles;
+    uint32_t profile_control_start_cycles;
     app_status_t status;
 
     if ((self == NULL) || !self->is_initialized ||
@@ -2148,7 +2159,11 @@ app_status_t app_motor_current_fast_loop_drive_fast(app_t *self)
         return APP_STATUS_INVALID_STATE;
     }
     fast_loop_body_start_cycles = app_fast_loop_body_begin_cycles(self);
-    self->last_adc_status = adc_driver_read_raw(self->config.adc_driver, &raw);
+    profile_segment_start_cycles = app_profile_begin(self);
+    self->last_adc_status = adc_driver_read_raw_fast(
+        self->config.adc_driver,
+        &raw
+    );
     if (self->last_adc_status == ADC_DRIVER_STATUS_NOT_READY) {
         ++self->not_ready_count;
         self->last_status = APP_STATUS_ADC_NOT_READY;
@@ -2170,18 +2185,40 @@ app_status_t app_motor_current_fast_loop_drive_fast(app_t *self)
         return status;
     }
     ++self->fast_loop_count;
+
+    profile_segment_start_cycles = APP_PROFILE_END_SEGMENT(
+        self,
+        sensing,
+        profile_segment_start_cycles
+    );
+
     fault_manager_update_measurements_fast(self->config.fault_manager, &i_abc, v_dc);
     self->last_fault_manager_status = FAULT_MANAGER_STATUS_OK;
     if (fault_manager_is_faulted(self->config.fault_manager)) {
         ++self->error_count;
         return app_disable_for_fault(self, APP_STATUS_FAULT_ACTIVE);
     }
+
+    profile_segment_start_cycles = APP_PROFILE_END_SEGMENT(
+        self,
+        fault,
+        profile_segment_start_cycles
+    );
+
     status = app_update_rotor_feedback(self, &rotor_feedback);
     if (status != APP_STATUS_OK) {
         return app_latch_and_stop(self, status,
             (status == APP_STATUS_HALL_FEEDBACK_ERROR || status == APP_STATUS_HALL_DECODER_ERROR) ?
             FAULT_MANAGER_FAULT_HALL_FEEDBACK : FAULT_MANAGER_FAULT_ROTOR_ESTIMATOR);
     }
+
+    profile_segment_start_cycles = APP_PROFILE_END_SEGMENT(
+        self,
+        rotor,
+        profile_segment_start_cycles
+    );
+    profile_control_start_cycles = profile_segment_start_cycles;
+
     if (v_dc <= 0.0f) {
         return app_latch_and_stop(self, APP_STATUS_VOLTAGE_SENSOR_ERROR,
                                   FAULT_MANAGER_FAULT_INVALID_MEASUREMENT);
@@ -2190,16 +2227,35 @@ app_status_t app_motor_current_fast_loop_drive_fast(app_t *self)
         return app_latch_and_stop(self, APP_STATUS_ROTOR_ESTIMATOR_ERROR,
                                   FAULT_MANAGER_FAULT_ROTOR_ESTIMATOR);
     }
-    is_debug_capture = drive_debug_observer_is_capture_due_fast();
+    is_debug_capture = app_debug_snapshot_is_due_fast();
     cordic_driver_sin_cos_fast(rotor_feedback->theta_e_rad, &sin_theta, &cos_theta);
     self->last_cordic_status = CORDIC_DRIVER_STATUS_OK;
-    control_input = (motor_control_fast_input_t){
-        .i_abc = i_abc, .current_reference_target = app_get_current_reference_target(self),
-        .sin_theta = sin_theta, .cos_theta = cos_theta,
-        .omega_e_rad_s = rotor_feedback->has_valid_speed ? rotor_feedback->omega_e_rad_s : 0.0f,
-        .v_dc = v_dc,
-    };
+
+    profile_segment_start_cycles = APP_PROFILE_END_SEGMENT(
+        self,
+        control_cordic,
+        profile_segment_start_cycles
+    );
+
+    current_reference_target = app_get_current_reference_target(self);
+    omega_e_rad_s = rotor_feedback->has_valid_speed ?
+        rotor_feedback->omega_e_rad_s : 0.0f;
+
+    profile_segment_start_cycles = APP_PROFILE_END_SEGMENT(
+        self,
+        control_prepare,
+        profile_segment_start_cycles
+    );
+
     if (is_debug_capture) {
+        control_input = (motor_control_fast_input_t){
+            .i_abc = i_abc,
+            .current_reference_target = current_reference_target,
+            .sin_theta = sin_theta,
+            .cos_theta = cos_theta,
+            .omega_e_rad_s = omega_e_rad_s,
+            .v_dc = v_dc,
+        };
         self->last_motor_control_status = motor_control_update_fast(
             self->config.motor_control,
             &control_input,
@@ -2209,20 +2265,39 @@ app_status_t app_motor_current_fast_loop_drive_fast(app_t *self)
     } else {
         self->last_motor_control_status = motor_control_update_fast_voltage(
             self->config.motor_control,
-            &control_input,
-            &v_alpha_beta
+            &i_abc,
+            &current_reference_target,
+            &v_alpha_beta,
+            sin_theta,
+            cos_theta,
+            omega_e_rad_s,
+            v_dc
         );
     }
     if (self->last_motor_control_status != MOTOR_CONTROL_STATUS_OK) {
         return app_latch_and_stop(self, APP_STATUS_MOTOR_CONTROL_ERROR,
                                   FAULT_MANAGER_FAULT_MOTOR_CONTROL);
     }
+
+    profile_segment_start_cycles = APP_PROFILE_END_SEGMENT(
+        self,
+        control,
+        profile_control_start_cycles
+    );
+
     self->last_svpwm_status = svpwm_calculate_fast(&v_alpha_beta, v_dc, &duty);
     if (self->last_svpwm_status != SVPWM_STATUS_OK) {
         return app_latch_and_stop(self, APP_STATUS_SVPWM_ERROR, FAULT_MANAGER_FAULT_SVPWM);
     }
     pwm_driver_set_duty_fast(self->config.pwm_driver, &duty);
     self->last_pwm_status = PWM_DRIVER_STATUS_OK;
+
+    profile_segment_start_cycles = APP_PROFILE_END_SEGMENT(
+        self,
+        modulation_pwm,
+        profile_segment_start_cycles
+    );
+
     self->last_v_alpha_beta = v_alpha_beta;
     self->last_duty = duty;
     ++self->duty_update_count;
@@ -2239,5 +2314,17 @@ app_status_t app_motor_current_fast_loop_drive_fast(app_t *self)
             has_valid_phase_current
         );
     }
+
+    (void)APP_PROFILE_END_SEGMENT(
+        self,
+        diagnostic,
+        profile_segment_start_cycles
+    );
+#if APP_FAST_LOOP_DETAILED_PROFILING_ENABLED
+    if (self->config.fast_loop_profile != NULL) {
+        ++self->config.fast_loop_profile->complete_sample_count;
+        self->config.fast_loop_profile->is_last_sample_complete = true;
+    }
+#endif
     return APP_STATUS_OK;
 }

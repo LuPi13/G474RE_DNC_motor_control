@@ -870,27 +870,33 @@ motor_control_status_t motor_control_update_fast(
 
 motor_control_status_t motor_control_update_fast_voltage(
     motor_control_t *self,
-    const motor_control_fast_input_t *input,
-    alpha_beta_t *v_alpha_beta_ref
+    const abc_t *i_abc,
+    const motor_control_current_reference_target_t *current_reference_target,
+    alpha_beta_t *v_alpha_beta_ref,
+    float sin_theta,
+    float cos_theta,
+    float omega_e_rad_s,
+    float v_dc
 )
 {
     dq_t i_dq_ref;
-    const foc_input_t foc_input_base = {
-        .i_abc = input->i_abc,
-        .i_dq_ref = {0.0f, 0.0f},
-        .sin_theta = input->sin_theta,
-        .cos_theta = input->cos_theta,
-        .omega_e_rad_s = input->omega_e_rad_s,
-        .v_dc = input->v_dc,
-    };
-    foc_input_t foc_input = foc_input_base;
 
     motor_control_update_current_reference_fast(
-        self, &input->current_reference_target, &i_dq_ref);
-    foc_input.i_dq_ref = i_dq_ref;
+        self,
+        current_reference_target,
+        &i_dq_ref
+    );
 
-    return (foc_update_fast_voltage(&self->foc, &foc_input,
-                                    v_alpha_beta_ref) == FOC_STATUS_OK) ?
+    return (foc_update_fast_voltage(
+                &self->foc,
+                i_abc,
+                &i_dq_ref,
+                v_alpha_beta_ref,
+                sin_theta,
+                cos_theta,
+                omega_e_rad_s,
+                v_dc
+            ) == FOC_STATUS_OK) ?
         MOTOR_CONTROL_STATUS_OK : MOTOR_CONTROL_STATUS_FOC_ERROR;
 }
 

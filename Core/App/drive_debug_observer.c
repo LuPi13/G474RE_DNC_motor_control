@@ -9,6 +9,7 @@
 
 volatile drive_debug_snapshot_t drive_debug_snapshot;
 volatile uint32_t drive_debug_snapshot_sequence;
+volatile bool drive_debug_observer_enabled;
 
 static volatile uint32_t drive_debug_observer_fast_loop_interval;
 static volatile uint32_t drive_debug_observer_fast_loop_divider;
@@ -29,6 +30,7 @@ bool drive_debug_observer_init(
     drive_debug_observer_fast_loop_interval =
         fast_loop_frequency_hz / publish_frequency_hz;
     drive_debug_observer_fast_loop_divider = 0U;
+    drive_debug_observer_enabled = true;
     drive_debug_observer_is_initialized = true;
 
     return true;
@@ -38,7 +40,8 @@ bool drive_debug_observer_is_capture_due_fast(void)
 {
     uint32_t next_divider;
 
-    if (!drive_debug_observer_is_initialized) {
+    if (!drive_debug_observer_is_initialized ||
+        !drive_debug_observer_enabled) {
         return false;
     }
 

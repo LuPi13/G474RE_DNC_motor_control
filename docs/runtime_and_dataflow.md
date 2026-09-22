@@ -151,13 +151,9 @@ ISR/callback
    ->
 ADC driver가 같은 trigger의 3상 JDR을 일괄 수집
    ->
-fast-loop pending 표시
+현재 ADC JEOC/JEOS flag 정리
    ->
-HAL IRQ 처리 종료 및 현재 ADC flag 정리
-   ->
-ADC IRQ 후처리
-   ->
-app_motor_fast_loop()
+같은 IRQ entry에서 app fast loop 실행
    ->
 feedback acquire/convert
    ->
@@ -178,7 +174,8 @@ HAL callback에는 로직을 길게 작성하지 않는다.
 sampling time과 oversampling 설정을 사용한다. 세 ADC에서 각각 완료 interrupt를 발생시키지
 않고 `adc_driver_config_t::injected_completion_adc` 하나만 완료 interrupt를 발생시킨다.
 정상 JEOC 경로에서 App IRQ entry는 driver를 통해 세 ADC의 JEOC를 확인하고 rank 1 JDR을
-일괄 수집한다. 현재 JEOC/JEOS를 정리하고 pending을 표시한 뒤 fast loop를 실행한다. 그 외
+일괄 수집한다. 현재 JEOC/JEOS를 정리한 뒤 같은 entry에서 fast loop와 전체 cycle 기록까지
+완료한다. 정상 경로에서는 pending flag, HAL callback과 별도 epilogue를 왕복하지 않는다. 그 외
 비정상 interrupt source는 `HAL_ADC_IRQHandler()` fallback으로 넘긴다.
 
 현재 App 연결의 축약 예 (`adc_driver`는 초기화/시작된 instance):
@@ -208,10 +205,10 @@ void ADC1_2_IRQHandler(void)
 
 void ADC3_IRQHandler(void)
 {
-    if (app_adc_injected_irq_try_handle_fast(&hadc3)) {
-        app_adc_irq_epilogue();
+    if (app_adc_injected_irq_handle_fast(&hadc3)) {
         return;
     }
+
     HAL_ADC_IRQHandler(&hadc3);
     app_adc_irq_epilogue();
 }
@@ -224,20 +221,20 @@ App의 `app_handle_adc_error()` 경로에 연결한다.
 
 HAL callback 정의는 `Core/Src/main.c`의 CubeMX USER CODE 영역에 두고,
 실제 orchestration은 `Core/App/app.c`에 둔다. 현재 open-loop bring-up에서는
-`main.c`의 IRQ 후처리 helper가 ISR 전용 `app_motor_fast_loop_fast()`를 호출하며, App이 raw sample
+`app_adc_injected_irq_handle_fast()`가 ISR 전용 App entry point를 호출하며, App이 raw sample
 소비와 SI 환산부터 CORDIC/SVPWM/PWM duty 갱신까지 수행한다. `main.c`는 fast-loop raw sample,
 환산 결과 또는 Hall 추정 결과의 debugger용 복사본을 만들지 않는다.
-`app_adc_irq_epilogue()`는 completion ADC인 `ADC3_IRQHandler()`의 JEOC 정리 뒤 CubeMX USER
-CODE 영역에서 호출한다. App 함수로 분리해도 실행 문맥은 같은 ADC ISR이며, main loop로
-실행이 이동하지 않는다.
+`app_adc_irq_epilogue()`는 비정상 interrupt source가 HAL callback 경로를 탄 경우에만 pending
+sample을 소비하는 fallback이다. 정상 JEOC 경로에서는 호출하지 않는다. 어느 경로든 실행 문맥은
+같은 ADC ISR이며 main loop로 이동하지 않는다.
 
 Hall snapshot 취득, motor profile decoding과 continuous-angle estimator 실행은 App
 orchestration에 있다. `main.c`에는 IRQ 경계와 초기화 연결만 유지한다.
 
-정상 fast IRQ는 세 JDR을 읽은 직후 현재 JEOC/JEOS를 직접 정리하고 pending을 표시한다.
-HAL fallback을 탄 경우에는 `HAL_ADCEx_InjectedConvCpltCallback()`이 pending만 표시하고,
-HAL이 현재 flag를 정리한 뒤 fast loop를 실행한다. 어느 경로에서도 callback 안에서 제어
-계산을 실행하지 않는다.
+정상 fast IRQ는 세 JDR을 읽은 직후 현재 JEOC/JEOS를 직접 정리하고 fast loop를 실행한다.
+HAL fallback을 탄 경우에만 `HAL_ADCEx_InjectedConvCpltCallback()`이 pending을 표시하고,
+HAL이 현재 flag를 정리한 뒤 epilogue가 fast loop를 실행한다. 어느 경로에서도 callback 안에서
+제어 계산을 실행하지 않는다.
 
 ### Sample 소비와 실행 조건
 
@@ -272,21 +269,19 @@ edge 또는 counter overflow가 발생할 때 비동기적으로 갱신되고, A
 TIM2 XOR Hall edge
  -> HAL_TIM_IC_CaptureCallback()
  -> hall_driver_handle_capture()
- -> raw state/edge interval inactive buffer 완성
+ -> raw state/edge rate inactive buffer 완성
  -> active index publish
 
 TIM2 counter overflow
  -> HAL_TIM_PeriodElapsedCallback()
  -> hall_driver_handle_timeout()
- -> raw timeout 상태와 무효 interval publish
+ -> raw timeout 상태와 무효 edge rate publish
 
 completion ADC injected 변환 완료
  -> 세 ADC JDR 일괄 수집
- -> fast-loop pending 표시
  -> HAL ADC flag 정리
- -> ADC IRQ 후처리
- -> app_motor_fast_loop()
- -> hall_driver_get_signal_feedback()
+ -> 같은 ADC IRQ entry에서 App fast loop 실행
+ -> hall_driver_get_signal_feedback_fast()
  -> hall_decoder_update_fast()
  -> hall_estimator_update_from_decoder_fast()
  -> 최신 연속 Hall rotor feedback 소비
@@ -300,7 +295,7 @@ buffer 방식으로 publish한다. ADC reader는 선점 시점에 따라 이전 
 
 다음 계약을 유지한다.
 
-- Fast loop는 `hall_driver_get_signal_feedback()`으로 raw signal snapshot을 읽고, 전체
+- Fast loop는 `hall_driver_get_signal_feedback_fast()`로 raw signal snapshot을 읽고, 전체
   hardware diagnostic이 필요한 경로는 `hall_driver_get_feedback()`을 사용한다. 내부
   buffer/index는 직접 읽거나 수정하지 않는다.
 - `hall_driver_signal_feedback_t`와 `hall_decoder_observation_t`는 Common의 같은
@@ -386,7 +381,7 @@ ADC driver는 PWM/time base를 직접 제어하지 않는다.
 
 Hall timer는 PWM/ADC trigger와 독립적으로 먼저 시작할 수 있지만, rotor feedback을 사용하는
 fast loop가 시작되기 전에는 driver와 decoder가 모두 준비되어 있어야 한다.
-`hall_driver_stop()`은 마지막 raw Hall state와 diagnostic counter를 보존하면서 edge interval을
+`hall_driver_stop()`은 마지막 raw Hall state와 diagnostic counter를 보존하면서 edge rate를
 무효화한다. 정지 중에도 rotor 움직임을 관찰해야 하는 시스템이면
 PWM output 정지와 Hall timer 정지를 동일한 동작으로 묶지 않고 App state policy로 결정한다.
 
@@ -421,8 +416,8 @@ runtime state만 직접 갱신한다. 진단 output의 scalar 복사로 library 
 
 현재 HAL TIM callback은 `main.c`의 CubeMX USER CODE 영역에서 event source를 확인하고
 대응하는 Hall handler만 호출한다. Hall callback 안에는 motor-control stack을 직접 넣지 않는다.
-Completion ADC IRQ가 세 JDR을 수집하고 현재 flag를 정리한 뒤, 같은 IRQ 후처리에서 fast-loop
-entry point를 실행하는 구조를 유지한다.
+Completion ADC IRQ가 세 JDR을 수집하고 현재 flag를 정리한 뒤, 같은 IRQ entry에서 fast-loop
+entry point를 직접 실행하는 구조를 유지한다. HAL fallback에서만 callback과 epilogue를 사용한다.
 
 ---
 
@@ -566,9 +561,13 @@ CPU 170 MHz, fast loop 40 kHz의 한 주기는
 interrupt 복귀 비용은 포함되지 않으므로 interrupt jitter와 duty write deadline을
 위한 margin을 남겨야 한다.
 
-공유 기본 build의 `main.c`에는 DWT enable, cycle 최대값, deadline miss counter 같은
-검증용 상태를 두지 않는다. 검증 계측은 App의 선택형 profile interface 또는 별도 test build에서
-켜며, 검증 종료 뒤 product build에 남기지 않는다.
+현재 Debug build의 `main.c`는 DWT를 사용해 `app_adc_injected_irq_handle_fast()` 진입부터 App fast
+loop 종료까지의 last/max와 deadline miss counter를 제공한다. 이 값은 vector entry, C ISR wrapper의
+prologue와 helper call 이전, exception return을 포함하지 않으므로 엄밀한 IRQ 전체값보다 조금 작다.
+App body last/max도 Debug snapshot에 포함한다. 이 경량 계측은 Debug에서 항상 사용할 수 있지만,
+구간마다 DWT를 읽는 상세 profiler는 `APP_FAST_LOOP_DETAILED_PROFILING_ENABLED`의 기본값을 `0`으로
+유지한다. Release build에서는 App snapshot과 IRQ cycle 계측을 compile-out하여 product hot path에
+남기지 않는다.
 
 현재 170 MHz/40 kHz timing contract의 hard deadline은 4250 cycles이며, 통합 통과 목표는
 전체 worst-case 3200 cycles 이하와 deadline miss 0이다. Body, 정상 경로 또는 평균값만으로
@@ -659,8 +658,10 @@ PWM output 또는 App drive lifecycle을 변경하지 않는다.
 기본값은 0/false이므로 자동 기동하지 않는다.
 
 `drive_debug_observer`는 이 입력 경로와 별도로, Live Expression/SWV가 읽는 전역
-`drive_debug_snapshot`을 제공한다. 모든 ADC fast-loop mode는 매 sample telemetry를 복사하지 않고,
-초기화 시 정한 정확한 분주 주기(현재 40 kHz / 1 kHz = 40 sample)마다 한 번만 snapshot을 publish한다.
+`drive_debug_snapshot`을 제공한다. `drive_debug_observer_enabled`가 `true`이면 ADC fast-loop mode는
+매 sample telemetry를 복사하지 않고, 초기화 시 정한 정확한 분주 주기(현재 40 kHz / 1 kHz =
+40 sample)마다 한 번만 snapshot을 publish한다. 순수 cycle 측정에서는 이 runtime switch를
+`false`로 바꿔 snapshot copy를 제외하고, 측정 조건에 그 값을 기록한다.
 current/speed mode는 해당 sample의 상세 FOC output을 포함하고, disabled/open-loop mode는 FOC를 실행하지
 않으므로 그 field를 0으로 두되 sensor와 rotor feedback은 publish한다. 정상 current/speed sample은 계속
 전압만 반환하는 fast API를 사용한다. 따라서 observer는 제어값의 owner가 아니며 debugger가 snapshot을

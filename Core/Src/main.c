@@ -52,6 +52,7 @@
 /* USER CODE BEGIN PD */
 
 #define APP_FAST_LOOP_FREQUENCY_HZ  40000U
+#define APP_FAST_LOOP_DEADLINE_CYCLES  (4250U)
 #define APP_PHASE_CURRENT_TRIP_ABS_A  (8.0f)
 #define APP_PHASE_CURRENT_CLEAR_ABS_A (1.0f)
 #define APP_DC_LINK_OVERVOLTAGE_TRIP_V  (58.0f)
@@ -111,6 +112,17 @@ static drive_command_router_t canopen_drive_command_router;
 static drive_parameter_manager_t drive_parameter_manager;
 static motor_control_config_t motor_control_config;
 static float fast_loop_sampling_period_s;
+
+#if APP_FAST_LOOP_DETAILED_PROFILING_ENABLED
+static app_fast_loop_profile_t app_fast_loop_profile;
+#endif
+
+#if defined(DEBUG)
+volatile uint32_t adc_irq_total_cycles;
+volatile uint32_t adc_irq_total_cycles_max;
+volatile uint32_t adc_irq_deadline_miss_count;
+static uint32_t adc_irq_start_cycles;
+#endif
 
 static uint32_t canopen_service_last_tick_ms;
 
@@ -458,7 +470,11 @@ int main(void)
       .hall_decoder = &hall_decoder,
       .hall_estimator = &hall_estimator,
       .motor_control = &motor_control,
+#if APP_FAST_LOOP_DETAILED_PROFILING_ENABLED
+      .fast_loop_profile = &app_fast_loop_profile,
+#else
       .fast_loop_profile = NULL,
+#endif
       .motor_control_profile = NULL,
 #if defined(DEBUG)
       .cycle_counter_reader = cycle_counter_driver_read,
@@ -479,9 +495,11 @@ int main(void)
       Error_Handler();
   }
 
+#if APP_FAST_LOOP_DEBUG_SNAPSHOT_ENABLED
   if (!drive_debug_observer_init(APP_FAST_LOOP_FREQUENCY_HZ, 1000U)) {
       Error_Handler();
   }
+#endif
 
   drive_debug_command_source_init();
 
@@ -1329,6 +1347,24 @@ static void app_fast_loop_update(void)
     }
 }
 
+static inline void app_adc_irq_record_cycles(uint32_t start_cycles)
+{
+#if defined(DEBUG)
+    const uint32_t elapsed_cycles =
+        cycle_counter_driver_read() - start_cycles;
+
+    adc_irq_total_cycles = elapsed_cycles;
+    if (elapsed_cycles > adc_irq_total_cycles_max) {
+        adc_irq_total_cycles_max = elapsed_cycles;
+    }
+    if (elapsed_cycles >= APP_FAST_LOOP_DEADLINE_CYCLES) {
+        ++adc_irq_deadline_miss_count;
+    }
+#else
+    (void)start_cycles;
+#endif
+}
+
 void app_speed_scheduler_tick(void)
 {
     if (!app.is_initialized) {
@@ -1348,6 +1384,8 @@ void app_adc_irq_epilogue(void)
     adc_fast_loop_pending = false;
 
     app_fast_loop_update();
+
+    app_adc_irq_record_cycles(adc_irq_start_cycles);
 }
 
 static void app_adc_process_injected_complete(ADC_HandleTypeDef *hadc)
@@ -1371,17 +1409,36 @@ static void app_adc_process_injected_complete(ADC_HandleTypeDef *hadc)
     }
 }
 
-bool app_adc_injected_irq_try_handle_fast(ADC_HandleTypeDef *hadc)
+bool app_adc_injected_irq_handle_fast(ADC_HandleTypeDef *hadc)
 {
+#if defined(DEBUG)
+    const uint32_t irq_start_cycles = cycle_counter_driver_read();
+#endif
+
     if ((hadc == NULL) ||
         (hadc != adc_driver.config.injected_completion_adc) ||
         (__HAL_ADC_GET_FLAG(hadc, ADC_FLAG_JEOC) == RESET) ||
         (__HAL_ADC_GET_IT_SOURCE(hadc, ADC_IT_JEOC) == RESET)) {
+#if defined(DEBUG)
+        adc_irq_start_cycles = irq_start_cycles;
+#endif
         return false;
     }
 
-    app_adc_process_injected_complete(hadc);
+    const adc_driver_status_t status =
+        adc_driver_handle_injected_complete_fast(&adc_driver);
+    if (status != ADC_DRIVER_STATUS_OK) {
+        (void)app_handle_adc_error(&app, status);
+        adc_fast_loop_pending = false;
+        __HAL_ADC_CLEAR_FLAG(hadc, ADC_FLAG_JEOC | ADC_FLAG_JEOS);
+        return true;
+    }
+
     __HAL_ADC_CLEAR_FLAG(hadc, ADC_FLAG_JEOC | ADC_FLAG_JEOS);
+    app_fast_loop_update();
+#if defined(DEBUG)
+    app_adc_irq_record_cycles(irq_start_cycles);
+#endif
     return true;
 }
 

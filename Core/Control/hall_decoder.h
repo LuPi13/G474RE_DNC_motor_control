@@ -150,11 +150,11 @@ hall_decoder_status_t hall_decoder_update(
  * @brief Hall driver가 보장한 observation으로 decoder 상태를 fast-loop에서 갱신한다.
  *
  * @param[in,out] self 초기화된 decoder instance.
- * @param[in] observation 같은 fast-loop에서 hall_driver_get_signal_feedback()으로 얻은 snapshot.
+ * @param[in] observation 같은 fast-loop에서 hall_driver_get_signal_feedback_fast()로 얻은 snapshot.
  * @return 처리 결과 status.
  *
  * @pre @p self와 @p observation은 NULL이 아니며 @p self는 초기화되어야 한다.
- * @pre @p observation은 hall_driver_get_signal_feedback()의 정상 반환값으로 만들어져야 한다.
+ * @pre @p observation은 hall_driver_get_signal_feedback_fast()의 정상 반환값으로 만들어져야 한다.
  * @note pointer, 초기화, raw field 범위와 interval 조합 검사는 생략한다. 다만 state sample
  *       부재, driver capture integrity 오류, profile-invalid state, capture 누락, 비인접 transition은 계속 검출한다.
  * @warning 범용 입력 또는 unit test에는 hall_decoder_update()를 사용한다.

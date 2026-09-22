@@ -280,13 +280,26 @@ foc_status_t foc_update_fast(
 /**
  * @brief ISR에서 full diagnostic snapshot 없이 FOC 전압 지령만 계산한다.
  *
- * @pre foc_update_fast()와 같은 검증 완료 input 조건을 만족해야 한다.
+ * @param[in,out] self 초기화된 FOC instance.
+ * @param[in] i_abc App에서 검증한 a/b/c상 전류 [A].
+ * @param[in] i_dq_ref motor_control이 제한한 d/q 전류 지령 [A].
+ * @param[out] v_alpha_beta_ref 계산한 alpha-beta 전압 지령 [V].
+ * @param[in] sin_theta 검증된 rotor electrical angle의 sine.
+ * @param[in] cos_theta 같은 각도의 cosine.
+ * @param[in] omega_e_rad_s signed electrical angular velocity [rad/s].
+ * @param[in] v_dc 검증된 양의 DC-link 전압 [V].
+ * @pre foc_update_fast()와 같은 검증 완료 입력 조건을 만족해야 한다.
  * @note PI/filter/voltage-limit/tracking state 갱신과 최종 수치 검사는 foc_update_fast()와 같다.
  */
 foc_status_t foc_update_fast_voltage(
     foc_t *self,
-    const foc_input_t *input,
-    alpha_beta_t *v_alpha_beta_ref
+    const abc_t *i_abc,
+    const dq_t *i_dq_ref,
+    alpha_beta_t *v_alpha_beta_ref,
+    float sin_theta,
+    float cos_theta,
+    float omega_e_rad_s,
+    float v_dc
 );
 
 /**
