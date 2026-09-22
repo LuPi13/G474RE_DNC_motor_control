@@ -727,10 +727,14 @@ low-level driver가 임의로 system state를 변경하지 않는다. 단, hardw
 - Hall feedback, rotor estimator, motor control 오류
 - CORDIC, SVPWM, PWM 오류
 
-현재 보드의 초기 설정은 상전류 절댓값 `3.0 A`와 DC-link `79.2 V`에서 trip한다.
-Latch 해제를 위한 hysteresis는 상전류 절댓값 `1.0 A` 이하, DC-link `75.0 V` 이하로
+현재 보드의 설정은 상전류 절댓값 `8.0 A`와 DC-link `58.0 V`에서 trip한다.
+Latch 해제를 위한 hysteresis는 상전류 절댓값 `1.0 A` 이하, DC-link `54.0 V` 이하로
 설정한다. Threshold는 보드/제품 설정이므로 `main.c`의 App 통합 config에서 전달하며
 fault manager 구현에 숨은 기본값을 두지 않는다.
+
+현재 motor nameplate는 48 V DC, 24.7 A지만 inverter와 ACS725-10AB의 상전류 측정 범위는
+±10 A peak이다. 따라서 기본 d/q current magnitude는 5 A peak, 저장 parameter 검증 상한은
+7 A peak로 두어 software trip과 측정 범위 아래에 margin을 남긴다.
 
 현재 fault manager에는 DC-link 저전압 보호가 없다. 따라서 `10 V` 저전압 차단
 threshold도 아직 적용하지 않는다. 저전압 보호를 추가할 때는 ADC 측정 유효 범위,

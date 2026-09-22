@@ -20,11 +20,11 @@ API HTML은 GitHub Actions가 `main` 변경 시 생성해 GitHub Pages에 배포
 
 | 변경하려는 것 | 먼저 바꿀 곳 | 반드시 같이 확인할 곳 |
 |---|---|---|
-| d/q 전류 지령 상한, 하한, 변화율 | [`Core/Src/main.c`](Core/Src/main.c)의 `motor_control_config` | FOC 전류 제한, fault overcurrent threshold, CANopen torque 기준 전류 |
-| 속도 지령 상한, 하한, 가감속 | `motor_control_config`의 `speed_reference_*` | CANopen 최대 기계 속도, speed PI 출력 한계, Hall feedback 범위 |
-| d/q current PI, R/L, PM flux | `motor_control_config.foc` | PWM/ADC 주기, DC-link 전압, CANopen torque coefficient |
-| speed PI, speed filter | [`Core/Config/motor_config.c`](Core/Config/motor_config.c)의 `motor_config_speed_controller` | speed-loop 1 kHz 주기, q-axis current limit |
-| CANopen 1000 permille 토크 기준 | `motor_config_canopen_torque_reference_current_peak_a` | FOC current magnitude limit, `0x6075`, `0x6076`, `0x6072` |
+| d/q 전류 지령 상한, 하한, 변화율 | [`Core/Config/drive_parameters.c`](Core/Config/drive_parameters.c)의 `drive_parameters_get_defaults()` 또는 Flash working set | FOC 전류 제한, fault overcurrent threshold, CANopen torque 기준 전류 |
+| 속도 지령 상한, 하한, 가감속 | `drive_parameters_t`의 `speed_reference_*` | CANopen 최대 기계 속도, speed PI 출력 한계, Hall feedback 범위 |
+| d/q current PI, R/L, PM flux | `drive_parameters_t`의 FOC parameter | PWM/ADC 주기, DC-link 전압, CANopen torque coefficient |
+| speed PI, speed filter | `drive_parameters_t`의 speed parameter | speed-loop 1 kHz 주기, q-axis current limit |
+| CANopen 1000 permille 토크 기준 | `canopen_torque_reference_current_peak_a` | FOC current magnitude limit, `0x6075`, `0x6076`, `0x6072` |
 | CANopen PDO, OD 기본값 | [`Core/Communication/object_dictionary/OD.c`](Core/Communication/object_dictionary/OD.c) | [`Core/App/canopen_service.c`](Core/App/canopen_service.c), CANopen master 설정 |
 | ADCx/channel/rank 또는 전류 상 매핑 | [`.ioc`](G474RE_DNC_motor_control.ioc)와 CubeMX 생성 ADC 초기화 | `main.c`의 `adc_config`, 센서 gain/offset, ADC completion IRQ |
 | HRTIM timer/channel, PWM pin, dead time, PWM 주파수 | `.ioc`와 CubeMX 생성 HRTIM 초기화 | `main.c`의 `pwm_config`, ADC trigger, 40 kHz 관련 모든 sampling period |
@@ -52,8 +52,9 @@ compile default 또는 유효한 Flash record다. `main.c`의 `motor_control_con
   source of truth다.
 - `main.c` USER CODE는 생성된 peripheral을 logical phase/current/feedback과 연결하고,
   현재 board와 motor의 통합 설정을 만든다.
-- `Core/Config/motor_config.c`는 Hall profile, speed PI 및 CANopen torque reference처럼
-  motor-specific이지만 hardware-independent인 값을 둔다.
+- `Core/Config/motor_config.c`는 현재 motor/배선 조합의 Hall profile을 둔다.
+- `Core/Config/drive_parameters.c`와 Flash record는 speed PI, motor model, command limit 및
+  CANopen torque reference처럼 motor-specific이지만 hardware-independent인 값을 둔다.
 - CANopen OD는 통신 표현이며, live FOC parameter의 source of truth가 아니다.
 
 ## 제어 주기와 지령 흐름
@@ -95,6 +96,10 @@ Use `drive_parameter_debug` through Live Expression only while the drive is READ
 an `apply_request`. Flash writes never run in the 40 kHz loop. See
 [Flash parameter storage](docs/flash_parameter_storage.md) for the record layout, recovery behavior, and host test.
 
+Compile default를 변경해도 기존의 유효한 Flash record는 자동으로 덮어쓰지 않는다. 이번 motor/limit
+설정으로 전환할 때는 PWM-off READY 상태에서 `defaults_request` 후 `apply_request`와 `save_request`를
+순서대로 처리하거나, 저장 parameter를 명시적으로 erase한 뒤 재부팅해야 한다.
+
 ## Debug 관측: Live Expression / SWV
 
 `drive_debug_command_source`는 debugger에서 전류/속도 지령과 start/stop을 입력하는 bring-up 전용
@@ -128,12 +133,19 @@ oscilloscope 또는 추후 fault-triggered fast capture로 확인한다.
 
 ### Current command 및 FOC
 
-`Core/Src/main.c`의 `motor_control_config`가 현재 FOC와 지령 limiter의 source다.
+`Core/Config/drive_parameters.c`의 compile default 또는 유효한 Flash record가 현재 FOC와
+지령 limiter의 source다. `main.c`의 `motor_control_config`은 적용된 parameter로부터 생성된다.
+
+현재 motor nameplate는 48 V DC, 24.7 A, 3000 rpm이고 pole-pair 수는 4다. 그러나 현재
+inverter와 ACS725-10AB 측정 범위가 상전류 ±10 A peak이므로 firmware current limit은 motor
+nameplate 전류가 아니라 inverter 한계를 기준으로 정한다. 기본 지령은 5 A peak, 저장 가능한
+지령 관련 parameter의 절대 상한은 7 A, software phase-current trip은 8 A다.
 
 | 필드 | 현재 값 | 단위/의미 |
 |---|---:|---|
-| `current_reference_min/max` | d/q 각각 -2 / +2 | 축별 지령 범위 [A] |
-| `current_reference_magnitude_limit` | 2 | d/q vector 최종 크기 상한 [A] |
+| `current_reference_min/max` | d/q 각각 -5 / +5 | 축별 기본 지령 범위 [A peak] |
+| `current_reference_magnitude_limit` | 5 | d/q vector 최종 크기 기본 상한 [A peak] |
+| `DRIVE_PARAMETER_MAX_CURRENT_A` | 7 | Flash working set 검증 절대 상한 [A peak] |
 | `current_reference_rise/fall_rate_per_s` | d/q 각각 100 | 40 kHz 지령 변화율 [A/s] |
 | `foc.d_axis_pi`, `q_axis_pi` | `kp`, `ki`, anti-windup, ±100 V | d/q current PI 설정 |
 | `foc.current_filter.cutoff_frequency_hz` | 5000 | d/q current feedback filter [Hz] |
@@ -142,7 +154,7 @@ oscilloscope 또는 추후 fault-triggered fast capture로 확인한다.
 | `foc.q_axis_inductance_h` | 592 µH | q-axis inductance |
 | `foc.permanent_magnet_flux_linkage_wb` | 6.74 mWb | PM flux linkage |
 | `foc.is_decoupling_enabled` | false | d/q feedforward/decoupling enable |
-| `pole_pairs` | 5 | electrical/mechanical speed conversion |
+| `pole_pairs` | 4 | electrical/mechanical speed conversion |
 
 적용 순서는 `axis clamp -> current magnitude clamp -> d/q rate limiter -> final
 magnitude clamp -> FOC`다. 따라서 CANopen Torque, CANopen Velocity, debug command를
@@ -156,13 +168,13 @@ FOC 전압은 PI의 ±100 V 설정만으로 결정되지 않는다. 실제 적�
 
 | 위치 | 필드 | 현재 값 | 의미 |
 |---|---|---:|---|
-| `main.c` | `speed_reference_min/max_rad_s` | -314.159 / +314.159 | 기계각속도 request 범위 [rad/s], 약 ±3000 rpm |
-| `main.c` | `speed_reference_rise/fall_rate_rad_s2` | 31.416 | 1 kHz speed reference 가감속 제한 [rad/s²] |
-| `motor_config.c` | `motor_config_speed_controller.pi` | output ±0.5 | speed PI가 만드는 q-axis current 범위 [A] |
-| `motor_config.c` | speed PI sampling period | 0.001 | speed PI 실행 주기 [s] |
-| `motor_config.c` | speed feedback filter cutoff | 30 | mechanical speed feedback filter [Hz] |
+| `drive_parameters.c` | `speed_reference_min/max_rad_s` | -314.159 / +314.159 | 기계각속도 request 범위 [rad/s], 약 ±3000 rpm |
+| `drive_parameters.c` | `speed_reference_rise/fall_rate_rad_s2` | 31.416 | 1 kHz speed reference 가감속 제한 [rad/s²] |
+| `drive_parameters.c` | `speed_i_q_output_min/max_a` | output ±5.0 | speed PI q-axis current 범위 [A peak] |
+| `drive_parameters.c` | speed PI sampling period | 0.001 | speed PI 실행 주기 [s] |
+| `drive_parameters.c` | speed feedback filter cutoff | 30 | mechanical speed feedback filter [Hz] |
 
-Speed PI output은 우선 ±0.5 A로 제한되고, 이후 current-reference axis/vector limit과
+Speed PI output은 우선 ±5.0 A로 제한되고, 이후 current-reference axis/vector limit과
 40 kHz current slew limit이 한 번 더 적용된다. 속도 제어에서 허용할 토크를 높이려면
 speed PI `output_min/max`와 FOC current limits를 함께 검토해야 한다.
 
@@ -194,7 +206,7 @@ PDO byte order는 little-endian이다. Torque PDO가 필요하면 표준 PDO rem
 | maximum mechanical speed | `motor_control_config.speed_reference_max_rad_s` | `0x2003`, `0x6080 Maximum motor speed` |
 
 Torque coefficient는 `Kt = 1.5 * pole_pairs * PM_flux_linkage` [Nm/A]로 계산된다.
-현재 값은 약 `0.05055 Nm/A`다.
+현재 값은 약 `0.04044 Nm/A`다.
 
 `0x2000`~`0x2004`, `0x6075`, `0x6076`, `0x6080`은 CANopen service가 init 및 1 kHz
 processing 때 motor profile에서 다시 publish하는 mirror다. `OD.c`의 초기값만 바꿔서는
@@ -214,12 +226,12 @@ processing 때 motor profile에서 다시 publish하는 mirror다. `OD.c`의 초
 
 | 값 | 설정/기본값 | 실제 의미 |
 |---|---|---|
-| `motor_config_canopen_torque_reference_current_peak_a` | 2 A peak | `0x6071 = 1000`이 요청하는 q-axis current |
+| `canopen_torque_reference_current_peak_a` | 5 A peak | `0x6071 = 1000`이 요청하는 q-axis current |
 | `0x6072 Maximum torque` | 1000 permille | CANopen torque command 상한. OD runtime write 가능 |
 | `0x6087 Torque slope` | 1000 | 1 kHz torque command slew. OD runtime write 가능 |
-| `0x6075 Motor rated current` | service가 2000 mA로 mirror | CANopen 표시값 |
-| `0x6076 Motor rated torque` | service가 약 101 mNm로 mirror | `Kt * torque_reference_current_peak_a` 표시값 |
-| FOC final limit | 2 A magnitude | CANopen 변환 이후의 안전 상한 |
+| `0x6075 Motor rated current` | service가 5000 mA로 mirror | 현재 CANopen torque reference scale 표시값 |
+| `0x6076 Motor rated torque` | service가 약 202 mNm로 mirror | `Kt * torque_reference_current_peak_a` 표시값 |
+| FOC final limit | 5 A magnitude | CANopen 변환 이후의 기본 지령 상한 |
 
 `torque_reference_current_peak_a`는 motor nominal current와 반드시 같을 필요는 없지만,
 FOC current magnitude limit보다 크게 잡으면 command가 후단에서 잘린다. 제품에서
@@ -323,8 +335,8 @@ bit rate나 CAN pin을 바꾸면 `.ioc`, FDCAN generated init, CANopen master �
 
 | 항목 | 위치 | 현재 값 |
 |---|---|---:|
-| phase overcurrent trip / clear | `main.c` macro | 3.0 / 1.0 A |
-| DC-link overvoltage trip / clear | `main.c` macro | 79.2 / 75.0 V |
+| phase overcurrent trip / clear | `main.c` macro | 8.0 / 1.0 A |
+| DC-link overvoltage trip / clear | `main.c` macro | 58.0 / 54.0 V |
 | normal speed-stop threshold | `main.c` macro | 52.36 rad/s |
 | normal speed-stop dwell | `main.c` macro | 10 ms |
 | CANopen overspeed | CANopen motor profile | speed-reference maximum 초과 시 fault latch |

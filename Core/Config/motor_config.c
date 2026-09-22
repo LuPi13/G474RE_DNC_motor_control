@@ -6,7 +6,7 @@
 
 #include "motor_config.h"
 
-const float motor_config_canopen_torque_reference_current_peak_a = 2.0f;
+const float motor_config_canopen_torque_reference_current_peak_a = 5.0f;
 
 const hall_decoder_profile_t motor_config_hall_profile = {
     /* Raw Hall state 000부터 111까지의 sector mapping. */
@@ -34,12 +34,12 @@ const hall_decoder_profile_t motor_config_hall_profile = {
 
 const speed_controller_config_t motor_config_speed_controller = {
     .pi = {
-        .kp = 0.0453f,
-        .ki = 1.007f,
+        .kp = 0.0567f,
+        .ki = 1.259f,
         .anti_windup_gain_per_s = 22.2f,
         .sampling_period_s = 0.001f,
-        .output_min = -0.5f,
-        .output_max = 0.5f,
+        .output_min = -5.0f,
+        .output_max = 5.0f,
     },
     .feedback_filter = {
         .cutoff_frequency_hz = 30.0f,

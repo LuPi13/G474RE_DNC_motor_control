@@ -69,12 +69,14 @@ fault clear를 요청한다. 유효 ADC sample에서 latch가 실제 해제된 �
 `torque_reference_current_peak_a`를 소유한다. 마지막 값은 0x6071 target torque의 1000 permille가
 가리키는 q-axis peak current다.
 
-현재 보드 설정은 `motor_config_canopen_torque_reference_current_peak_a = 2.0f`로,
-1000 permille = 2 A peak다. 이후 이 Config 값만 바꾸면 CANopen target conversion과
+현재 active parameter의 `canopen_torque_reference_current_peak_a`는 5.0 A로,
+1000 permille = 5 A peak다. 이후 이 Config 값만 바꾸면 CANopen target conversion과
 OD의 0x2002/0x6075/0x6076 표시가 함께 갱신된다.
 
 이 값은 motor nameplate rated current와 firmware current-reference limit이 서로 다를 수 있으므로
-별도로 명시해야 한다. CANopen profile current가 FOC 2 A command limit을 넘으면 FOC가 제한하며,
+별도로 명시해야 한다. 현재 motor nameplate current는 24.7 A지만 inverter 상전류 범위는
+±10 A peak이고 firmware의 기본 FOC magnitude limit은 5 A peak다. CANopen profile current가
+FOC command limit을 넘으면 FOC가 제한하며,
 CiA 402 statusword의 internal-limit bit를 설정한다. 통신으로 0x2000..0x2004를 쓴다고 live FOC
 parameter를 변경하지 않는다. 현재 이 object들은 active profile의 read-only mirror다. live parameter
 update는 PWM-off 상태의 atomic 재초기화/validation/storage 정책을 별도 설계한 뒤 추가한다.

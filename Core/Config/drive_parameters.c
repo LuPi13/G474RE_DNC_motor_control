@@ -13,8 +13,8 @@
 #define DRIVE_PARAMETER_PAYLOAD_SIZE_BYTES (132U)
 #define DRIVE_PARAMETER_RECORD_COMMIT_MARKER (0x44525650434F4D4DULL)
 
-#define DRIVE_PARAMETER_MAX_CURRENT_A (3.0f)
-#define DRIVE_PARAMETER_MAX_SPEED_RAD_S (1000.0f)
+#define DRIVE_PARAMETER_MAX_CURRENT_A (7.0f)
+#define DRIVE_PARAMETER_MAX_SPEED_RAD_S (314.159265f)
 #define DRIVE_PARAMETER_MAX_INDUCTANCE_H (1.0f)
 #define DRIVE_PARAMETER_MAX_FLUX_LINKAGE_WB (1.0f)
 
@@ -113,19 +113,19 @@ void drive_parameters_get_defaults(drive_parameters_t *p)
 {
     if (p == NULL) return;
     *p = (drive_parameters_t){
-        .current_reference_min_a = {-2.0f, -2.0f}, .current_reference_max_a = {2.0f, 2.0f},
+        .current_reference_min_a = {-5.0f, -5.0f}, .current_reference_max_a = {5.0f, 5.0f},
         .current_reference_rise_rate_a_s = {100.0f, 100.0f}, .current_reference_fall_rate_a_s = {100.0f, 100.0f},
-        .current_reference_magnitude_limit_a = 2.0f,
+        .current_reference_magnitude_limit_a = 5.0f,
         .d_axis_kp = 1.71530959f, .d_axis_ki = 2623.22987f, .d_axis_anti_windup_gain_per_s = 1529.30403f,
         .q_axis_kp = 1.85982285f, .q_axis_ki = 2623.22987f, .q_axis_anti_windup_gain_per_s = 1410.47297f,
         .current_filter_cutoff_frequency_hz = 5000.0f, .voltage_utilization = 0.9f,
         .d_axis_inductance_h = 546.0e-6f, .q_axis_inductance_h = 592.0e-6f,
         .permanent_magnet_flux_linkage_wb = 6.74e-3f, .is_decoupling_enabled = false,
-        .speed_kp = 0.0453f, .speed_ki = 1.007f, .speed_anti_windup_gain_per_s = 22.2f,
-        .speed_filter_cutoff_frequency_hz = 30.0f, .speed_i_q_output_min_a = -0.5f, .speed_i_q_output_max_a = 0.5f,
+        .speed_kp = 0.0567f, .speed_ki = 1.259f, .speed_anti_windup_gain_per_s = 22.2f,
+        .speed_filter_cutoff_frequency_hz = 30.0f, .speed_i_q_output_min_a = -5.0f, .speed_i_q_output_max_a = 5.0f,
         .speed_reference_min_rad_s = -314.159265f, .speed_reference_max_rad_s = 314.159265f,
         .speed_reference_rise_rate_rad_s2 = 31.415927f, .speed_reference_fall_rate_rad_s2 = 31.415927f,
-        .pole_pairs = 5U, .canopen_torque_reference_current_peak_a = 2.0f,
+        .pole_pairs = 4U, .canopen_torque_reference_current_peak_a = 5.0f,
     };
 }
 

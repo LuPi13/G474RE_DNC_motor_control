@@ -726,14 +726,14 @@ hardware emergency path는 software state machine보다 빠르게 동작할 수 
 현재 PCB에는 별도의 gate-driver fault/HRTIM fault 입력이 연결되어 있지 않다. 따라서 현재
 vertical slice는 App 계층 `fault_manager`에서 다음 software 보호를 먼저 제공한다.
 
-- 각 상 `|i_phase| >= 3.0 A`에서 과전류 latch
-- `v_dc >= 79.2 V`에서 DC-link 과전압 latch
+- 각 상 `|i_phase| >= 8.0 A`에서 과전류 latch
+- `v_dc >= 58.0 V`에서 DC-link 과전압 latch
 - ADC/rotor/motor-control/CORDIC/SVPWM/PWM 오류 원인 latch
 - Fault 발생 시 active mode 중지와 `pwm_driver_disable()`
 - PWM 비활성, 0 command, 정상 측정 조건을 확인한 명령 기반 latch 해제
 - 해제 뒤 자동 재시작 금지
 
-상전류 `1.0 A`, DC-link `75.0 V`를 현재 clear hysteresis 기준으로 사용한다. 이 값들은
+상전류 `1.0 A`, DC-link `54.0 V`를 현재 clear hysteresis 기준으로 사용한다. 이 값들은
 제품/보드 설정이며 향후 Config 계층으로 이동할 수 있다. ADC 동기 오류처럼 정상 sample이
 재개되지 않는 경우에는 명령 clear보다 먼저 ADC 재동기화나 MCU reset이 필요하다.
 
@@ -883,14 +883,16 @@ speed-loop rate: 1 kHz
 initial bandwidth: 5 Hz
 speed-feedback low-pass cutoff: 30 Hz
 acceleration/deceleration limit: 300 rpm/s
-bring-up q-axis current limit: +/-0.5 A
-product q-axis current limit: +/-2.0 A
+speed-loop q-axis current limit: +/-5.0 A peak
+default current-reference magnitude limit: 5.0 A peak
+validated parameter ceiling: 7.0 A peak
 ```
 
 Motor rotor inertia는 `8.6e-6 kg*m^2`, 초기 최대 load inertia는 그 5배로 두어 총 관성을
-`5.16e-5 kg*m^2`로 사용한다. `K_t = 1.5 * pole_pairs * lambda_f = 0.05055 N*m/A`와
-5 Hz, damping ratio 약 0.707을 적용한 초기 speed PI 후보는 `Kp = 0.0453 A/(rad/s)`,
-`Ki = 1.007 A/rad`, `Kaw = 22.2 1/s`다. 실제 발전기 부하와 관성 변화에 따라 config에서
+`5.16e-5 kg*m^2`로 사용한다. Pole-pair 4와
+`K_t = 1.5 * pole_pairs * lambda_f = 0.04044 N*m/A`를 사용하고 5 Hz, damping ratio 약
+0.707을 적용한 초기 speed PI 후보는 `Kp = 0.0567 A/(rad/s)`, `Ki = 1.259 A/rad`,
+`Kaw = 22.2 1/s`다. 실제 발전기 부하와 관성 변화에 따라 config에서
 gain과 reference rate를 교체할 수 있어야 한다.
 
 Speed PI는 40 kHz ADC ISR에 직접 추가하지 않고 SysTick 1 kHz scheduler context에서 실행하여
@@ -908,8 +910,8 @@ scalar 제한 및 downstream current 제한용 external tracking만 소유한다
 rate limiter, electrical-to-mechanical speed 변환과 1 kHz 실행/publish는 `motor_control`과 App이
 연결한다. ADC ISR은 Hall edge/timeout 변화 때만 speed feedback snapshot을 publish하고, SysTick은
 이를 읽어 speed PI 결과를 current target으로 publish한다. 따라서 40 kHz current fast path에는
-speed PI를 직접 삽입하지 않는다. 초기 gain, 1 ms 주기, 30 Hz feedback cutoff와 ±0.5 A bring-up
-출력 범위는 `motor_config_speed_controller`에 둔다.
+speed PI를 직접 삽입하지 않는다. 초기 gain, 1 ms 주기, 30 Hz feedback cutoff와 ±5.0 A peak
+출력 범위는 `drive_parameters_t`에 둔다.
 
 속도 제어 통합 뒤 App은 아래 최소 lifecycle을 제공한다. 외부 command source는 App lifecycle API를
 호출하므로, 이후 CAN/UART을 추가해도 PWM enable/disable 순서를 복제하지 않는다.
@@ -978,7 +980,8 @@ speed estimator의 필요성을 먼저 평가한다.
 시험용 `main.c` Live Expression command는 drive state machine 도입 전 bring-up 전용이다. 정상
 stop 후 PWM disable과 restart policy는 이 임시 code가 아니라 상위 state machine에서 소유한다.
 
-3000 rpm에서 Hall edge rate는 1500 Hz이고 rotor electrical speed는 약 `1571 rad/s`다.
+Pole-pair 4인 현재 motor가 3000 rpm일 때 Hall edge rate는 1200 Hz이고 rotor electrical
+speed는 약 `1257 rad/s`다.
 24 V DC-link에서는 현재 0.9 SVPWM voltage utilization 기준으로 3000 rpm을 우선 검증한다.
 저속 한계는 아직 확정하지 않았으므로 300 rpm부터 낮추며 Hall edge-to-edge speed의 품질을
 확인하고, 필요하면 Hall PLL 또는 별도 speed estimator를 후속 단계로 추가한다.
