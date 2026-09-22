@@ -131,6 +131,27 @@ pi_controller_status_t pi_controller_init(
 pi_controller_status_t pi_controller_reset(pi_controller_t *self);
 
 /**
+ * @brief 외부에서 알고 있는 초기 추정값으로 적분/출력 상태를 직접 맞춘다.
+ *
+ * @param[in,out] self 초기화된 PI controller instance.
+ * @param[in] initial_output 다음 update가 error=0에서 그대로 유지할 출력 추정값 [output unit].
+ *
+ * @post `integral`은 `clamp(initial_output, output_min, output_max)`가 되고 `output`/
+ *       `unsaturated_output`도 같은 값으로 맞춰진다. 이후 error=0이 들어오면 출력이 그대로
+ *       유지된다.
+ * @note 외부 관측(예: 다른 estimator의 근사값)으로 warm-start할 때 사용한다. reset()과 달리
+ *       0이 아닌 값에서 시작한다.
+ *
+ * @retval PI_CONTROLLER_STATUS_OK Seed 완료.
+ * @retval PI_CONTROLLER_STATUS_INVALID_ARGUMENT self가 NULL이거나 initial_output이 유한하지 않음.
+ * @retval PI_CONTROLLER_STATUS_INVALID_STATE self가 초기화되지 않음.
+ */
+pi_controller_status_t pi_controller_seed(
+    pi_controller_t *self,
+    float initial_output
+);
+
+/**
  * @brief PI 출력과 다음 적분 상태를 한 sampling period만큼 갱신한다.
  *
  * @param[in,out] self 초기화된 PI controller instance.

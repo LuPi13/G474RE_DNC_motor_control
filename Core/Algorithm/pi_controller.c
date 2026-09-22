@@ -107,6 +107,34 @@ pi_controller_status_t pi_controller_reset(pi_controller_t *self)
     return PI_CONTROLLER_STATUS_OK;
 }
 
+pi_controller_status_t pi_controller_seed(
+    pi_controller_t *self,
+    float initial_output
+)
+{
+    float clamped_output;
+
+    if ((self == NULL) || (!pi_controller_float_is_finite(initial_output))) {
+        return PI_CONTROLLER_STATUS_INVALID_ARGUMENT;
+    }
+
+    if (!self->is_initialized) {
+        return PI_CONTROLLER_STATUS_INVALID_STATE;
+    }
+
+    clamped_output = limiter_clamp(
+        initial_output,
+        self->config.output_min,
+        self->config.output_max
+    );
+
+    self->integral = clamped_output;
+    self->unsaturated_output = clamped_output;
+    self->output = clamped_output;
+
+    return PI_CONTROLLER_STATUS_OK;
+}
+
 pi_controller_status_t pi_controller_update(
     pi_controller_t *self,
     float error,
