@@ -275,6 +275,7 @@ typedef struct {
     volatile uint32_t active_speed_current_target_index; /**< Speed current target active index. */
     app_speed_feedback_t speed_feedback_buffer[2]; /**< ADC ISR writer가 publish한 speed feedback. */
     volatile uint32_t active_speed_feedback_index; /**< Speed feedback active index. */
+    app_speed_feedback_t last_published_speed_feedback; /**< ISR writer 전용 publish 여부 판정 cache. */
 
     float voltage_angle_rad;       /**< 다음 duty 계산에 사용할 전압 vector phase [rad]. */
     alpha_beta_t last_v_alpha_beta; /**< 마지막으로 적용한 alpha-beta 전압 [V]. */

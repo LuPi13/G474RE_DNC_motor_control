@@ -365,27 +365,34 @@ static void app_publish_speed_feedback(
     const hall_driver_signal_feedback_t *hall_signal
 )
 {
-    const uint32_t active_index = self->active_speed_feedback_index & 1U;
-    const app_speed_feedback_t active_feedback =
-        self->speed_feedback_buffer[active_index];
-    const uint32_t inactive_index =
-        (self->active_speed_feedback_index ^ 1U) & 1U;
+    const uint32_t current_index = self->active_speed_feedback_index;
+    const uint32_t inactive_index = (current_index ^ 1U) & 1U;
     const bool has_valid_speed = rotor_feedback->has_valid_speed;
 
-    /* Hall edge/timeout으로 speed observation이 바뀔 때만 1 kHz reader에 publish한다. */
-    if ((active_feedback.capture_count == hall_signal->capture_count) &&
-        (active_feedback.has_valid_speed == has_valid_speed) &&
-        (active_feedback.is_timed_out == hall_signal->is_timed_out)) {
+    /*
+     * 1 kHz reader가 읽는 double buffer의 active slot을 매번 다시 읽지 않고,
+     * ISR writer 전용 non-volatile cache로 직전 publish 여부만 판정한다.
+     * active_speed_feedback_index는 이 함수만 갱신하므로 한 번만 읽는다.
+     */
+    if ((self->last_published_speed_feedback.capture_count ==
+            hall_signal->capture_count) &&
+        (self->last_published_speed_feedback.has_valid_speed ==
+            has_valid_speed) &&
+        (self->last_published_speed_feedback.is_timed_out ==
+            hall_signal->is_timed_out)) {
         return;
     }
 
-    self->speed_feedback_buffer[inactive_index] = (app_speed_feedback_t){
+    const app_speed_feedback_t new_feedback = (app_speed_feedback_t){
         .omega_e_rad_s = has_valid_speed ?
             rotor_feedback->omega_e_rad_s : 0.0f,
         .capture_count = hall_signal->capture_count,
         .has_valid_speed = has_valid_speed,
         .is_timed_out = hall_signal->is_timed_out,
     };
+    /* 계산한 값을 메모리 왕복 없이 두 목적지에 각각 직접 기록한다. */
+    self->last_published_speed_feedback = new_feedback;
+    self->speed_feedback_buffer[inactive_index] = new_feedback;
     __DMB();
     self->active_speed_feedback_index = inactive_index;
 }
@@ -749,6 +756,7 @@ app_status_t app_init(app_t *self, const app_config_t *config)
         .active_speed_current_target_index = 0U,
         .speed_feedback_buffer = {zero_speed_feedback, zero_speed_feedback},
         .active_speed_feedback_index = 0U,
+        .last_published_speed_feedback = zero_speed_feedback,
         .voltage_angle_rad = config->initial_voltage_angle_rad,
         .last_v_alpha_beta = {0.0f, 0.0f},
         .last_duty = neutral_duty,

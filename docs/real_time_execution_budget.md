@@ -257,7 +257,9 @@ Speed-control 동작 중 Debug `-O3`, 상세 구간 profiler OFF 조건에서 �
 | 정상 ADC IRQ에서 pending/epilogue 왕복 제거 뒤 | 2790 / 2986 | 3110 / 3322 | 0 |
 | FOC/motor-control의 큰 fast input 구조체 제거 뒤 | 2790 / 2969 | 3110 / 3310 | 0 |
 | Hall 전이 `% 6` 및 estimator 임시 output 복사 제거 뒤 | 2750 / 2868 | 3070 / 3196 | 미기록 |
-| Hall edge rate publish와 fast-loop division 제거 뒤 | 2750 / 2863 | 3070 / 3191 | 미기록 |
+| Hall edge rate publish와 fast-loop division 제거 뒤 | 2750 / 2863 | 3070 / 3191 | 0 |
+| speed feedback publish의 volatile index 중복 read와 indexed 재비교 제거 뒤 | 2745 / 2857 | 3065 / 3184 | 0 |
+| Hall decoder 정상 transition의 output 필드 기록을 단일 대입으로 통합 뒤 | 2730 / 2843 | 3050 / 3173 | 0 |
 
 마지막 변경에서는 Hall 방향/edge index의 나머지 연산을 경계 비교로 바꾸고, 새 transition의
 유효성 검사를 통과한 뒤 estimator output을 in-place로 갱신한다. Linked image 기준
@@ -266,14 +268,26 @@ Speed-control 동작 중 Debug `-O3`, 상세 구간 profiler OFF 조건에서 �
 감소했다. Debug clean build는 warning/error 없이 완료됐고 Hall decoder 및 drive parameter host
 test를 통과했다.
 
-최신 `app_adc_injected_irq_handle_fast()` 구간 maximum `3191 cycles`는 3200-cycle 목표보다
-9 cycles 작고 hard deadline 대비 `1059 cycles`의 계산상 여유가 있다. 이 계측은 vector entry,
+`3191 cycles` 단계에서는 body maximum `2863 cycles`가 조건부 상한 `2850 cycles`보다 13 cycles
+컸다. `app_update_rotor_feedback()`의 speed feedback publish가 `active_speed_feedback_index`
+(volatile)를 active/inactive index 계산에 각각 다시 읽고, 비교 대상도 double buffer의 active
+slot을 indexed 주소로 다시 읽고 있었다. 이를 ISR writer 전용 non-volatile 직전-publish 캐시로
+바꾸고 index는 한 번만 읽도록 정리해 `2857 cycles`를 얻었다. 이어서 detailed segment profiler를
+한 layer만 켜 확인한 결과 `rotor`(Hall snapshot+estimator, max 700)와 `control`(CORDIC+FOC, max
+1289, 그중 순수 FOC 약 950)이 지배적이었다. `control`/FOC는 이 단계에서 변경 대상이 아니므로,
+`hall_decoder_update_unchecked()`의 정상 transition 경로에서 `omega_e_rad_s`/`has_valid_speed`를
+`0.0f`/`false`로 먼저 쓰고 `has_valid_edge_rate`일 때 다시 덮어쓰던 이중 기록을 값을 먼저 계산한
+뒤 `self->output`을 단일 compound-literal로 대입하도록 정리해 `2843 cycles`를 얻었다.
+
+최신 `app_adc_injected_irq_handle_fast()` 구간 maximum `3173 cycles`는 3200-cycle 목표보다
+27 cycles 작고 hard deadline 대비 `1077 cycles`의 계산상 여유가 있다. 이 계측은 vector entry,
 C ISR wrapper의 helper call 이전과 exception return을 포함하지 않으므로 엄밀한 IRQ 전체값은 아니다.
-또한 body maximum `2863 cycles`는 조건부 상한
-`2850 cycles`보다 13 cycles 크며, 최신 binary의 miss count와 관찰 시간이 아직 기록되지 않았다.
-따라서 이를 최종 timing 통과로 확정하지 않고 다음 board run에서 observer OFF 여부, speed/부하,
-관찰 시간, Hall transition 포함 여부와 miss count를 함께 기록한다. `R_s` 또는 sensorless observer를
-40 kHz path에 추가하기 전 이 판정을 닫는다.
+Body maximum `2843 cycles`는 SHOULD 목표 `2800 cycles`는 초과하지만 조건부 상한 `2850 cycles`
+이하이고, 같은 조건에서 전체 maximum `3200 cycles` 이하와 deadline miss `0`을 함께 만족하므로
+§3의 조건부 허용 기준을 충족한다. 다만 이 결과는 speed-mode 조건 하나로 반복 확인한 개발 중
+checkpoint이며, §5가 요구하는 0 A/rate-limit/voltage-saturation/Hall transition·timeout/phase
+trip/DC-link 전 범위의 정식 worst-case matrix와 Release 빌드 60초 시험을 아직 거치지 않았다.
+`R_s` 또는 sensorless observer를 40 kHz path에 추가하기 전에는 이 정식 matrix로 판정을 닫는다.
 
 최신 측정 binary는 Hall driver가 낮은 우선순위의 TIM2 capture ISR에서
 `edge_rate_hz = counter_frequency_hz / capture_ticks`를 계산해 publish한다. ADC fast-loop의 새

@@ -320,30 +320,33 @@ static hall_decoder_status_t hall_decoder_update_unchecked(
             ((sector == (HALL_DECODER_SECTOR_COUNT - 1U)) ?
                 0U : (uint8_t)(sector + 1U));
 
-    self->output.hall_state = observation->hall_state;
-    self->output.sector = sector;
-    self->output.direction = direction;
-    self->output.theta_e_rad =
-        self->profile.forward_edge_angle_rad[edge_index];
-    self->output.omega_e_rad_s = 0.0f;
-    self->output.sector_span_rad = self->sector_span_rad[sector];
-    self->output.has_valid_state = true;
-    self->output.has_valid_direction = true;
-    self->output.has_valid_angle = true;
-    self->output.has_valid_speed = false;
-    self->output.is_angle_from_edge = true;
-    self->output.is_timed_out = false;
-    ++self->output.transition_count;
-
+    float omega_e_rad_s = 0.0f;
+    bool has_valid_speed = false;
     if (observation->has_valid_edge_rate) {
-        float omega_e_rad_s = self->sector_span_rad[previous_sector] *
+        omega_e_rad_s = self->sector_span_rad[previous_sector] *
             observation->edge_rate_hz;
         if (direction == HALL_DECODER_DIRECTION_REVERSE) {
             omega_e_rad_s = -omega_e_rad_s;
         }
-        self->output.omega_e_rad_s = omega_e_rad_s;
-        self->output.has_valid_speed = true;
+        has_valid_speed = true;
     }
+
+    /* 필드별로 나눠 쓰지 않고 값을 먼저 구성해 한 번에 기록한다. */
+    self->output = (hall_decoder_output_t){
+        .theta_e_rad = self->profile.forward_edge_angle_rad[edge_index],
+        .omega_e_rad_s = omega_e_rad_s,
+        .sector_span_rad = self->sector_span_rad[sector],
+        .transition_count = self->output.transition_count + 1U,
+        .hall_state = observation->hall_state,
+        .sector = sector,
+        .direction = direction,
+        .has_valid_state = true,
+        .has_valid_direction = true,
+        .has_valid_angle = true,
+        .has_valid_speed = has_valid_speed,
+        .is_angle_from_edge = true,
+        .is_timed_out = false,
+    };
 
     return HALL_DECODER_STATUS_OK;
 }
