@@ -1025,10 +1025,19 @@ Hall speed-mode 위에 alpha-beta EEMF Luenberger observer와 PLL을 추가할 �
    speed 오차가 허용 범위에서 정해진 dwell 동안 유지될 때 실행하고, unlock·저속·observer 오류에는
    Hall로 복귀하거나 drive를 안전 정지한다. Observer module이 직접 FOC나 PWM을 호출하지 않는다.
 
-현재 2026-09-22 최신 board 보고값은 body max `2863 cycles`, ADC fast helper max `3191 cycles`이며
-최신 miss count와 관찰 시간이 아직 기록되지 않았다. Total 목표에는 9 cycles만 남고 body 조건부
-상한을 13 cycles 초과하므로, 이 상태에서 sensorless 계산을 40 kHz path에 바로 추가하지 않는다.
-먼저 현재 binary의 timing 판정을 완료하고 observer 단독 cycle budget을 별도로 확보한다.
+2026-09-22 최신 board 보고값은 body max `2843 cycles`, ADC fast helper max `3173 cycles`, deadline
+miss `0`이다(speed-mode 조건, 관찰 시간 미기록). Body는 조건부 상한 `2850 cycles`을 만족하고 total은
+목표 `3200 cycles`에 27 cycles 여유가 있어 1단계 gate를 조건부로 통과했다. 다만 이는 §5가 요구하는
+정식 worst-case matrix(0 A, rate limit, voltage saturation, Hall transition/timeout, phase trip,
+DC-link 전 범위, Release 빌드 60초)를 아직 거치지 않은 반복 checkpoint이며, 40 kHz path에 sensorless
+계산을 실제로 추가하기 전에는 이 정식 matrix로 판정을 닫고 observer 단독 cycle budget을 별도로
+확보한다.
+
+2단계(motor parameter source에 R_s 추가)는 `drive_parameters_t`(flash record, schema version 1→2),
+`foc_config_t`/`foc_t`, `drive_parameters_build_motor_control_config()` 경로에 `stator_resistance_ohm`
+[Ohm]을 추가해 완료했다. 범위는 `(0, 10] Ohm`으로 검증하며 기본값은 실측 `0.059 Ohm`이다. 이 필드는
+아직 FOC decoupling 계산에는 사용하지 않고 저장/검증/전달 경로만 연결했다 — voltage equation에
+반영하는 것은 3단계 host 수치 test에서 수행한다.
 
 ### 완료 조건
 

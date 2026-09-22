@@ -150,10 +150,11 @@ nameplate 전류가 아니라 inverter 한계를 기준으로 정한다. 기본 
 | `foc.d_axis_pi`, `q_axis_pi` | `kp`, `ki`, anti-windup, ±100 V | d/q current PI 설정 |
 | `foc.current_filter.cutoff_frequency_hz` | 5000 | d/q current feedback filter [Hz] |
 | `foc.voltage_utilization` | 0.9 | SVPWM 선형 전압 사용률 |
-| `foc.d_axis_inductance_h` | 546 µH | d-axis inductance |
-| `foc.q_axis_inductance_h` | 592 µH | q-axis inductance |
-| `foc.permanent_magnet_flux_linkage_wb` | 6.74 mWb | PM flux linkage |
-| `foc.is_decoupling_enabled` | false | d/q feedforward/decoupling enable |
+| `foc.d_axis_inductance_h` | 147.5 µH | d-axis inductance |
+| `foc.q_axis_inductance_h` | 155.5 µH | q-axis inductance |
+| `foc.permanent_magnet_flux_linkage_wb` | 16.7 mWb | PM flux linkage |
+| `foc.stator_resistance_ohm` | 59 mOhm | Stator phase resistance Rs (현재 decoupling 계산에는 미사용, sensorless observer용 저장) |
+| `foc.is_decoupling_enabled` | true | d/q feedforward/decoupling enable |
 | `pole_pairs` | 4 | electrical/mechanical speed conversion |
 
 적용 순서는 `axis clamp -> current magnitude clamp -> d/q rate limiter -> final
@@ -206,7 +207,7 @@ PDO byte order는 little-endian이다. Torque PDO가 필요하면 표준 PDO rem
 | maximum mechanical speed | `motor_control_config.speed_reference_max_rad_s` | `0x2003`, `0x6080 Maximum motor speed` |
 
 Torque coefficient는 `Kt = 1.5 * pole_pairs * PM_flux_linkage` [Nm/A]로 계산된다.
-현재 값은 약 `0.04044 Nm/A`다.
+현재 값은 약 `0.1002 Nm/A`다.
 
 `0x2000`~`0x2004`, `0x6075`, `0x6076`, `0x6080`은 CANopen service가 init 및 1 kHz
 processing 때 motor profile에서 다시 publish하는 mirror다. `OD.c`의 초기값만 바꿔서는

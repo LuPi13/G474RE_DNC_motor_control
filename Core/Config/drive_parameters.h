@@ -38,6 +38,7 @@ typedef struct {
     float d_axis_inductance_h; /**< Ld [H]. */
     float q_axis_inductance_h; /**< Lq [H]. */
     float permanent_magnet_flux_linkage_wb; /**< PM flux linkage [Wb]. */
+    float stator_resistance_ohm; /**< Stator phase resistance Rs [Ohm]. */
     bool is_decoupling_enabled; /**< Motor-model feedforward enable. */
     float speed_kp; /**< Speed PI proportional gain [A/(rad/s)]. */
     float speed_ki; /**< Speed PI integral gain [A/rad]. */

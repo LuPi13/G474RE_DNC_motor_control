@@ -44,6 +44,12 @@ magic | schema version + payload size | generation | CRC32 | payload | commit ma
 payload는 explicit little-endian IEEE-754 32-bit field serialization을 사용한다. C struct padding이나 field
 layout에는 의존하지 않는다. CRC는 header의 `magic/version/size/generation`과 payload에 적용한다.
 
+Schema version은 payload 구성이 바뀔 때마다 올린다. `stator_resistance_ohm`(Rs) 필드를 추가하며 version
+1에서 2로 올렸다. version 또는 payload size가 다른 record는 `DRIVE_PARAMETER_RECORD_STATUS_INCOMPATIBLE_VERSION`으로
+거부되고 `drive_parameter_manager_init()`은 컴파일 기본값으로 fallback한다. 즉 이 업데이트 이후 첫 부팅에서는
+기존 slot A/B의 version-1 record가 무시되고 기본값(Rs 포함)이 active set이 되며, 다시 `save_request`로
+저장해야 새 schema로 갱신된다.
+
 저장은 항상 반대 slot에 수행한다.
 
 1. target slot erase

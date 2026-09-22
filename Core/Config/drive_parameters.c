@@ -9,14 +9,15 @@
 #include <string.h>
 
 #define DRIVE_PARAMETER_RECORD_MAGIC (0x44525650UL)
-#define DRIVE_PARAMETER_RECORD_SCHEMA_VERSION (1U)
-#define DRIVE_PARAMETER_PAYLOAD_SIZE_BYTES (132U)
+#define DRIVE_PARAMETER_RECORD_SCHEMA_VERSION (2U)
+#define DRIVE_PARAMETER_PAYLOAD_SIZE_BYTES (136U)
 #define DRIVE_PARAMETER_RECORD_COMMIT_MARKER (0x44525650434F4D4DULL)
 
 #define DRIVE_PARAMETER_MAX_CURRENT_A (7.0f)
 #define DRIVE_PARAMETER_MAX_SPEED_RAD_S (314.159265f)
 #define DRIVE_PARAMETER_MAX_INDUCTANCE_H (1.0f)
 #define DRIVE_PARAMETER_MAX_FLUX_LINKAGE_WB (1.0f)
+#define DRIVE_PARAMETER_MAX_RESISTANCE_OHM (10.0f)
 
 static bool drive_parameters_is_finite(float value)
 {
@@ -70,7 +71,7 @@ static void drive_parameters_encode_payload(const drive_parameters_t *p, uint8_t
         p->d_axis_anti_windup_gain_per_s, p->q_axis_kp, p->q_axis_ki,
         p->q_axis_anti_windup_gain_per_s, p->current_filter_cutoff_frequency_hz,
         p->voltage_utilization, p->d_axis_inductance_h, p->q_axis_inductance_h,
-        p->permanent_magnet_flux_linkage_wb, p->speed_kp, p->speed_ki,
+        p->permanent_magnet_flux_linkage_wb, p->stator_resistance_ohm, p->speed_kp, p->speed_ki,
         p->speed_anti_windup_gain_per_s, p->speed_filter_cutoff_frequency_hz,
         p->speed_i_q_output_min_a, p->speed_i_q_output_max_a,
         p->speed_reference_min_rad_s, p->speed_reference_max_rad_s,
@@ -80,8 +81,8 @@ static void drive_parameters_encode_payload(const drive_parameters_t *p, uint8_t
     for (size_t index = 0U; index < (sizeof(values) / sizeof(values[0])); ++index) {
         drive_parameters_write_f32(&b[index * 4U], values[index]);
     }
-    drive_parameters_write_u32(&b[124U], p->is_decoupling_enabled ? 1U : 0U);
-    drive_parameters_write_u32(&b[128U], (uint32_t)p->pole_pairs);
+    drive_parameters_write_u32(&b[128U], p->is_decoupling_enabled ? 1U : 0U);
+    drive_parameters_write_u32(&b[132U], (uint32_t)p->pole_pairs);
 }
 
 static void drive_parameters_decode_payload(const uint8_t *b, drive_parameters_t *p)
@@ -95,7 +96,7 @@ static void drive_parameters_decode_payload(const uint8_t *b, drive_parameters_t
         &p->d_axis_anti_windup_gain_per_s, &p->q_axis_kp, &p->q_axis_ki,
         &p->q_axis_anti_windup_gain_per_s, &p->current_filter_cutoff_frequency_hz,
         &p->voltage_utilization, &p->d_axis_inductance_h, &p->q_axis_inductance_h,
-        &p->permanent_magnet_flux_linkage_wb, &p->speed_kp, &p->speed_ki,
+        &p->permanent_magnet_flux_linkage_wb, &p->stator_resistance_ohm, &p->speed_kp, &p->speed_ki,
         &p->speed_anti_windup_gain_per_s, &p->speed_filter_cutoff_frequency_hz,
         &p->speed_i_q_output_min_a, &p->speed_i_q_output_max_a,
         &p->speed_reference_min_rad_s, &p->speed_reference_max_rad_s,
@@ -105,8 +106,8 @@ static void drive_parameters_decode_payload(const uint8_t *b, drive_parameters_t
     for (size_t index = 0U; index < (sizeof(values) / sizeof(values[0])); ++index) {
         *values[index] = drive_parameters_read_f32(&b[index * 4U]);
     }
-    p->is_decoupling_enabled = drive_parameters_read_u32(&b[124U]) != 0U;
-    p->pole_pairs = (uint8_t)drive_parameters_read_u32(&b[128U]);
+    p->is_decoupling_enabled = drive_parameters_read_u32(&b[128U]) != 0U;
+    p->pole_pairs = (uint8_t)drive_parameters_read_u32(&b[132U]);
 }
 
 void drive_parameters_get_defaults(drive_parameters_t *p)
@@ -119,8 +120,8 @@ void drive_parameters_get_defaults(drive_parameters_t *p)
         .d_axis_kp = 0.927f, .d_axis_ki = 370.7f, .d_axis_anti_windup_gain_per_s = 399.9f,
         .q_axis_kp = 0.977f, .q_axis_ki = 370.7f, .q_axis_anti_windup_gain_per_s = 379.4f,
         .current_filter_cutoff_frequency_hz = 5000.0f, .voltage_utilization = 0.9f,
-        .d_axis_inductance_h = 546.0e-6f, .q_axis_inductance_h = 592.0e-6f,
-        .permanent_magnet_flux_linkage_wb = 6.74e-3f, .is_decoupling_enabled = false,
+        .d_axis_inductance_h = 147.5e-6f, .q_axis_inductance_h = 155.5e-6f,
+        .permanent_magnet_flux_linkage_wb = 0.0167f, .stator_resistance_ohm = 0.059f, .is_decoupling_enabled = true,
         .speed_kp = 0.1f, .speed_ki = 0.1f, .speed_anti_windup_gain_per_s = 1.0f,
         .speed_filter_cutoff_frequency_hz = 30.0f, .speed_i_q_output_min_a = -5.0f, .speed_i_q_output_max_a = 5.0f,
         .speed_reference_min_rad_s = -314.159265f, .speed_reference_max_rad_s = 314.159265f,
@@ -134,7 +135,7 @@ bool drive_parameters_is_valid(const drive_parameters_t *p)
     if ((p == NULL) || !drive_parameters_is_valid_pi(p->d_axis_kp, p->d_axis_ki, p->d_axis_anti_windup_gain_per_s) ||
         !drive_parameters_is_valid_pi(p->q_axis_kp, p->q_axis_ki, p->q_axis_anti_windup_gain_per_s) ||
         !drive_parameters_is_valid_pi(p->speed_kp, p->speed_ki, p->speed_anti_windup_gain_per_s)) return false;
-    const float values[] = {p->current_reference_min_a.d, p->current_reference_min_a.q, p->current_reference_max_a.d, p->current_reference_max_a.q, p->current_reference_rise_rate_a_s.d, p->current_reference_rise_rate_a_s.q, p->current_reference_fall_rate_a_s.d, p->current_reference_fall_rate_a_s.q, p->current_reference_magnitude_limit_a, p->current_filter_cutoff_frequency_hz, p->voltage_utilization, p->d_axis_inductance_h, p->q_axis_inductance_h, p->permanent_magnet_flux_linkage_wb, p->speed_filter_cutoff_frequency_hz, p->speed_i_q_output_min_a, p->speed_i_q_output_max_a, p->speed_reference_min_rad_s, p->speed_reference_max_rad_s, p->speed_reference_rise_rate_rad_s2, p->speed_reference_fall_rate_rad_s2, p->canopen_torque_reference_current_peak_a};
+    const float values[] = {p->current_reference_min_a.d, p->current_reference_min_a.q, p->current_reference_max_a.d, p->current_reference_max_a.q, p->current_reference_rise_rate_a_s.d, p->current_reference_rise_rate_a_s.q, p->current_reference_fall_rate_a_s.d, p->current_reference_fall_rate_a_s.q, p->current_reference_magnitude_limit_a, p->current_filter_cutoff_frequency_hz, p->voltage_utilization, p->d_axis_inductance_h, p->q_axis_inductance_h, p->permanent_magnet_flux_linkage_wb, p->stator_resistance_ohm, p->speed_filter_cutoff_frequency_hz, p->speed_i_q_output_min_a, p->speed_i_q_output_max_a, p->speed_reference_min_rad_s, p->speed_reference_max_rad_s, p->speed_reference_rise_rate_rad_s2, p->speed_reference_fall_rate_rad_s2, p->canopen_torque_reference_current_peak_a};
     for (size_t i = 0U; i < sizeof(values)/sizeof(values[0]); ++i) if (!drive_parameters_is_finite(values[i])) return false;
     return (p->current_reference_min_a.d <= 0.0f) && (p->current_reference_min_a.q <= 0.0f) &&
            (p->current_reference_max_a.d >= 0.0f) && (p->current_reference_max_a.q >= 0.0f) &&
@@ -148,6 +149,7 @@ bool drive_parameters_is_valid(const drive_parameters_t *p)
            (p->d_axis_inductance_h > 0.0f) && (p->d_axis_inductance_h <= DRIVE_PARAMETER_MAX_INDUCTANCE_H) &&
            (p->q_axis_inductance_h > 0.0f) && (p->q_axis_inductance_h <= DRIVE_PARAMETER_MAX_INDUCTANCE_H) &&
            (p->permanent_magnet_flux_linkage_wb >= 0.0f) && (p->permanent_magnet_flux_linkage_wb <= DRIVE_PARAMETER_MAX_FLUX_LINKAGE_WB) &&
+           (p->stator_resistance_ohm > 0.0f) && (p->stator_resistance_ohm <= DRIVE_PARAMETER_MAX_RESISTANCE_OHM) &&
            (p->speed_filter_cutoff_frequency_hz > 0.0f) && (p->speed_filter_cutoff_frequency_hz < 500.0f) &&
            (p->speed_i_q_output_min_a <= 0.0f) && (p->speed_i_q_output_max_a >= 0.0f) &&
            (p->speed_i_q_output_min_a >= -DRIVE_PARAMETER_MAX_CURRENT_A) && (p->speed_i_q_output_max_a <= DRIVE_PARAMETER_MAX_CURRENT_A) &&
@@ -175,7 +177,7 @@ bool drive_parameters_build_motor_control_config(const drive_parameters_t *p, fl
         .current_reference_min = p->current_reference_min_a, .current_reference_max = p->current_reference_max_a,
         .current_reference_rise_rate_per_s = p->current_reference_rise_rate_a_s, .current_reference_fall_rate_per_s = p->current_reference_fall_rate_a_s,
         .current_reference_magnitude_limit = p->current_reference_magnitude_limit_a, .sampling_period_s = fast_s,
-        .foc = {.d_axis_pi = {.kp=p->d_axis_kp,.ki=p->d_axis_ki,.anti_windup_gain_per_s=p->d_axis_anti_windup_gain_per_s,.sampling_period_s=fast_s,.output_min=-100.0f,.output_max=100.0f}, .q_axis_pi = {.kp=p->q_axis_kp,.ki=p->q_axis_ki,.anti_windup_gain_per_s=p->q_axis_anti_windup_gain_per_s,.sampling_period_s=fast_s,.output_min=-100.0f,.output_max=100.0f}, .current_filter = {.cutoff_frequency_hz=p->current_filter_cutoff_frequency_hz,.sampling_period_s=fast_s}, .voltage_utilization=p->voltage_utilization,.d_axis_inductance_h=p->d_axis_inductance_h,.q_axis_inductance_h=p->q_axis_inductance_h,.permanent_magnet_flux_linkage_wb=p->permanent_magnet_flux_linkage_wb,.is_decoupling_enabled=p->is_decoupling_enabled},
+        .foc = {.d_axis_pi = {.kp=p->d_axis_kp,.ki=p->d_axis_ki,.anti_windup_gain_per_s=p->d_axis_anti_windup_gain_per_s,.sampling_period_s=fast_s,.output_min=-100.0f,.output_max=100.0f}, .q_axis_pi = {.kp=p->q_axis_kp,.ki=p->q_axis_ki,.anti_windup_gain_per_s=p->q_axis_anti_windup_gain_per_s,.sampling_period_s=fast_s,.output_min=-100.0f,.output_max=100.0f}, .current_filter = {.cutoff_frequency_hz=p->current_filter_cutoff_frequency_hz,.sampling_period_s=fast_s}, .voltage_utilization=p->voltage_utilization,.d_axis_inductance_h=p->d_axis_inductance_h,.q_axis_inductance_h=p->q_axis_inductance_h,.permanent_magnet_flux_linkage_wb=p->permanent_magnet_flux_linkage_wb,.stator_resistance_ohm=p->stator_resistance_ohm,.is_decoupling_enabled=p->is_decoupling_enabled},
         .speed_controller = {.pi = {.kp=p->speed_kp,.ki=p->speed_ki,.anti_windup_gain_per_s=p->speed_anti_windup_gain_per_s,.sampling_period_s=speed_s,.output_min=p->speed_i_q_output_min_a,.output_max=p->speed_i_q_output_max_a},.feedback_filter={.cutoff_frequency_hz=p->speed_filter_cutoff_frequency_hz,.sampling_period_s=speed_s}},
         .speed_reference_min_rad_s=p->speed_reference_min_rad_s,.speed_reference_max_rad_s=p->speed_reference_max_rad_s,.speed_reference_rise_rate_rad_s2=p->speed_reference_rise_rate_rad_s2,.speed_reference_fall_rate_rad_s2=p->speed_reference_fall_rate_rad_s2,.pole_pairs=p->pole_pairs};
     return true;

@@ -34,6 +34,7 @@ static void test_round_trip(void)
     assert(defaults.speed_reference_max_rad_s == 314.159265f);
     assert(defaults.pole_pairs == 4U);
     assert(defaults.canopen_torque_reference_current_peak_a == 5.0f);
+    assert(defaults.stator_resistance_ohm == 0.059f);
     assert(drive_parameter_record_encode(&defaults, 42U, record));
     /* Power-loss-safe record는 commit marker가 마지막에 프로그램되기 전 invalid다. */
     assert(drive_parameter_record_decode(record, &decoded, &generation) ==
@@ -70,6 +71,12 @@ static void test_crc_and_range_rejection(void)
 
     drive_parameters_get_defaults(&defaults);
     defaults.speed_reference_max_rad_s = 315.0f;
+    assert(!drive_parameters_is_valid(&defaults));
+
+    drive_parameters_get_defaults(&defaults);
+    defaults.stator_resistance_ohm = 0.0f;
+    assert(!drive_parameters_is_valid(&defaults));
+    defaults.stator_resistance_ohm = 11.0f;
     assert(!drive_parameters_is_valid(&defaults));
 }
 
