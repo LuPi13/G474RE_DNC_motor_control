@@ -122,6 +122,8 @@ static void foc_copy_output(
     const foc_output_t *source
 )
 {
+    destination->i_alpha_beta.alpha = source->i_alpha_beta.alpha;
+    destination->i_alpha_beta.beta = source->i_alpha_beta.beta;
     destination->i_dq_unfiltered.d = source->i_dq_unfiltered.d;
     destination->i_dq_unfiltered.q = source->i_dq_unfiltered.q;
     destination->i_dq_feedback.d = source->i_dq_feedback.d;
@@ -154,11 +156,13 @@ static bool foc_config_is_valid(const foc_config_t *config)
         (!foc_float_is_finite(config->q_axis_inductance_h)) ||
         (!foc_float_is_finite(
             config->permanent_magnet_flux_linkage_wb)) ||
+        (!foc_float_is_finite(config->stator_resistance_ohm)) ||
         (config->voltage_utilization <= 0.0f) ||
         (config->voltage_utilization > 1.0f) ||
         (config->d_axis_inductance_h < 0.0f) ||
         (config->q_axis_inductance_h < 0.0f) ||
-        (config->permanent_magnet_flux_linkage_wb < 0.0f)) {
+        (config->permanent_magnet_flux_linkage_wb < 0.0f) ||
+        (config->stator_resistance_ohm < 0.0f)) {
         return false;
     }
 
@@ -384,6 +388,8 @@ foc_status_t foc_init(foc_t *self, const foc_config_t *config)
     initialized_foc.q_axis_inductance_h = config->q_axis_inductance_h;
     initialized_foc.permanent_magnet_flux_linkage_wb =
         config->permanent_magnet_flux_linkage_wb;
+    initialized_foc.stator_resistance_ohm =
+        config->stator_resistance_ohm;
     initialized_foc.is_decoupling_enabled =
         config->is_decoupling_enabled;
     initialized_foc.is_feedback_initialized = false;
@@ -473,6 +479,7 @@ static foc_status_t foc_update_internal(
     }
 
     transform_clarke(&input->i_abc, &i_alpha_beta);
+    calculated_output.i_alpha_beta = i_alpha_beta;
     transform_park(
         &i_alpha_beta,
         input->sin_theta,

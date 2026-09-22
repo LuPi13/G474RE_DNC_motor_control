@@ -59,10 +59,21 @@ typedef struct {
     float duty_b; /**< b상 PWM duty, 범위 [0, 1]. */
     float duty_c; /**< c상 PWM duty, 범위 [0, 1]. */
 
-    float theta_e_rad; /**< Wrapped electrical rotor angle [rad]. */
-    float omega_e_rad_s; /**< Signed electrical rotor speed [rad/s]. */
+    float theta_e_rad; /**< Wrapped electrical rotor angle [rad]. Hall 기준. */
+    float omega_e_rad_s; /**< Signed electrical rotor speed [rad/s]. Hall 기준. */
     float theta_m_rad_per_electrical_cycle; /**< 한 electrical cycle 내 기계각 성분 [rad]. */
     float omega_m_rad_s; /**< Signed mechanical rotor speed [rad/s]. */
+
+    float sensorless_cos_theta_hat; /**< Shadow PLL rotator의 cosine 성분. */
+    float sensorless_sin_theta_hat; /**< Shadow PLL rotator의 sine 성분. */
+    float sensorless_omega_e_rad_s; /**< Shadow PLL이 추정한 signed electrical speed [rad/s]. */
+    float sensorless_angle_error_sin; /**< `sin(theta_e_rad - atan2(sensorless_sin_theta_hat,
+        sensorless_cos_theta_hat))`과 같은 값을 cross product로 계산한 결과, 범위 `[-1, 1]`.
+        0에 가까울수록 잘 추종 중이다. 이 값 자체는 atan2/CORDIC 없이 계산하며(코드/설계
+        이유는 real_time_execution_budget.md 참고), 작은 오차에서만 radian에 선형 비례한다.
+        실제 각도가 필요하면 `sensorless_cos_theta_hat`/`sensorless_sin_theta_hat`을 직접
+        읽어 오프라인에서 atan2한다. `has_sensorless_feedback`가 false면 의미 없음. */
+    float sensorless_speed_error_rad_s; /**< `omega_e_rad_s - sensorless_omega_e_rad_s` [rad/s]. */
 
     float omega_m_ref_rad_s; /**< 제한 뒤 mechanical speed reference [rad/s]. */
     float omega_m_feedback_rad_s; /**< unfiltered mechanical speed feedback [rad/s]. */
@@ -72,6 +83,9 @@ typedef struct {
 
     bool has_valid_angle; /**< Rotor angle이 유효하면 true. */
     bool has_valid_speed; /**< Rotor speed가 유효하면 true. */
+    bool has_sensorless_feedback; /**< Shadow observer/PLL이 이번 snapshot에 연결되어 실행됐으면
+        true. false면 sensorless_* field는 모두 0이다. */
+    bool sensorless_has_valid_speed; /**< Shadow PLL 자체의 EMF-magnitude 유효성(저속 등). */
     bool has_valid_phase_current; /**< 이번 snapshot의 phase-current feedback이 유효하면 true. */
     bool is_voltage_saturated; /**< FOC 전압 원형 제한이 개입했으면 true. */
     bool is_current_reference_rate_limited; /**< 이번 FOC sample에 current slew 제한이 개입했으면 true. */
@@ -90,6 +104,14 @@ typedef struct {
     float v_dc_v; /**< 이번 sample의 DC-link 전압 [V]. */
     const hall_estimator_output_t *rotor_feedback; /**< 이번 sample의 rotor feedback. */
     const motor_control_output_t *motor_control; /**< 이번 sample의 상세 FOC output. */
+    float hall_cos_theta; /**< 호출자(App)가 이미 CORDIC으로 계산해 둔 Hall 각도의 cosine.
+        이 module이 다시 CORDIC/libm 삼각함수를 호출하지 않도록 재사용한다. */
+    float hall_sin_theta; /**< 같은 Hall 각도의 sine. */
+    float sensorless_cos_theta_hat; /**< Shadow PLL rotator의 cosine 성분. */
+    float sensorless_sin_theta_hat; /**< 같은 rotator의 sine 성분. */
+    float sensorless_omega_e_rad_s; /**< Shadow PLL이 추정한 signed electrical speed [rad/s]. */
+    bool has_sensorless_feedback; /**< true면 sensorless_* 입력을 snapshot에 반영한다. */
+    bool sensorless_has_valid_speed; /**< Shadow PLL 자체의 EMF-magnitude 유효성. */
     const abc_t *duty; /**< PWM driver에 기록한 duty. */
     const motor_control_speed_output_t *speed_control; /**< 마지막 1 kHz speed-loop output. */
     uint8_t pole_pairs; /**< electrical/mechanical 변환에 사용할 pole pair 수. */

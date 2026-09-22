@@ -6,9 +6,13 @@
 #include "app.h"
 
 #include "drive_debug_observer.h"
+#include "transform.h"
 
 #include <float.h>
+#include <math.h>
 #include <stddef.h>
+
+static bool app_is_foc_mode(app_mode_t mode);
 
 #define APP_ZERO_DUTY                 (0.5f)
 #define APP_TWO_PI_RAD                (6.28318530717958647692f)
@@ -134,6 +138,8 @@ static void app_copy_motor_control_output(
 {
     destination->i_dq_ref.d = source->i_dq_ref.d;
     destination->i_dq_ref.q = source->i_dq_ref.q;
+    destination->foc.i_alpha_beta.alpha = source->foc.i_alpha_beta.alpha;
+    destination->foc.i_alpha_beta.beta = source->foc.i_alpha_beta.beta;
     destination->foc.i_dq_unfiltered.d =
         source->foc.i_dq_unfiltered.d;
     destination->foc.i_dq_unfiltered.q =
@@ -166,6 +172,8 @@ static void app_clear_motor_control_output(motor_control_output_t *output)
 {
     output->i_dq_ref.d = 0.0f;
     output->i_dq_ref.q = 0.0f;
+    output->foc.i_alpha_beta.alpha = 0.0f;
+    output->foc.i_alpha_beta.beta = 0.0f;
     output->foc.i_dq_unfiltered.d = 0.0f;
     output->foc.i_dq_unfiltered.q = 0.0f;
     output->foc.i_dq_feedback.d = 0.0f;
@@ -200,20 +208,60 @@ static void app_clear_rotor_feedback(hall_estimator_output_t *output)
  * Snapshot은 ADC ISR이 만든 한 sample의 지역 결과를 바로 복사해야 한다.
  * disabled/open-loop에서는 caller가 FOC output을 0으로 초기화해 전달한다.
  */
+/**
+ * @param hall_sin_theta App fast-loop가 이번 tick Park 변환용으로 이미 CORDIC으로 계산해 둔
+ *        Hall 각도의 sine. FOC mode가 아니어서 계산하지 않았다면 아무 값이나 전달해도 된다
+ *        (has_sensorless_feedback이 mode로도 gate하므로 사용하지 않는다).
+ * @param hall_cos_theta 같은 각도의 cosine.
+ */
 static void app_publish_debug_snapshot_fast(
-    const app_t *self,
+    app_t *self,
     const abc_t *i_abc,
     float v_dc_v,
     const hall_estimator_output_t *rotor_feedback,
     const motor_control_output_t *motor_control,
     const abc_t *duty,
-    bool has_valid_phase_current
+    bool has_valid_phase_current,
+    float hall_sin_theta,
+    float hall_cos_theta
 )
 {
     const motor_control_speed_output_t inactive_speed_control = {0};
     const motor_control_speed_output_t *speed_control =
         (self->mode == APP_MODE_SPEED) ?
         &self->last_speed_output : &inactive_speed_control;
+    /* Shadow PLL의 180도 phase ambiguity를 이 rate-gated 경로에서만 바로잡는다 — 40 kHz마다
+     * 적용하면 정착 전 transient에서 경계 근처를 오가며 오히려 발산한다(host test로 확인).
+     * 여기서도 atan2f/cosf/sinf/CORDIC은 호출하지 않는다 — 호출자가 이미 계산해 둔
+     * hall_sin_theta/hall_cos_theta를 그대로 재사용한다. 처음에는 pll_get_theta_e_rad()
+     * (atan2f)와 cosf/sinf로 새로 계산했는데, 1 kHz publish에서도 실측 irq_total_cycles_max가
+     * 3162 -> 5432로 뛰어 hard deadline(4250)을 넘겼다 — real_time_execution_budget.md 참고. */
+    const bool has_sensorless_feedback =
+        (self->config.sensorless_observer != NULL) &&
+        (self->config.sensorless_pll != NULL) &&
+        app_is_foc_mode(self->mode) &&
+        rotor_feedback->has_valid_angle;
+    float sensorless_cos_theta_hat = 0.0f;
+    float sensorless_sin_theta_hat = 0.0f;
+    float sensorless_omega_e_rad_s = 0.0f;
+    bool sensorless_has_valid_speed = false;
+
+    if (has_sensorless_feedback) {
+        const pll_output_t *sensorless_output;
+
+        pll_resolve_polarity(
+            self->config.sensorless_pll,
+            hall_cos_theta,
+            hall_sin_theta
+        );
+        sensorless_output =
+            pll_get_latest_output_fast(self->config.sensorless_pll);
+        sensorless_cos_theta_hat = sensorless_output->cos_theta_hat;
+        sensorless_sin_theta_hat = sensorless_output->sin_theta_hat;
+        sensorless_omega_e_rad_s = sensorless_output->omega_e_rad_s;
+        sensorless_has_valid_speed = sensorless_output->has_valid_speed;
+    }
+
     const drive_debug_observer_fast_input_t debug_input = {
         .i_abc = i_abc,
         .v_dc_v = v_dc_v,
@@ -221,6 +269,13 @@ static void app_publish_debug_snapshot_fast(
         .motor_control = motor_control,
         .duty = duty,
         .speed_control = speed_control,
+        .hall_cos_theta = hall_cos_theta,
+        .hall_sin_theta = hall_sin_theta,
+        .sensorless_cos_theta_hat = sensorless_cos_theta_hat,
+        .sensorless_sin_theta_hat = sensorless_sin_theta_hat,
+        .sensorless_omega_e_rad_s = sensorless_omega_e_rad_s,
+        .has_sensorless_feedback = has_sensorless_feedback,
+        .sensorless_has_valid_speed = sensorless_has_valid_speed,
         .pole_pairs = self->config.motor_control->config.pole_pairs,
         .fast_loop_count = self->fast_loop_count,
         .fast_loop_body_cycles = self->fast_loop_body_cycles,
@@ -235,7 +290,7 @@ static void app_publish_debug_snapshot_fast(
 }
 
 static void app_publish_fault_debug_snapshot_fast(
-    const app_t *self,
+    app_t *self,
     const abc_t *i_abc,
     float v_dc_v,
     bool has_valid_phase_current
@@ -256,7 +311,9 @@ static void app_publish_fault_debug_snapshot_fast(
         &invalid_rotor_feedback,
         &inactive_motor_control,
         &neutral_duty,
-        has_valid_phase_current
+        has_valid_phase_current,
+        0.0f,
+        1.0f
     );
 }
 
@@ -294,6 +351,14 @@ static void app_copy_fast_loop_output(
         &destination->motor_control,
         &source->motor_control
     );
+    destination->sensorless_feedback.cos_theta_hat =
+        source->sensorless_feedback.cos_theta_hat;
+    destination->sensorless_feedback.sin_theta_hat =
+        source->sensorless_feedback.sin_theta_hat;
+    destination->sensorless_feedback.omega_e_rad_s =
+        source->sensorless_feedback.omega_e_rad_s;
+    destination->sensorless_feedback.has_valid_speed =
+        source->sensorless_feedback.has_valid_speed;
     destination->duty.a = source->duty.a;
     destination->duty.b = source->duty.b;
     destination->duty.c = source->duty.c;
@@ -437,6 +502,7 @@ static app_status_t app_disable_for_fault(app_t *self, app_status_t status)
 
     self->mode = APP_MODE_DISABLED;
     self->drive_state = APP_DRIVE_STATE_FAULTED;
+    self->is_sensorless_seeded = false;
     current_sensor_status = current_sensor_get_offset_calibration_state(
         self->config.current_sensor,
         &calibration_state
@@ -576,6 +642,74 @@ static app_status_t app_update_rotor_feedback(
     }
 
     return APP_STATUS_OK;
+}
+
+/**
+ * @brief EEMF observer + PLL을 shadow로 한 주기 실행한다.
+ *
+ * @note Hall이 계속 FOC angle의 유일한 owner다 — 여기서 만든 결과는 motor_control 입력에
+ *       연결하지 않고 @p sensorless_feedback 진단 출력에만 쓴다 (EEMF rollout 3단계).
+ * @note Cold start(전류 2, EMF 0)로 두면 observer/PLL이 서로의 estimate에 의존하는
+ *       chicken-and-egg 구조 때문에 부트스트랩이 사실상 멈춘다(보드에서 omega_e_rad_s가 0에
+ *       고정되는 것으로 확인) — Hall이 이미 유효한 각도/속도를 가진 첫 tick에 한 번
+ *       Hall 근사값으로 warm-start한다. `hall_sin_theta`/`hall_cos_theta`는 호출자가 이미
+ *       CORDIC으로 계산해 둔 값을 그대로 받는다 — 여기서 추가 CORDIC/libm 삼각함수를
+ *       호출하지 않는다.
+ * @pre sensorless_observer와 sensorless_pll이 모두 설정되어 있어야 한다. 호출자가 NULL을
+ *      확인한다.
+ */
+static void app_update_sensorless_shadow_feedback(
+    app_t *self,
+    const hall_estimator_output_t *rotor_feedback,
+    float hall_sin_theta,
+    float hall_cos_theta,
+    const alpha_beta_t *i_alpha_beta,
+    const alpha_beta_t *v_alpha_beta,
+    pll_output_t *sensorless_feedback
+)
+{
+    const pll_output_t *previous_pll_output;
+    const eemf_observer_output_t *observer_output;
+
+    if (!self->is_sensorless_seeded &&
+        rotor_feedback->has_valid_angle &&
+        rotor_feedback->has_valid_speed) {
+        const float psi_f = self->config.motor_control->config.foc
+            .permanent_magnet_flux_linkage_wb;
+        const float emf_magnitude_v = fabsf(rotor_feedback->omega_e_rad_s) * psi_f;
+        const alpha_beta_t seed_e_hat = {
+            -hall_sin_theta * emf_magnitude_v,
+            hall_cos_theta * emf_magnitude_v,
+        };
+
+        (void)eemf_observer_seed(
+            self->config.sensorless_observer,
+            i_alpha_beta,
+            &seed_e_hat
+        );
+        (void)pll_seed_from_rotator(
+            self->config.sensorless_pll,
+            hall_cos_theta,
+            hall_sin_theta,
+            rotor_feedback->omega_e_rad_s
+        );
+        self->is_sensorless_seeded = true;
+    }
+
+    previous_pll_output = pll_get_latest_output_fast(
+        self->config.sensorless_pll
+    );
+    observer_output = eemf_observer_update_fast(
+        self->config.sensorless_observer,
+        i_alpha_beta,
+        v_alpha_beta,
+        previous_pll_output->omega_e_rad_s
+    );
+
+    *sensorless_feedback = *pll_update_fast(
+        self->config.sensorless_pll,
+        &observer_output->e_hat
+    );
 }
 
 static app_status_t app_update_current_sensor(
@@ -800,6 +934,7 @@ app_status_t app_init(app_t *self, const app_config_t *config)
         .is_current_offset_calibration_timeout_requested = false,
         .speed_stop_low_speed_elapsed_ms = 0U,
         .is_fault_clear_requested = false,
+        .is_sensorless_seeded = false,
     };
 
     *self = initialized;
@@ -1773,6 +1908,7 @@ static app_status_t app_motor_fast_loop_update(
     ++self->fast_loop_count;
     calculated_output.voltage_angle_rad = self->voltage_angle_rad;
     calculated_output.v_alpha_beta = (alpha_beta_t){0.0f, 0.0f};
+    calculated_output.sensorless_feedback = (pll_output_t){0};
     calculated_output.duty = app_neutral_duty();
     calculated_output.has_applied_duty = false;
 
@@ -1883,7 +2019,9 @@ static app_status_t app_motor_fast_loop_update(
                 &calculated_output.rotor_feedback,
                 &calculated_output.motor_control,
                 &calculated_output.duty,
-                calculated_output.has_valid_phase_current
+                calculated_output.has_valid_phase_current,
+                0.0f,
+                1.0f
             );
         }
         return APP_STATUS_OK;
@@ -1998,6 +2136,19 @@ static app_status_t app_motor_fast_loop_update(
 
         calculated_output.v_alpha_beta =
             calculated_output.motor_control.foc.v_alpha_beta_ref;
+
+        if ((self->config.sensorless_observer != NULL) &&
+            (self->config.sensorless_pll != NULL)) {
+            app_update_sensorless_shadow_feedback(
+                self,
+                &calculated_output.rotor_feedback,
+                sin_theta,
+                cos_theta,
+                &calculated_output.motor_control.foc.i_alpha_beta,
+                &calculated_output.v_alpha_beta,
+                &calculated_output.sensorless_feedback
+            );
+        }
     } else {
         return app_latch_and_stop(
             self,
@@ -2085,7 +2236,9 @@ static app_status_t app_motor_fast_loop_update(
             &calculated_output.rotor_feedback,
             &calculated_output.motor_control,
             &calculated_output.duty,
-            calculated_output.has_valid_phase_current
+            calculated_output.has_valid_phase_current,
+            sin_theta,
+            cos_theta
         );
     }
 
@@ -2150,6 +2303,7 @@ app_status_t app_motor_current_fast_loop_drive_fast(app_t *self)
     motor_control_fast_input_t control_input;
     motor_control_output_t motor_control_output;
     alpha_beta_t v_alpha_beta;
+    alpha_beta_t i_alpha_beta;
     abc_t duty;
     float sin_theta;
     float cos_theta;
@@ -2287,6 +2441,24 @@ app_status_t app_motor_current_fast_loop_drive_fast(app_t *self)
                                   FAULT_MANAGER_FAULT_MOTOR_CONTROL);
     }
 
+    if ((self->config.sensorless_observer != NULL) &&
+        (self->config.sensorless_pll != NULL)) {
+        pll_output_t sensorless_feedback;
+
+        /* motor_control_update_fast_voltage() 경로(!is_debug_capture)는 foc_output_t를
+         * 채우지 않아 i_alpha_beta가 없다 — Clarke 변환은 값싸므로 여기서 따로 계산한다. */
+        transform_clarke(&i_abc, &i_alpha_beta);
+        app_update_sensorless_shadow_feedback(
+            self,
+            rotor_feedback,
+            sin_theta,
+            cos_theta,
+            &i_alpha_beta,
+            &v_alpha_beta,
+            &sensorless_feedback
+        );
+    }
+
     profile_segment_start_cycles = APP_PROFILE_END_SEGMENT(
         self,
         control,
@@ -2319,7 +2491,9 @@ app_status_t app_motor_current_fast_loop_drive_fast(app_t *self)
             rotor_feedback,
             &motor_control_output,
             &duty,
-            has_valid_phase_current
+            has_valid_phase_current,
+            sin_theta,
+            cos_theta
         );
     }
 

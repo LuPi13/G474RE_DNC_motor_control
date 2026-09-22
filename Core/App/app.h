@@ -14,11 +14,13 @@
 #include "adc_driver.h"
 #include "cordic_driver.h"
 #include "current_sensor.h"
+#include "eemf_observer.h"
 #include "fault_manager.h"
 #include "hall_decoder.h"
 #include "hall_driver.h"
 #include "hall_estimator.h"
 #include "motor_control.h"
+#include "pll.h"
 #include "pwm_driver.h"
 #include "svpwm.h"
 #include "voltage_sensor.h"
@@ -188,6 +190,9 @@ typedef struct {
     hall_decoder_t *hall_decoder; /**< 초기화된 motor-specific Hall decoder instance. */
     hall_estimator_t *hall_estimator; /**< 초기화된 연속 전기각 estimator instance. */
     motor_control_t *motor_control; /**< 초기화된 current-mode coordinator instance. */
+    eemf_observer_t *sensorless_observer; /**< NULL 가능. 설정 시 FOC mode에서 shadow로만 실행 —
+        motor-control 입력에는 연결하지 않는다 (EEMF rollout 3단계). */
+    pll_t *sensorless_pll; /**< NULL 가능. sensorless_observer와 함께 설정해야 한다. */
     app_fast_loop_profile_t *fast_loop_profile; /**< NULL 가능 선택형 구간 계측 결과. */
     motor_control_profile_t *motor_control_profile; /**< NULL 가능 control 내부 계측 결과. */
     app_cycle_counter_reader_t cycle_counter_reader; /**< Profile 또는 debug body-cycle 관측에 쓸 선택형 cycle reader. */
@@ -247,6 +252,9 @@ typedef struct {
     hall_estimator_output_t rotor_feedback; /**< 이번 주기의 연속 rotor electrical feedback. */
     motor_control_output_t motor_control; /**< Current mode에서 적용한 reference와 FOC 결과. */
     abc_t duty;                  /**< PWM driver에 기록한 정규화 duty. */
+    pll_output_t sensorless_feedback; /**< Shadow sensorless PLL 결과. Motor control 입력 아님 —
+        진단/비교 전용. sensorless_observer/pll이 설정되지 않았거나 이번 주기에 실행하지
+        않았으면 has_valid_speed는 false다. */
     app_mode_t mode;             /**< 이번 주기에 실행한 drive mode. */
     bool has_valid_phase_current; /**< true이면 i_abc가 보정 완료된 유효 전류 feedback임. */
     bool has_applied_duty;       /**< true이면 이번 호출에서 PWM compare를 갱신함. */
@@ -313,6 +321,8 @@ typedef struct {
     volatile bool is_current_offset_calibration_timeout_requested; /**< main-context timeout 처리 요청. */
     volatile uint32_t speed_stop_low_speed_elapsed_ms; /**< 저속 또는 Hall timeout을 처음 확인한 뒤 scheduler가 센 정상 정지 dwell [ms]. */
     volatile bool is_fault_clear_requested; /**< 다음 유효 fast loop에서 소비할 clear 요청. */
+    bool is_sensorless_seeded; /**< Shadow observer/PLL을 Hall 근사값으로 이미 warm-start했으면
+        true. FOC mode를 벗어날 때 false로 되돌려 재진입 시 다시 seed한다. */
 } app_t;
 
 /**

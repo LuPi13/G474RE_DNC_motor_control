@@ -87,6 +87,7 @@ typedef struct {
     float d_axis_inductance_h;  /**< Decoupling에 사용할 Ld [H]. */
     float q_axis_inductance_h;  /**< Decoupling에 사용할 Lq [H]. */
     float permanent_magnet_flux_linkage_wb; /**< q축 back-EMF 보상에 사용할 자석 쇄교자속 [Wb]. */
+    float stator_resistance_ohm; /**< Stator phase resistance Rs [Ohm]. 현재 decoupling 계산에는 사용하지 않음. */
     bool is_decoupling_enabled; /**< true이면 motor-model decoupling/feedforward를 적용함. */
 } foc_config_t;
 
@@ -106,6 +107,8 @@ typedef struct {
  * @brief 한 FOC update에서 계산한 current feedback과 voltage-reference snapshot.
  */
 typedef struct {
+    alpha_beta_t i_alpha_beta; /**< Clarke 변환 직후의 alpha-beta 전류 [A]. Shadow EEMF observer가
+        재사용한다 — 중복 Clarke 변환을 피하기 위해 노출함. */
     dq_t i_dq_unfiltered; /**< Park 변환 직후의 unfiltered d/q 전류 [A]. */
     dq_t i_dq_feedback;   /**< PI가 사용한 filtered d/q 전류 feedback [A]. */
     dq_t i_dq_error;      /**< `i_dq_ref - i_dq_feedback` [A]. */
@@ -162,6 +165,7 @@ typedef struct {
     float d_axis_inductance_h;  /**< 초기화 시 복사한 Ld [H]. */
     float q_axis_inductance_h;  /**< 초기화 시 복사한 Lq [H]. */
     float permanent_magnet_flux_linkage_wb; /**< 초기화 시 복사한 자석 쇄교자속 [Wb]. */
+    float stator_resistance_ohm; /**< 초기화 시 복사한 Rs [Ohm]. */
     bool is_decoupling_enabled; /**< Motor-model 보상 활성 상태. */
     bool is_feedback_initialized; /**< 첫 유효 d/q feedback으로 filter를 초기화했는지 여부. */
     bool is_initialized; /**< foc_init() 완료 여부. */

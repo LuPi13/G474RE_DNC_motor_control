@@ -114,6 +114,33 @@ void drive_debug_observer_publish_fast(
         input->rotor_feedback->theta_e_rad * inverse_pole_pairs;
     drive_debug_snapshot.omega_m_rad_s =
         input->rotor_feedback->omega_e_rad_s * inverse_pole_pairs;
+    if (input->has_sensorless_feedback) {
+        /* sin(hall_theta - sensorless_theta)를 atan2/CORDIC 없이 cross product로 계산한다 —
+         * 두 각도 모두 호출자가 이미 계산해 둔 cos/sin이다. real_time_execution_budget.md
+         * 참고: 이 경로에서 atan2f/cosf/sinf를 호출하면 hard deadline을 넘길 수 있다. */
+        drive_debug_snapshot.sensorless_cos_theta_hat =
+            input->sensorless_cos_theta_hat;
+        drive_debug_snapshot.sensorless_sin_theta_hat =
+            input->sensorless_sin_theta_hat;
+        drive_debug_snapshot.sensorless_omega_e_rad_s =
+            input->sensorless_omega_e_rad_s;
+        drive_debug_snapshot.sensorless_angle_error_sin =
+            (input->hall_sin_theta * input->sensorless_cos_theta_hat) -
+            (input->hall_cos_theta * input->sensorless_sin_theta_hat);
+        drive_debug_snapshot.sensorless_speed_error_rad_s =
+            input->rotor_feedback->omega_e_rad_s -
+            input->sensorless_omega_e_rad_s;
+    } else {
+        drive_debug_snapshot.sensorless_cos_theta_hat = 0.0f;
+        drive_debug_snapshot.sensorless_sin_theta_hat = 0.0f;
+        drive_debug_snapshot.sensorless_omega_e_rad_s = 0.0f;
+        drive_debug_snapshot.sensorless_angle_error_sin = 0.0f;
+        drive_debug_snapshot.sensorless_speed_error_rad_s = 0.0f;
+    }
+    drive_debug_snapshot.has_sensorless_feedback =
+        input->has_sensorless_feedback;
+    drive_debug_snapshot.sensorless_has_valid_speed =
+        input->sensorless_has_valid_speed;
     drive_debug_snapshot.omega_m_ref_rad_s =
         input->speed_control->omega_m_ref_limited_rad_s;
     drive_debug_snapshot.omega_m_feedback_rad_s =

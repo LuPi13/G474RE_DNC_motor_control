@@ -39,6 +39,7 @@
 #include "hall_estimator.h"
 #include "motor_config.h"
 #include "motor_control.h"
+#include "sensorless_config.h"
 #include "pwm_driver.h"
 #include "voltage_sensor.h"
 /* USER CODE END Includes */
@@ -103,6 +104,8 @@ static voltage_sensor_t voltage_sensor;
 static hall_driver_t hall_driver;
 static hall_decoder_t hall_decoder;
 static hall_estimator_t hall_estimator;
+static eemf_observer_t sensorless_observer;
+static pll_t sensorless_pll;
 static motor_control_t motor_control;
 static fault_manager_t fault_manager;
 static fdcan_driver_t fdcan_driver;
@@ -354,6 +357,19 @@ int main(void)
       Error_Handler();
   }
 
+  /* EEMF rollout 3단계: shadow observer/PLL. Hall이 계속 FOC angle의 유일한 owner이며 이 결과는
+   * motor-control 입력에 연결하지 않는다 — 진단/비교(drive_debug_snapshot) 전용. */
+  if (eemf_observer_init(
+      &sensorless_observer,
+      &sensorless_config_eemf_observer
+  ) != EEMF_OBSERVER_STATUS_OK) {
+      Error_Handler();
+  }
+
+  if (pll_init(&sensorless_pll, &sensorless_config_pll) != PLL_STATUS_OK) {
+      Error_Handler();
+  }
+
   fast_loop_sampling_period_s =
       1.0f / (float)APP_FAST_LOOP_FREQUENCY_HZ;
   drive_parameters_t default_drive_parameters;
@@ -469,6 +485,8 @@ int main(void)
       .hall_driver = &hall_driver,
       .hall_decoder = &hall_decoder,
       .hall_estimator = &hall_estimator,
+      .sensorless_observer = &sensorless_observer,
+      .sensorless_pll = &sensorless_pll,
       .motor_control = &motor_control,
 #if APP_FAST_LOOP_DETAILED_PROFILING_ENABLED
       .fast_loop_profile = &app_fast_loop_profile,
