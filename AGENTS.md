@@ -320,7 +320,20 @@ For a non-trivial implementation/refactor, check:
 
 ---
 
-## 15. Scope of This File
+## 15. Build and Analysis Efficiency
+
+After modifying C source code, perform one incremental build.
+
+- Do not inspect successful build logs.
+- On failure, inspect only relevant compiler/linker errors.
+- Do not repeatedly rebuild without making a code change.
+- Do not analyze generated `.elf`, `.map`, `.lst`, or binary files unless explicitly requested.
+- Do not perform clean builds unless necessary.
+- Stop once the requested change is implemented and the build passes.
+
+---
+
+## 16. Scope of This File
 
 This `AGENTS.md` applies to the entire repository unless a deeper directory contains another `AGENTS.md` with more specific rules.
 
