@@ -1002,6 +1002,34 @@ FOC
 - anti-windup
 - sign convention
 
+### EEMF sensorless 확장 순서
+
+Hall speed-mode 위에 alpha-beta EEMF Luenberger observer와 PLL을 추가할 때는 다음 순서를
+사용한다.
+
+1. 기존 Hall speed-mode fast path가 `real_time_execution_budget.md`의 total/body/miss gate를
+   만족하도록 먼저 닫는다.
+2. Motor parameter source에 stator phase resistance `R_s [ohm]`를 추가하고 범위, 단위, 저장 및
+   runtime 적용 경계를 검증한다. Observer를 연결하기 전 host 수치 test로 voltage equation의
+   부호와 alpha-beta 축 convention을 고정한다.
+3. Sensorless estimator는 Hall이 계속 FOC angle의 owner인 shadow mode로 연결한다. Luenberger가
+   `e_alpha/e_beta`를 추정하고 PLL이 `theta_e/omega_e`를 만들지만 motor-control 입력에는 적용하지
+   않는다.
+4. 같은 sample timestamp에서 Hall과 sensorless의 wrapped angle error, electrical speed error,
+   validity/lock 상태를 비교한다. Observer 추가 전후의 body/IRQ maximum과 miss count를 같은 시험
+   조건으로 기록한다.
+5. 정·역방향, 가감속, 최소/정격/최대 검증 speed, 전압 saturation, 부하 변화와 Hall transition을
+   포함해 lock/unlock threshold와 hysteresis를 결정한다. EEMF가 작은 저속 영역은 별도 invalid
+   범위로 명시한다.
+6. Shadow 검증과 timing gate를 통과한 뒤에만 rotor-feedback selector를 추가한다. 전환은 angle/
+   speed 오차가 허용 범위에서 정해진 dwell 동안 유지될 때 실행하고, unlock·저속·observer 오류에는
+   Hall로 복귀하거나 drive를 안전 정지한다. Observer module이 직접 FOC나 PWM을 호출하지 않는다.
+
+현재 2026-09-22 최신 board 보고값은 body max `2863 cycles`, ADC fast helper max `3191 cycles`이며
+최신 miss count와 관찰 시간이 아직 기록되지 않았다. Total 목표에는 9 cycles만 남고 body 조건부
+상한을 13 cycles 초과하므로, 이 상태에서 sensorless 계산을 40 kHz path에 바로 추가하지 않는다.
+먼저 현재 binary의 timing 판정을 완료하고 observer 단독 cycle budget을 별도로 확보한다.
+
 ### 완료 조건
 
 초기 bring-up 범위에서 정·역방향 speed reference를 안정적으로 추종하고, 제한 범위 안에서
