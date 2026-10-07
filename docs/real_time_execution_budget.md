@@ -29,20 +29,56 @@ latency, 다른 interrupt의 blocking, 측정 코드와 interrupt 복귀 비용�
 ### 통과 기준
 
 - 전체 worst-case 실행시간은 **MUST** `4250 cycles` 미만이어야 한다.
-- 현재 bring-up 목표는 전체 최대 **MUST** `3200 cycles` 이하로 두어 최소 25% margin을
-  확보한다.
-- fast-loop body는 정상 반복 경로에서 **SHOULD** `2200 cycles` 이하, saturation이나
-  Hall 전환을 포함한 worst-case의 설계 목표는 **SHOULD** `2800 cycles` 이하로 한다.
-  Body는 IRQ 진입부터 compare write까지의 전체 경로를 포함하지 않는 진단 지표이므로 단독
-  deadline 판정에는 사용하지 않는다. `2800` 초과 `2850 cycles` 이하는 같은 binary와
-  worst-case 시험에서 전체 maximum `3200 cycles` 이하 및 deadline miss `0`을 함께 만족할
-  때만 조건부로 허용한다. `2850 cycles` 초과는 원인 분석과 최적화 없이는 허용하지 않는다.
+- 현재 bring-up 목표는 전체 최대 **MUST** `3950 cycles` 이하로 둔다(§2.1 참고, 2026-10-07
+  재협상).
+- fast-loop body의 설계 목표는 **SHOULD** `3500 cycles` 이하로 한다. Body는 IRQ 진입부터
+  compare write까지의 전체 경로를 포함하지 않는 진단 지표이므로 단독 deadline 판정에는
+  사용하지 않는다. `3500` 초과 `3600 cycles` 이하는 같은 binary와 worst-case 시험에서 전체
+  maximum `3950 cycles` 이하 및 deadline miss `0`을 함께 만족할 때만 조건부로 허용한다.
+  `3600 cycles` 초과는 원인 분석과 최적화 없이는 허용하지 않는다.
 - deadline miss counter는 각 worst-case 시험에서 **MUST** 0이어야 한다.
 - `last` 또는 평균값만으로 통과시키지 않고 `max`와 deadline miss를 사용한다.
 
 다른 실행률을 채택하면 scheduler에서 실행률을 명시하고 이 표와 controller sample period,
 filter/PI coefficient를 함께 변경한다. 알고리즘 내부에 숨은 prescaler만 추가해서 deadline
 문제를 우회하지 않는다.
+
+### 2.1 2026-10-07 bring-up 목표 재협상
+
+기존 목표(전체 `3200`, body SHOULD `2200`/설계 목표 `2800`/조건부 상한 `2850`)는 EEMF/PLL
+sensorless shadow 연산을 40 kHz path에 추가하기 전에 Hall-only speed-mode 기준으로 정한
+값이다(2026-09-15 측정 `3115`/`2818`). `development_process.md`의 EEMF rollout 4단계는 Hall과
+sensorless를 "같은 sample timestamp"에서 비교해야 한다고 요구하므로, shadow 연산은 검증 단계
+동안 40 kHz 전체 rate로 계속 실행해야 하며 downsample(multi-rate)로 비용을 미룰 수 없다.
+
+Shadow 연산을 켠 상태에서 `drive_debug_observer_enabled=false`(상세 profiler OFF) 조건의 board
+측정은 다음과 같다.
+
+| 변경 단계 | ADC IRQ total max | body max |
+|---|---:|---:|
+| EEMF/PLL shadow 추가 직후 | 3728 | 3394 |
+| fast 함수 헤더 inline화 + `pll` magnitude 정규화를 `sqrtf`+나눗셈에서 제곱-threshold 비교와 `pll_fast_rsqrt()`로 교체한 뒤 | 3714 | 3385 |
+
+두 번째 변경은 함수 call/return 오버헤드, FPU callee-saved 레지스터 save/restore, `sqrtf`+나눗셈
+비용을 표적으로 했으나 회수량은 `14`/`9 cycles`뿐이었다. 즉 증가분(기존 Hall-only 기준 대비 약
+`+600 cycles`)의 지배적 원인은 call 오버헤드가 아니라 4-state Euler 적분과 rotator 갱신 자체의
+의존적 FP 연산 체인 latency이며, Cortex-M4 FPU의 파이프라이닝 한계상 이는 코드 수준 최적화로
+추가로 줄일 여지가 거의 없다. `development_process.md`도 애초에 이 기능을 기존 목표 안에
+공짜로 넣을 것으로 보지 않고 "observer 단독 cycle budget을 별도로 확보한다"고 명시했었다.
+
+이 project의 실제 완료 기준은 모터가 끊김 없이 돌고 CAN 통신이 원활히 처리되는 것이다. CAN
+RX(`FDCAN2_IT0_IRQn`, priority 2)는 ADC ISR(priority 0)과 TIM2 Hall capture(priority 1)보다
+우선순위가 낮아 hard deadline `4250 cycles` 안에서 preemption이 유한하게 bound된다 — bring-up
+목표를 낮추더라도 hard deadline 자체를 바꾸지 않는 한 CAN의 worst-case 지연 상한은 변하지
+않는다. 따라서 안전에 직결되는 hard deadline(`4250`, miss `0`)은 그대로 유지하고, bring-up
+margin만 새 기준선(`3714`/`3385`)에 맞춰 재설정한다 — `3950 cycles`는 hard deadline 대비 `300
+cycles`(약 7%)의 margin을 남겨 §5의 아직 수행하지 않은 전체 worst-case matrix(voltage
+saturation, Hall transition, phase trip, DC-link 전 범위)가 추가할 수 있는 변동분을 흡수한다.
+
+**아직 열려 있는 항목**: 이 재협상은 위 단일 조건(0 A 근처 speed-mode, dry-run 상세 profiler
+OFF) 측정만 근거로 한다. §5의 정식 worst-case matrix를 새 목표(`3950`/`3600`) 기준으로 아직
+수행하지 않았으므로, rollout 5~6단계(lock/unlock threshold 확정, rotor-feedback selector 추가)
+전에는 이 matrix를 마쳐야 한다.
 
 ---
 

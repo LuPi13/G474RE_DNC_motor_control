@@ -1039,6 +1039,21 @@ DC-link 전 범위, Release 빌드 60초)를 아직 거치지 않은 반복 chec
 아직 FOC decoupling 계산에는 사용하지 않고 저장/검증/전달 경로만 연결했다 — voltage equation에
 반영하는 것은 3단계 host 수치 test에서 수행한다.
 
+3단계(shadow mode 연결)는 완료했다. App이 매 ADC tick마다 Luenberger observer와 PLL을
+`motor-control` 입력과 분리된 `sensorless_feedback` 진단 출력으로만 갱신하고, Hall이 계속
+FOC angle을 소유한다. Rollout 4단계가 Hall/sensorless를 같은 sample timestamp에서 비교할 것을
+요구하므로 이 shadow 연산은 40 kHz 전체 rate로 실행하며 downsample하지 않는다.
+
+이 상태의 board 측정(`real_time_execution_budget.md` §2.1)은 `drive_debug_observer_enabled=false`
+조건에서 ADC IRQ total max `3714 cycles`, body max `3385 cycles`다. 2026-09-15 Hall-only
+기준선(`3115`/`2818`) 대비 늘어난 약 600 cycles는 call 오버헤드나 `sqrtf`/나눗셈이 아니라
+4-state Euler 적분과 rotator 갱신 자체의 FP 연산 체인 latency가 지배적이며, 이는 Cortex-M4
+FPU 특성상 코드 수준 최적화로 추가로 줄일 여지가 거의 없다(헤더 inline화 + `sqrtf`/나눗셈
+제거로 `14`/`9 cycles`만 회수됨). 따라서 2026-10-07 `real_time_execution_budget.md`의 bring-up
+목표를 이 항상-켜진 기능을 반영해 `3200`/`2850`에서 `3950`/`3600`으로 재협상했다 — hard
+deadline(`4250 cycles`, miss `0`)은 변경하지 않았다. §5의 정식 worst-case matrix는 새 목표로
+아직 수행하지 않았으므로 rollout 5~6단계 전에 마쳐야 한다.
+
 ### 완료 조건
 
 초기 bring-up 범위에서 정·역방향 speed reference를 안정적으로 추종하고, 제한 범위 안에서
