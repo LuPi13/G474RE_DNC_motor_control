@@ -8,6 +8,8 @@
 #define CONTROL_PLL_H
 
 #include <stdbool.h>
+#include <stdint.h>
+#include <string.h>
 
 #include "pi_controller.h"
 #include "vector_types.h"
@@ -95,6 +97,7 @@ typedef struct {
     pll_config_t config;      /**< 초기화 시 검증한 configuration. */
     pi_controller_t speed_pi; /**< Phase-error -> omega_e_hat PI runtime state. */
     pll_output_t output;      /**< 가장 최근에 완성된 추정 결과. */
+    float min_emf_magnitude_sq_v2; /**< 미리 계산한 `min_emf_magnitude_v^2` — fast path가 sqrtf 없이 비교. */
     bool is_initialized;      /**< pll_init() 완료 여부. */
 } pll_t;
 
@@ -192,6 +195,30 @@ pll_status_t pll_update(
 );
 
 /**
+ * @brief `1/sqrt(value)`를 bit-hack 초기값 + 1차 Newton-Raphson 보정으로 근사한다.
+ * @note Cortex-M4 FPv4-SP-D16에는 NEON의 `VRSQRTE`가 없어 하드웨어 reciprocal-sqrt estimate를
+ *       쓸 수 없다 — `VSQRT`(sqrtf) + `VDIV` 조합보다 이 방식이 더 싸다. 1회 Newton 보정의 최대
+ *       상대오차는 약 0.17%이며, 이 값은 phase-error 정규화에만 쓰이고(speed PI 입력) 이미
+ *       rotator 자체가 2차 Taylor 근사로 전진하므로 그보다 더 엄밀할 필요가 없다. FOC voltage
+ *       saturation의 `sqrtf`처럼 정밀도가 중요한 경로에는 이 근사를 재사용하지 않는다.
+ * @warning `value`가 음수면 결과를 정의하지 않는다(bit-hack이 지수 bit를 반으로 나누는
+ *       연산이라 음수 bit pattern에는 성립하지 않는다). `value == 0`은 유한한(발산하지 않는)
+ *       근사값을 반환하므로 안전하다 — 두 제곱의 합인 `magnitude_sq` 호출부에 한해 항상
+ *       `value >= 0`이다.
+ */
+static inline float pll_fast_rsqrt(float value)
+{
+    int32_t bits;
+    float y = value;
+
+    memcpy(&bits, &y, sizeof(bits));
+    bits = 0x5f3759df - (bits >> 1);
+    memcpy(&y, &bits, sizeof(bits));
+
+    return y * (1.5f - (0.5f * value * y * y));
+}
+
+/**
  * @brief 검증된 fast-loop 입력으로 rotator를 최소 연산만 수행해 추종시킨다.
  *
  * @param[in,out] self 초기화된 PLL instance.
@@ -200,13 +227,56 @@ pll_status_t pll_update(
  * @pre self는 NULL이 아니고 초기화되어야 한다.
  * @pre 실제 호출 간격은 config의 sampling_period_s와 일치해야 한다.
  * @warning 인자와 결과를 검사하지 않는다. 일반 경로와 unit test는 pll_update()를 사용한다.
+ * @note Header의 `static inline`이다 — LTO 없이도 호출부(App 등 다른 TU)에서 인라인되도록
+ *       하기 위함이다. `|e_hat|` threshold 비교와 정규화 모두 `sqrtf`/나눗셈 없이
+ *       `min_emf_magnitude_sq_v2`(제곱 threshold)와 pll_fast_rsqrt()로 계산한다.
  *
  * @return 갱신된 추정 결과의 읽기 전용 주소. self가 소유하며 다음 update 전까지만 유효하다.
  */
-const pll_output_t *pll_update_fast(
+static inline const pll_output_t *pll_update_fast(
     pll_t *self,
     const alpha_beta_t *e_alpha_beta_hat
-);
+)
+{
+    const float ts = self->config.sampling_period_s;
+    const float cos_hat = self->output.cos_theta_hat;
+    const float sin_hat = self->output.sin_theta_hat;
+    const float e_alpha = e_alpha_beta_hat->alpha;
+    const float e_beta = e_alpha_beta_hat->beta;
+    const float magnitude_sq = (e_alpha * e_alpha) + (e_beta * e_beta);
+
+    float omega_e_hat = self->output.omega_e_rad_s;
+    bool has_valid_speed = false;
+
+    if (magnitude_sq >= self->min_emf_magnitude_sq_v2) {
+        /* e_alpha = -sin(theta_true)*E, e_beta = cos(theta_true)*E 이므로
+         * -(e_alpha*cos_hat + e_beta*sin_hat)/E == sin(theta_true)*cos_hat - cos(theta_true)*sin_hat
+         * == sin(theta_true - theta_hat), 작은 오차에서 (theta_true - theta_hat)에 근사한다. */
+        const float inv_magnitude = pll_fast_rsqrt(magnitude_sq);
+        const float phase_error =
+            -((e_alpha * cos_hat) + (e_beta * sin_hat)) * inv_magnitude;
+        omega_e_hat = pi_controller_update_fast(&self->speed_pi, phase_error);
+        has_valid_speed = true;
+    }
+
+    /* CORDIC을 다시 호출하지 않고 작은 회전각의 2차 Taylor 근사로 rotator를 직접 전진시킨다. */
+    const float dtheta = omega_e_hat * ts;
+    const float cos_d = 1.0f - (0.5f * dtheta * dtheta);
+    const float sin_d = dtheta;
+    const float next_cos = (cos_hat * cos_d) - (sin_hat * sin_d);
+    const float next_sin = (sin_hat * cos_d) + (cos_hat * sin_d);
+
+    /* 1차 Newton 보정으로 단위원 drift를 매 step 되돌린다. */
+    const float norm_sq = (next_cos * next_cos) + (next_sin * next_sin);
+    const float scale = 1.5f - (0.5f * norm_sq);
+
+    self->output.cos_theta_hat = next_cos * scale;
+    self->output.sin_theta_hat = next_sin * scale;
+    self->output.omega_e_rad_s = omega_e_hat;
+    self->output.has_valid_speed = has_valid_speed;
+
+    return &self->output;
+}
 
 /**
  * @brief 절대 각도 기준(예: Hall)과 비교해 180도 phase ambiguity를 바로잡는다.
@@ -251,8 +321,13 @@ float pll_get_theta_e_rad(const pll_t *self);
  *
  * @pre @p self는 NULL이 아니고 초기화되어야 한다.
  * @note 반환 포인터는 다음 update 전까지만 사용한다.
+ * @note Header의 `static inline`이다 — LTO 없이도 호출부(App 등 다른 TU)에서 인라인되도록
+ *       하기 위함이다(단순 `return &self->output;`을 함수 호출로 남기지 않는다).
  */
-const pll_output_t *pll_get_latest_output_fast(const pll_t *self);
+static inline const pll_output_t *pll_get_latest_output_fast(const pll_t *self)
+{
+    return &self->output;
+}
 
 /** @} */
 

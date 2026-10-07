@@ -8,6 +8,8 @@
 #define CONTROL_EEMF_OBSERVER_H
 
 #include <stdbool.h>
+#include <stdint.h>
+#include <string.h>
 
 #include "vector_types.h"
 
@@ -177,6 +179,20 @@ eemf_observer_status_t eemf_observer_update(
 );
 
 /**
+ * @brief eemf_observer_float_is_finite()와 같은 결과를 float 비교(vcmpe/vmrs) 없이 계산한다.
+ * @note vmrs로 FPSCR 비교 flag를 core로 옮기는 비용이 Cortex-M4에서 값싸지 않다 — NaN/Inf는
+ *       exponent bit가 모두 1이라는 IEEE-754 bit pattern만으로 판정할 수 있으므로 정수
+ *       비교로 대체한다. eemf_observer_update_fast() 전용이며, 결과는 느린 버전과 항상 같다.
+ */
+static inline bool eemf_observer_float_is_finite_fast(float value)
+{
+    uint32_t bits;
+
+    memcpy(&bits, &value, sizeof(bits));
+    return (bits & 0x7F800000U) != 0x7F800000U;
+}
+
+/**
  * @brief 검증된 fast-loop 입력으로 4-state를 최소 연산만 수행해 갱신한다.
  *
  * @param[in,out] self 초기화된 observer instance.
@@ -187,15 +203,66 @@ eemf_observer_status_t eemf_observer_update(
  * @pre self는 NULL이 아니고 초기화되어야 한다.
  * @pre 실제 호출 간격은 config의 sampling_period_s와 일치해야 한다.
  * @warning 인자와 결과를 검사하지 않는다. 일반 경로와 unit test는 eemf_observer_update()를 사용한다.
+ * @note Header의 `static inline`이다 — LTO 없이도 호출부(App 등 다른 TU)에서 인라인되도록
+ *       하기 위함이다. 모든 미분항은 이번 step 시작 시점의 state로 계산한 뒤 함께 적용한다 —
+ *       한 축의 갱신 결과가 같은 step의 다른 축 계산에 섞이지 않는다.
  *
  * @return 갱신된 추정 결과의 읽기 전용 주소. self가 소유하며 다음 update 전까지만 유효하다.
  */
-const eemf_observer_output_t *eemf_observer_update_fast(
+static inline const eemf_observer_output_t *eemf_observer_update_fast(
     eemf_observer_t *self,
     const alpha_beta_t *i_alpha_beta_measured,
     const alpha_beta_t *v_alpha_beta_applied,
     float omega_e_rad_s
-);
+)
+{
+    const float ts = self->config.sampling_period_s;
+    const float inv_l = self->inv_apparent_inductance;
+    const float rs_over_l = self->resistance_over_inductance;
+    const float current_gain = self->config.current_gain;
+    const float emf_gain = self->config.emf_gain;
+
+    const float i_alpha_hat = self->output.i_hat.alpha;
+    const float i_beta_hat = self->output.i_hat.beta;
+    const float e_alpha_hat = self->output.e_hat.alpha;
+    const float e_beta_hat = self->output.e_hat.beta;
+
+    const float err_alpha = i_alpha_beta_measured->alpha - i_alpha_hat;
+    const float err_beta = i_alpha_beta_measured->beta - i_beta_hat;
+
+    const float d_i_alpha =
+        (-rs_over_l * i_alpha_hat) + (omega_e_rad_s * i_beta_hat) +
+        (inv_l * v_alpha_beta_applied->alpha) - (inv_l * e_alpha_hat) +
+        (current_gain * err_alpha);
+    const float d_i_beta =
+        (-omega_e_rad_s * i_alpha_hat) - (rs_over_l * i_beta_hat) +
+        (inv_l * v_alpha_beta_applied->beta) - (inv_l * e_beta_hat) +
+        (current_gain * err_beta);
+    /* True e_alpha/e_beta는 상수가 아니라 omega_e로 회전한다(d(e_true)/dt = omega_e*J*e_true).
+     * 이 rotation term이 없으면 정상상태에서 omega_e에 비례하는 위상 지연이 남는다 — 아래 항이
+     * 그 internal model이다. */
+    const float d_e_alpha =
+        (-omega_e_rad_s * e_beta_hat) + (emf_gain * err_alpha);
+    const float d_e_beta =
+        (omega_e_rad_s * e_alpha_hat) + (emf_gain * err_beta);
+
+    const float next_i_alpha = i_alpha_hat + (ts * d_i_alpha);
+    const float next_i_beta = i_beta_hat + (ts * d_i_beta);
+    const float next_e_alpha = e_alpha_hat + (ts * d_e_alpha);
+    const float next_e_beta = e_beta_hat + (ts * d_e_beta);
+
+    self->output.i_hat.alpha = next_i_alpha;
+    self->output.i_hat.beta = next_i_beta;
+    self->output.e_hat.alpha = next_e_alpha;
+    self->output.e_hat.beta = next_e_beta;
+    self->output.is_valid =
+        eemf_observer_float_is_finite_fast(next_i_alpha) &&
+        eemf_observer_float_is_finite_fast(next_i_beta) &&
+        eemf_observer_float_is_finite_fast(next_e_alpha) &&
+        eemf_observer_float_is_finite_fast(next_e_beta);
+
+    return &self->output;
+}
 
 /**
  * @brief 가장 최근 observer output의 읽기 전용 주소를 반환한다.
@@ -205,10 +272,15 @@ const eemf_observer_output_t *eemf_observer_update_fast(
  *
  * @pre @p self는 NULL이 아니고 초기화되어야 한다.
  * @note 반환 포인터는 다음 update 전까지만 사용한다.
+ * @note Header의 `static inline`이다 — LTO 없이도 호출부(App 등 다른 TU)에서 인라인되도록
+ *       하기 위함이다(단순 `return &self->output;`을 함수 호출로 남기지 않는다).
  */
-const eemf_observer_output_t *eemf_observer_get_latest_output_fast(
+static inline const eemf_observer_output_t *eemf_observer_get_latest_output_fast(
     const eemf_observer_t *self
-);
+)
+{
+    return &self->output;
+}
 
 /** @} */
 

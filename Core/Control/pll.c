@@ -48,6 +48,8 @@ pll_status_t pll_init(pll_t *self, const pll_config_t *config)
         PI_CONTROLLER_STATUS_OK) {
         return PLL_STATUS_INVALID_CONFIG;
     }
+    initialized.min_emf_magnitude_sq_v2 =
+        config->min_emf_magnitude_v * config->min_emf_magnitude_v;
     pll_clear_runtime(&initialized);
     initialized.is_initialized = true;
 
@@ -119,50 +121,6 @@ pll_status_t pll_seed(
     );
 }
 
-const pll_output_t *pll_update_fast(
-    pll_t *self,
-    const alpha_beta_t *e_alpha_beta_hat
-)
-{
-    const float ts = self->config.sampling_period_s;
-    const float cos_hat = self->output.cos_theta_hat;
-    const float sin_hat = self->output.sin_theta_hat;
-    const float e_alpha = e_alpha_beta_hat->alpha;
-    const float e_beta = e_alpha_beta_hat->beta;
-    const float magnitude = sqrtf((e_alpha * e_alpha) + (e_beta * e_beta));
-
-    float omega_e_hat = self->output.omega_e_rad_s;
-    bool has_valid_speed = false;
-
-    if (magnitude >= self->config.min_emf_magnitude_v) {
-        /* e_alpha = -sin(theta_true)*E, e_beta = cos(theta_true)*E 이므로
-         * -(e_alpha*cos_hat + e_beta*sin_hat)/E == sin(theta_true)*cos_hat - cos(theta_true)*sin_hat
-         * == sin(theta_true - theta_hat), 작은 오차에서 (theta_true - theta_hat)에 근사한다. */
-        const float phase_error =
-            -((e_alpha * cos_hat) + (e_beta * sin_hat)) / magnitude;
-        omega_e_hat = pi_controller_update_fast(&self->speed_pi, phase_error);
-        has_valid_speed = true;
-    }
-
-    /* CORDIC을 다시 호출하지 않고 작은 회전각의 2차 Taylor 근사로 rotator를 직접 전진시킨다. */
-    const float dtheta = omega_e_hat * ts;
-    const float cos_d = 1.0f - (0.5f * dtheta * dtheta);
-    const float sin_d = dtheta;
-    const float next_cos = (cos_hat * cos_d) - (sin_hat * sin_d);
-    const float next_sin = (sin_hat * cos_d) + (cos_hat * sin_d);
-
-    /* 1차 Newton 보정으로 단위원 drift를 매 step 되돌린다. */
-    const float norm_sq = (next_cos * next_cos) + (next_sin * next_sin);
-    const float scale = 1.5f - (0.5f * norm_sq);
-
-    self->output.cos_theta_hat = next_cos * scale;
-    self->output.sin_theta_hat = next_sin * scale;
-    self->output.omega_e_rad_s = omega_e_hat;
-    self->output.has_valid_speed = has_valid_speed;
-
-    return &self->output;
-}
-
 pll_status_t pll_update(
     pll_t *self,
     const alpha_beta_t *e_alpha_beta_hat,
@@ -219,11 +177,6 @@ pll_status_t pll_resolve_polarity(
     }
 
     return PLL_STATUS_OK;
-}
-
-const pll_output_t *pll_get_latest_output_fast(const pll_t *self)
-{
-    return &self->output;
 }
 
 float pll_get_theta_e_rad(const pll_t *self)
